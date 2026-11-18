@@ -128,6 +128,8 @@ export interface StartWorkJobInput {
   issue: number;
   digest: string;
   authorMeshId: string;
+  /** Mesh IDs of the other authors that may carry the work (`work.extraAuthors`). */
+  extraAuthorMeshIds?: string[];
   now: number;
 }
 
@@ -137,7 +139,7 @@ export function buildStartWorkJob(input: StartWorkJobInput): Record<string, unkn
     type: "start-work",
     target: { repo: input.repo, kind: "issue", number: input.issue },
     slots: 1,
-    eligible: [input.authorMeshId],
+    eligible: [input.authorMeshId, ...(input.extraAuthorMeshIds ?? [])],
     priority: -10,
     workRef: `w${randomBytes(5).toString("hex")}.${input.digest}`,
     expiresAt: input.now + DAY_MS,
@@ -237,7 +239,8 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       }
       try {
         const job = await mesh.enqueue(buildStartWorkJob({
-          repo, issue: issue.number, digest, authorMeshId: work.authorMeshId, now: now(),
+          repo, issue: issue.number, digest, authorMeshId: work.authorMeshId,
+          extraAuthorMeshIds: (work.extraAuthors ?? []).map((extra) => extra.meshId), now: now(),
         }));
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
         log("info", "issue dispatched", { repo, issue: issue.number, jobId: job.id, digest });
