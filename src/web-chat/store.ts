@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { ChatConversation, ChatEvent, ChatRequest } from "./types";
+import type {
+  ChatConversation,
+  ChatEvent,
+  ChatRequest,
+  RefusalReceipt,
+} from "./types";
 
 export { privateDirectory, privateFile } from "./private-fs";
 import { privateDirectory, privateFile } from "./private-fs";
@@ -13,7 +18,7 @@ export class ChatStore {
     privateFile(file);
     this.db = new Database(file, { strict: true });
     this.db.exec(
-      "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, scope TEXT NOT NULL UNIQUE, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, request TEXT NOT NULL, at INTEGER NOT NULL, state TEXT NOT NULL);",
+      "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, scope TEXT NOT NULL UNIQUE, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, request TEXT NOT NULL, at INTEGER NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS refusals (id TEXT PRIMARY KEY, owner TEXT NOT NULL, at INTEGER NOT NULL, body TEXT NOT NULL);",
     );
   }
   conversations(): ChatConversation[] {
@@ -63,6 +68,24 @@ export class ChatStore {
         .query("UPDATE requests SET body=? WHERE id=?")
         .run(JSON.stringify(value), value.id);
   }
+  putRefusal(value: RefusalReceipt) {
+    const owner = JSON.stringify([value.owner.agent, value.owner.session]);
+    this.db
+      .query("INSERT INTO refusals VALUES (?,?,?,?)")
+      .run(value.id, owner, value.at, JSON.stringify(value));
+    this.db
+      // Bounded like events: refusal spam cannot grow durable state.
+      .query(
+        "DELETE FROM refusals WHERE owner=? AND id NOT IN (SELECT id FROM refusals WHERE owner=? ORDER BY at DESC, rowid DESC LIMIT 128)",
+      )
+      .run(owner, owner);
+  }
+  refusals(agent: string, session: string): RefusalReceipt[] {
+    return this.db
+      .query("SELECT body FROM refusals WHERE owner=? ORDER BY at, rowid")
+      .all(JSON.stringify([agent, session]))
+      .map((v: any) => JSON.parse(v.body));
+  }
   event(value: ChatRequest) {
     this.db
       .query("INSERT INTO events(request,at,state) VALUES (?,?,?)")
@@ -108,6 +131,11 @@ export class ChatStore {
       this.db
         .query(
           "DELETE FROM requests WHERE json_extract(body,'$.conversationId')=?",
+        )
+        .run(id);
+      this.db
+        .query(
+          "DELETE FROM refusals WHERE json_extract(body,'$.conversationId')=?",
         )
         .run(id);
       this.db.query("DELETE FROM conversations WHERE id=?").run(id);

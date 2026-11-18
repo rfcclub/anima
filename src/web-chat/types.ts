@@ -108,6 +108,18 @@ export interface ChatRequest {
   reason?: string;
   usage: null;
 }
+/** Why a send was refused before any browser action. Never carries the refused text. */
+export type RefusalCategory = "secret" | "private_source";
+export interface RefusalReceipt {
+  id: string;
+  owner: ChatOwner;
+  conversationId: string;
+  account: string;
+  service: ChatService;
+  category: RefusalCategory;
+  promptLength: number;
+  at: number;
+}
 export interface ChatEvent {
   cursor: number;
   at: number;

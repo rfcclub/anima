@@ -14,6 +14,7 @@ import {
   type ChatOwner,
   type ChatRequest,
   type ChatResult,
+  type RefusalCategory,
 } from "./types";
 
 const hash = (value: string) =>
@@ -272,6 +273,8 @@ export class WebChatService {
         .conversations()
         .filter((c) => same(c.owner, owner)),
       requests: requests.filter((r) => visible.has(r.id)),
+      // Content-free proof that a send was refused before any browser action.
+      refusals: this.store.refusals(owner.agent, owner.session),
     };
   }
   send(
@@ -327,16 +330,33 @@ export class WebChatService {
       } catch {}
     }
     decoded.push(...decoded.map((d) => d.replace(/[\s"'+]/g, "")));
-    if (
-      decoded.some((t) => SECRET.test(t)) ||
-      decoded.some((text) => {
-        for (const [length, entries] of this.privateContent)
-          for (let offset = 0; offset + length <= text.length; offset++)
-            if (entries.has(text.slice(offset, offset + length))) return true;
-        return false;
-      })
+    const refusal: RefusalCategory | undefined = decoded.some((t) =>
+      SECRET.test(t),
     )
+      ? "secret"
+      : decoded.some((text) => {
+            for (const [length, entries] of this.privateContent)
+              for (let offset = 0; offset + length <= text.length; offset++)
+                if (entries.has(text.slice(offset, offset + length)))
+                  return true;
+            return false;
+          })
+        ? "private_source"
+        : undefined;
+    if (refusal) {
+      // A refusal happened before any browser action: leave a content-free receipt.
+      this.store.putRefusal({
+        id: randomUUID(),
+        owner: { ...owner },
+        conversationId: c.id,
+        account: c.account,
+        service: c.service,
+        category: refusal,
+        promptLength: args.prompt.length,
+        at: this.now(),
+      });
       throw Error("egress denied: secret or private source");
+    }
     if (
       [...this.pending.values()].filter((p) => !p.running).length >=
       this.limits.queue

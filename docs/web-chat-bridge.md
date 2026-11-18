@@ -117,6 +117,8 @@ bun src/web-chat/cli.ts mark-not-sent REQUEST_ID
 
 The private SQLite database stores prompt digests/lengths, identity, destination, state/timing, bounded events and the functional answer. Answer bodies expire after 24 hours; idle conversations and their retry/event metadata expire after seven days. Expiration is enforced at startup/access, rather than a precise background deletion clock. Uncertain conversations are retained, subject to capacity limits, until resolved. Raw prompt diagnostics and answer diagnostics are not written. Browser profile storage is the website's own state; deleting an ANIMA answer does not erase website history, profile data, backups or forensic media copies.
 
+A refused send leaves a content-free refusal receipt (identity, destination, conversation, reason category, prompt length and time) in the private database. The receipt never carries the refused text, and it grants no permission to resend: the same content is refused again. Receipts are bounded to the newest 128 per owner and belong to that owner only. They are returned by trusted service history, exposed as the console `/api/history`.
+
 Secret refusal covers recognizable credentials/private keys, exact registered private excerpts, and recognizable base64/split forms. It cannot prove universal DLP against paraphrasing, arbitrary encodings, transformed secrets or prompt injection. Keep access narrow and review explicit prompts for sensitive work. The HMAC capability exists only in host/bridge memory and an inherited pipe; no key file, tool result, environment variable or argv entry contains it.
 
 ## Verification boundary
