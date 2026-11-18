@@ -1,0 +1,354 @@
+"use strict";
+const $ = (id) => document.getElementById(id);
+const names = {
+  claude: "Claude",
+  chatgpt: "ChatGPT",
+  grok: "Grok",
+  gemini: "Gemini",
+};
+const active = (r) => ["queued", "sending", "waiting"].includes(r.state);
+let csrf,
+  accounts = [],
+  history = { conversations: [], requests: [] },
+  selected,
+  pending = false,
+  timer;
+const prompts = new Map();
+function notice(text) {
+  $("notice").textContent = text;
+}
+function lock() {
+  clearTimeout(timer);
+  csrf = undefined;
+  selected = undefined;
+  prompts.clear();
+  $("workspace").hidden = true;
+  $("unlock").hidden = false;
+  $("message").value = "";
+}
+async function api(path, data) {
+  const response = await fetch("/api/" + path, {
+    method: data === undefined ? "GET" : "POST",
+    credentials: "same-origin",
+    headers:
+      data === undefined
+        ? {}
+        : { "content-type": "application/json", "x-console-csrf": csrf || "" },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (response.status === 401) lock();
+  if (!response.ok) throw Error(result.error || "Request failed");
+  return result;
+}
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+function button(text, action) {
+  const node = element("button", text);
+  node.type = "button";
+  node.onclick = async () => {
+    node.disabled = true;
+    try {
+      await action();
+    } catch (e) {
+      notice(e.message);
+    } finally {
+      node.disabled = false;
+    }
+  };
+  return node;
+}
+async function refresh() {
+  [accounts, history] = await Promise.all([api("accounts"), api("history")]);
+  if (!selected)
+    selected = history.conversations.filter((c) => !c.closed).at(-1)?.id;
+  render();
+  clearTimeout(timer);
+  if (history.requests.some(active))
+    timer = setTimeout(() => refresh().catch((e) => notice(e.message)), 600);
+}
+function view(name) {
+  $("chat-view").hidden = name !== "chat";
+  $("connect-view").hidden = name !== "connect";
+  $("chat-tab").setAttribute("aria-pressed", String(name === "chat"));
+  $("connect-tab").setAttribute("aria-pressed", String(name === "connect"));
+  document.title = "ANIMA · " + (name === "chat" ? "Chat" : "Connect");
+}
+function render() {
+  const previous = $("account").value;
+  $("account").replaceChildren(
+    ...accounts.map((a) => {
+      const n = element("option", names[a.service] || a.service);
+      n.value = a.account;
+      n.disabled = !a.available;
+      return n;
+    }),
+  );
+  const conversation = history.conversations.find((c) => c.id === selected);
+  const current =
+    accounts.find((a) => a.account === (conversation?.account || previous)) ||
+    accounts.find((a) => a.available) ||
+    accounts[0];
+  if (current) $("account").value = current.account;
+  $("account").disabled = !!conversation;
+  $("chat-title").textContent = conversation
+    ? names[conversation.service] || conversation.service
+    : "A new conversation";
+  $("history").replaceChildren(
+    ...history.conversations
+      .filter((c) => !c.closed)
+      .reverse()
+      .map((c) => {
+        const b = button(names[c.service] || c.service, async () => {
+          selected = c.id;
+          view("chat");
+          render();
+        });
+        b.className = "history-item";
+        b.setAttribute("aria-current", String(c.id === selected));
+        b.append(element("small", new Date(c.createdAt).toLocaleDateString()));
+        return b;
+      }),
+  );
+  const requests = history.requests.filter(
+    (r) => r.conversationId === selected,
+  );
+  if (requests.length)
+    $("transcript").replaceChildren(
+      ...requests.map((r) => {
+        const m = element("article", undefined, "message");
+        m.append(
+          element("div", names[r.audit.service] || r.audit.service, "meta"),
+        );
+        if (prompts.has(r.retryKey))
+          m.append(element("div", prompts.get(r.retryKey), "prompt"));
+        if (r.answer !== undefined)
+          m.append(element("div", r.answer, "answer"));
+        m.append(
+          element(
+            "div",
+            r.state === "unknown_submission"
+              ? "Submission uncertain. Check for a late answer; do not resend."
+              : r.state.replaceAll("_", " "),
+            "request-status",
+          ),
+        );
+        return m;
+      }),
+    );
+  else {
+    const empty = element("div", undefined, "empty");
+    empty.append(
+      element("span", "✳", "spark"),
+      element("h2", "Where shall we begin?"),
+      element(
+        "p",
+        "Choose a verified account and send a message. Connect manages login and account verification.",
+      ),
+    );
+    $("transcript").replaceChildren(empty);
+  }
+  const latest = requests.at(-1),
+    busy = !!latest && active(latest),
+    uncertain = !!latest && latest.state === "unknown_submission";
+  $("send").disabled =
+    pending ||
+    busy ||
+    uncertain ||
+    !current?.available ||
+    !!conversation?.blocked ||
+    !!conversation?.closed;
+  $("message").disabled = busy || uncertain || !current?.available;
+  $("cancel").hidden = !busy;
+  $("cancel").onclick = () => actRequest(latest, "cancel");
+  $("reconcile").hidden = !uncertain;
+  $("reconcile").onclick = () => actRequest(latest, "reconcile");
+  $("send-state").textContent = uncertain
+    ? "Readback only. Sending is blocked."
+    : busy
+      ? "Waiting for the chatbot…"
+      : !current?.available
+        ? "Connect and validate this account first."
+        : "Only sends when you choose Send.";
+  renderAccounts();
+}
+async function actRequest(request, action) {
+  try {
+    await api("requests/" + request.id + "/" + action, {});
+    await refresh();
+  } catch (e) {
+    notice(e.message);
+  }
+}
+function renderAccounts() {
+  // Preserve open forms and typed challenges across polling; update them only after a Connect action.
+  const signature = JSON.stringify(accounts);
+  if ($("accounts").dataset.signature === signature) return;
+  $("accounts").dataset.signature = signature;
+  $("accounts").replaceChildren(
+    ...accounts.map((a) => {
+      const row = element("section", undefined, "account-row");
+      row.dataset.account = a.account;
+      const identity = element("div");
+      identity.append(element("h2", names[a.service] || a.service));
+      identity.append(
+        element(
+          "span",
+          a.available
+            ? "Verified"
+            : a.reason === "maintenance"
+              ? "Login or validation in progress"
+              : "Unverified",
+          a.available ? "badge ready" : "badge",
+        ),
+      );
+      const controls = element("div", undefined, "account-actions");
+      controls.append(
+        button("Open login", async () => {
+          await api("accounts/" + a.account + "/login", {});
+          notice(
+            "Complete login in the browser window on the host, then choose Finish login.",
+          );
+          await refresh();
+        }),
+        button("Finish login", async () => {
+          await api("accounts/" + a.account + "/finish-login", {});
+          notice(
+            "Login window closed. Choose validation when you are ready to send a public challenge.",
+          );
+          await refresh();
+        }),
+      );
+      const details = element("details"),
+        summary = element("summary", "Validate account");
+      const form = element("form"),
+        label = element("label", "Public challenge"),
+        input = element("input");
+      input.required = true;
+      input.minLength = 16;
+      input.maxLength = 15000;
+      input.id = "challenge-" + a.account;
+      label.htmlFor = input.id;
+      const tierLabel = element("label", "Declared plan"),
+        tier = element("input");
+      tier.required = true;
+      tier.maxLength = 80;
+      tier.id = "tier-" + a.account;
+      tierLabel.htmlFor = tier.id;
+      tier.placeholder = "e.g. Free, Plus, Pro";
+      const submit = element("button", "Send validation challenge", "primary");
+      submit.type = "submit";
+      form.append(
+        label,
+        input,
+        tierLabel,
+        tier,
+        element(
+          "p",
+          "This sends your public challenge with a unique nonce. Success verifies this adapter version for this service; no password is sent through this page.",
+        ),
+        submit,
+      );
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        submit.disabled = true;
+        try {
+          notice("Validation is running. Do not send again.");
+          await api("accounts/" + a.account + "/validate", {
+            prompt: input.value,
+            planTier: tier.value,
+          });
+          notice("Validation completed. Account is ready.");
+          await refresh();
+        } catch (error) {
+          notice(error.message);
+        } finally {
+          submit.disabled = false;
+        }
+      };
+      details.append(summary, form);
+      row.append(identity, controls, details);
+      return row;
+    }),
+  );
+}
+$("login-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const token = $("token").value;
+  $("token").value = "";
+  try {
+    await api("login", { token });
+    await enter();
+  } catch (error) {
+    $("login-error").textContent = error.message;
+  }
+};
+async function enter() {
+  const session = await api("session");
+  csrf = session.csrf;
+  $("unlock").hidden = true;
+  $("workspace").hidden = false;
+  $("login-error").textContent = "";
+  await refresh();
+}
+$("logout").onclick = async () => {
+  try {
+    await api("logout", {});
+    lock();
+  } catch (e) {
+    notice(e.message);
+  }
+};
+$("chat-tab").onclick = () => view("chat");
+$("connect-tab").onclick = () => view("connect");
+$("new-chat").onclick = () => {
+  selected = undefined;
+  $("message").value = "";
+  render();
+};
+$("account").onchange = () => {
+  const account = accounts.find((a) => a.account === $("account").value);
+  $("send").disabled = !account?.available;
+  $("message").disabled = !account?.available;
+};
+$("compose").onsubmit = async (e) => {
+  e.preventDefault();
+  if (pending || $("send").disabled) return;
+  const prompt = $("message").value;
+  if (!prompt.trim()) return;
+  const retryKey =
+    crypto.randomUUID?.() ??
+    Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  pending = true;
+  notice("");
+  $("send").disabled = true;
+  try {
+    if (!selected) {
+      const c = await api("conversations", { account: $("account").value });
+      selected = c.id;
+    }
+    prompts.set(retryKey, prompt);
+    try {
+      await api("send", { conversationId: selected, retryKey, prompt });
+    } catch (error) {
+      // A lost response can follow an accepted send. Read durable state; never replay automatically.
+      const recovered = await api("history");
+      if (!recovered.requests.some((r) => r.retryKey === retryKey)) throw error;
+      notice("Recovered the accepted request. No duplicate was sent.");
+    }
+    $("message").value = "";
+    await refresh();
+  } catch (error) {
+    notice(error.message + " No automatic retry.");
+  } finally {
+    pending = false;
+    render();
+  }
+};
+enter().catch(() => lock());

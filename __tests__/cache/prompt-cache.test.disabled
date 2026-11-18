@@ -1,0 +1,95 @@
+/**
+ * PromptCache — TDD tests
+ * Static prefix caching with layer hash tracking.
+ */
+
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
+
+let db: Database;
+let PromptCache: any;
+let cache: any;
+
+beforeAll(async () => {
+  db = new Database(":memory:");
+  const mod = await import("../../src/memory/prompt-cache");
+  PromptCache = mod.PromptCache;
+  cache = new PromptCache(db);
+});
+
+afterAll(() => db?.close());
+
+describe("PromptCache — Layer Hashing", () => {
+  test("same content produces same hash", () => {
+    const h1 = cache.hashLayer("hello world");
+    const h2 = cache.hashLayer("hello world");
+    expect(h1).toBe(h2);
+  });
+
+  test("different content produces different hash", () => {
+    const h1 = cache.hashLayer("hello");
+    const h2 = cache.hashLayer("world");
+    expect(h1).not.toBe(h2);
+  });
+
+  test("hash is stable across calls", () => {
+    const content = "SOUL.md: I am Bruno. Identity layer.";
+    const h1 = cache.hashLayer(content);
+    const h2 = cache.hashLayer(content);
+    const h3 = cache.hashLayer(content);
+    expect(h1).toBe(h2);
+    expect(h2).toBe(h3);
+  });
+});
+
+describe("PromptCache — Store & Check", () => {
+  test("isCached returns false for unknown content", () => {
+    expect(cache.isCached("sess-1", "soul", "abc123")).toBe(false);
+  });
+
+  test("store then isCached returns true", () => {
+    cache.store("sess-1", "soul", "abc123", "SOUL content here");
+    expect(cache.isCached("sess-1", "soul", "abc123")).toBe(true);
+  });
+
+  test("different session with same hash is not cached", () => {
+    cache.store("sess-1", "soul", "xyz789", "content");
+    expect(cache.isCached("sess-2", "soul", "xyz789")).toBe(false);
+  });
+
+  test("different layer with same hash is not cached", () => {
+    cache.store("sess-1", "soul", "hash123", "soul content");
+    expect(cache.isCached("sess-1", "cartridge", "hash123")).toBe(false);
+  });
+});
+
+describe("PromptCache — Layer Cache Hit", () => {
+  test("getCacheHit returns stored content for matching hash", () => {
+    cache.store("sess-h", "soul", "hit123", "cached soul content");
+    const result = cache.getCacheHit("sess-h", "soul", "hit123");
+    expect(result).toBeDefined();
+  });
+
+  test("getCacheHit returns null for mismatched hash", () => {
+    cache.store("sess-h", "soul", "hit456", "content");
+    expect(cache.getCacheHit("sess-h", "soul", "wrong-hash")).toBeNull();
+  });
+});
+
+describe("PromptCache — Layer Management", () => {
+  test("invalidateLayer removes all cache for a layer across sessions", () => {
+    cache.store("s1", "cartridge", "c1", "cart v1");
+    cache.store("s2", "cartridge", "c2", "cart v1");
+    cache.invalidateLayer("cartridge");
+    expect(cache.isCached("s1", "cartridge", "c1")).toBe(false);
+    expect(cache.isCached("s2", "cartridge", "c2")).toBe(false);
+  });
+
+  test("invalidateSession removes all cache for a session", () => {
+    cache.store("clean-me", "soul", "s1", "soul");
+    cache.store("clean-me", "cartridge", "c1", "cart");
+    cache.invalidateSession("clean-me");
+    expect(cache.isCached("clean-me", "soul", "s1")).toBe(false);
+    expect(cache.isCached("clean-me", "cartridge", "c1")).toBe(false);
+  });
+});

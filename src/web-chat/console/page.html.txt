@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ANIMA · Chat</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/console.css" />
+    <script src="/console.js" defer></script>
+  </head>
+  <body>
+    <section id="unlock" class="unlock">
+      <div class="wordmark">ANIMA<span>WEB CHAT</span></div>
+      <h1>Your chat workspace.</h1>
+      <p>
+        Unlock this console with the token from the private
+        <code>operator-token</code> file on your host.
+      </p>
+      <form id="login-form">
+        <label for="token">Console token</label
+        ><input id="token" type="password" autocomplete="off" required /><button
+          type="submit"
+          class="primary"
+        >
+          Unlock console
+        </button>
+      </form>
+      <p id="login-error" role="alert"></p>
+    </section>
+    <div id="workspace" hidden>
+      <header>
+        <div class="wordmark">ANIMA<span>WEB CHAT</span></div>
+        <nav aria-label="Workspace">
+          <button id="chat-tab" aria-pressed="true">Chat</button
+          ><button id="connect-tab" aria-pressed="false">Connect</button>
+        </nav>
+        <button id="logout" class="quiet">Lock console</button>
+      </header>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <main id="chat-view">
+        <aside>
+          <div class="sidebar-title">
+            CONVERSATIONS<button id="new-chat" aria-label="New conversation">
+              +
+            </button>
+          </div>
+          <div id="history"></div>
+          <p class="aside-note">
+            Chat history stays in this console session. Message text is not
+            saved in your browser.
+          </p>
+        </aside>
+        <section class="chat-workspace">
+          <div class="chat-heading">
+            <div>
+              <p class="eyebrow">WORKSPACE</p>
+              <h1 id="chat-title">A new conversation</h1>
+            </div>
+            <label class="account-label" for="account"
+              >Account<select id="account"></select
+            ></label>
+          </div>
+          <div id="transcript" aria-live="polite">
+            <div class="empty">
+              <span class="spark">✳</span>
+              <h2>Where shall we begin?</h2>
+              <p>
+                Choose a verified account and send a message.<br />Connect
+                manages login and account verification.
+              </p>
+            </div>
+          </div>
+          <form id="compose">
+            <label for="message">Message</label
+            ><textarea
+              id="message"
+              rows="3"
+              placeholder="Write a message…"
+              maxlength="16000"
+              required
+            ></textarea>
+            <div class="compose-footer">
+              <span id="send-state">Only sends when you choose Send.</span>
+              <div>
+                <button id="cancel" type="button" hidden>Cancel request</button
+                ><button id="reconcile" type="button" hidden>
+                  Check late answer</button
+                ><button id="send" class="primary" type="submit">
+                  Send <span aria-hidden="true">↗</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      </main>
+      <main id="connect-view" hidden>
+        <div class="connect-heading">
+          <p class="eyebrow">ACCOUNTS</p>
+          <h1>Connect your chatbots.</h1>
+          <p>
+            Sign in directly in a browser window on the host. Your session stays
+            in its dedicated profile.
+          </p>
+        </div>
+        <div id="accounts"></div>
+        <p class="connect-footnote">
+          Login does not verify an adapter. Validation sends one public
+          challenge only when you choose it. If you opened this console from
+          another device, complete login on the host computer.
+        </p>
+      </main>
+    </div>
+  </body>
+</html>

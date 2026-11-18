@@ -1,0 +1,21 @@
+[Unit]
+Description=ANIMA — Multi-Agent Colony Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.anima/anima.env
+WorkingDirectory=%h/.anima
+ExecStart=%h/.bun/bin/bun run dist/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.anima/logs/server.log
+StandardError=append:%h/.anima/logs/server.log
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

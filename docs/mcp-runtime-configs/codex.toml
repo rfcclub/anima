@@ -1,0 +1,7 @@
+[mcp_servers.mesh]
+command = "colony-mesh"
+args = []
+
+[mcp_servers.mesh.env]
+MESH_INSTANCE_ID = "agent-a"
+MESH_PLATFORM = "codex"

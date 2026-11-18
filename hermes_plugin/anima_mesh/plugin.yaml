@@ -1,0 +1,16 @@
+name: anima-mesh
+version: 2.0.0
+description: Colony mesh bus v2 for Hermes — unified agent-to-agent messaging with claim/ack semantics. Shared with CC, OC, ANIMA, Codex, Gemini, Qwen, Antigravity, Reasonix.
+author: ANIMA contributors
+provides_tools:
+  - mesh_send
+  - mesh_peek
+  - mesh_pull
+  - mesh_ack
+  - mesh_status
+  - mesh_thread
+  - mesh_subscribe
+  - mesh_unsubscribe
+  - mesh_register_recipient
+  - mesh_unregister_recipient
+dependencies: []

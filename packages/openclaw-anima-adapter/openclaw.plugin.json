@@ -1,0 +1,58 @@
+{
+  "id": "@anima/openclaw-adapter",
+  "name": "Anima Context Engine Adapter",
+  "version": "0.1.0",
+  "description": "Anima context engine adapter — wraps @anima/context-engine (DAG compaction) and AnimaMemoryStore (shared per-agent SQLite memory). Activate per-agent with contextEngine: 'anima'. Coexists with lossless-claw.",
+  "author": "Bruno",
+  "kind": "context-engine",
+  "minHostVersion": "2026.5.30",
+  "contracts": {
+    "tools": [
+      "lcm_grep", "lcm_describe", "lcm_expand",
+      "anima_remember", "anima_recall", "anima_forget",
+      "anima_bootstrap", "anima_update", "anima_memory_list",
+      "anima_stats", "anima_diagnose", "anima_agent_status",
+      "anima_triple_add", "anima_triple_query",
+      "anima_scratchpad_write", "anima_scratchpad_read", "anima_scratchpad_clear",
+      "anima_export", "anima_import", "anima_invalidate",
+      "anima_context_search", "anima_sleep",
+      "anima_context_describe", "anima_context_expand", "anima_tool_list",
+      "anima_debug_context", "anima_debug_reset_context"
+    ]
+  },
+  "entry": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "agents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Agent allowlist. If set, ONLY these agents use the adapter. If empty/omitted, any agent with contextEngine: 'anima' is opted in."
+      },
+      "geminiApiKey": {
+        "type": "string",
+        "description": "Gemini API key for vector embeddings. Falls back to GEMINI_API_KEY env var."
+      },
+      "compactionConfig": {
+        "type": "object",
+        "description": "Compaction engine tuning parameters",
+        "properties": {
+          "leafChunkTokens": { "type": "integer", "default": 20000 },
+          "condensedMinFanout": { "type": "integer", "default": 4 },
+          "condensedMinFanoutHard": { "type": "integer", "default": 2 },
+          "leafTargetTokens": { "type": "integer", "default": 2400 },
+          "condensedTargetTokens": { "type": "integer", "default": 2000 },
+          "freshTailCount": { "type": "integer", "default": 64 },
+          "maxSweepIterations": { "type": "integer", "default": 12 },
+          "sweepDeadlineMs": { "type": "integer", "default": 120000 },
+          "maxRounds": { "type": "integer", "default": 10 },
+          "compactUntilUnderDeadlineMs": { "type": "integer", "default": 300000 }
+        }
+      }
+    }
+  }
+}

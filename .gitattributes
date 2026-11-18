@@ -1,0 +1,18 @@
+# Generated artifacts are ignored/untracked. Keep their removal diffs bounded;
+# Git still identifies the complete old blob, available through git show.
+graphify-out/** -diff
+graphify-out/GRAPH_REPORT.md diff
+_archive/** -diff
+*.tsbuildinfo -diff
+*.bak* -diff
+*.tar.gz -diff
+state/** -diff
+.qwen-review-output.json -diff
+
+# Generated skill destinations are byte-checked against canonical skills/.
+/.agent/skills/openspec-*/SKILL.md -diff
+/.claude/skills/openspec-*/SKILL.md -diff
+/.codex/skills/openspec-*/SKILL.md -diff
+/.factory/skills/openspec-*/SKILL.md -diff
+/.gemini/skills/openspec-*/SKILL.md -diff
+/.qwen/skills/openspec-*/SKILL.md -diff

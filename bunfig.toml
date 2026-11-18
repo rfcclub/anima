@@ -1,0 +1,6 @@
+[install]
+# Keep root/package test and TypeScript tooling on the existing shared layout.
+linker = "hoisted"
+
+[test]
+exclude = ["_archive", "node_modules", ".anima"]

@@ -1,0 +1,19 @@
+{
+  "id": "@anima/openclaw-adapter-bruno",
+  "name": "Bruno's Anima Adapter",
+  "version": "0.1.0",
+  "description": "OpenClaw adapter that connects to an bruno-entity shared memory DB",
+  "author": "Bruno",
+  "kind": "context-engine",
+  "minHostVersion": "2026.5.30",
+  "entry": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      }
+    }
+  }
+}

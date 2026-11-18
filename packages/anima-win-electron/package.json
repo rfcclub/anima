@@ -1,0 +1,62 @@
+{
+  "name": "anima-win-electron",
+  "version": "0.1.0",
+  "description": "ANIMA native desktop client (Electron, API-first)",
+  "main": "./out/main/index.js",
+  "author": "ANIMA",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "test": "bun test",
+    "build:win": "electron-vite build && USE_SYSTEM_MAKENSIS=true electron-builder --win",
+    "build:mac": "electron-vite build && electron-builder --mac"
+  },
+  "trustedDependencies": [
+    "electron",
+    "electron-builder",
+    "electron-winstaller",
+    "esbuild"
+  ],
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "bun-types": "^1.3.0",
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-vite": "^4.0.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.anima.winclient",
+    "productName": "ANIMA",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

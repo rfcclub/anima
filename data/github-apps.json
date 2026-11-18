@@ -1,0 +1,18 @@
+{
+  "abel": { "appId": 5204962, "slug": "abel-gotako" },
+  "bruno": { "appId": 5192386, "slug": "bruno-gotako" },
+  "cleo": { "appId": 5204963, "slug": "cleo-gotako" },
+  "dana": { "appId": 5204965, "slug": "dana-gotako" },
+  "eli": { "appId": 5189150, "slug": "eli-agora-bot" },
+  "finn": { "appId": 5204721, "slug": "finn-gotako" },
+  "gus": { "appId": 5204966, "slug": "gus-gotako" },
+  "hana": { "appId": 5205354, "slug": "hana-gotako" },
+  "ivan": { "appId": 5205359, "slug": "ivan-gotako" },
+  "kai": { "appId": 5205385, "slug": "kai-gotako" },
+  "lena": { "appId": 5205388, "slug": "lena-gotako" },
+  "milo": { "appId": 5205402, "slug": "milo-gotako" },
+  "nora": { "appId": 5205408, "slug": "nora-gotako" },
+  "pia": { "appId": 5205421, "slug": "pia-gotako" },
+  "rhea": { "appId": 5205424, "slug": "rhea-gotako" },
+  "sam": { "appId": 5205429, "slug": "sam-gotako" }
+}

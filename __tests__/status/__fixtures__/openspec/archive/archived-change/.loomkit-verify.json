@@ -1,0 +1,8 @@
+{
+  "gate": "pass",
+  "change": "archived-change",
+  "specScenarios": ["SC-001"],
+  "testResults": {
+    "test/archived.test.ts": { "passed": 1, "failed": 0, "scenarios": ["SC-001"] }
+  }
+}

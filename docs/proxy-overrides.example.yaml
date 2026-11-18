@@ -1,0 +1,29 @@
+# ANIMA Proxy Model Overrides
+# Path: ~/.config/anima/proxy-overrides.yaml
+# Env override: ANIMA_PROXY_OVERRIDES=/path/to/file.yaml
+#
+# Redirects model names to alternate providers.
+# Override resolution runs before registry lookup.
+
+providers:
+  # Inline provider definition (if not already in providers.d/)
+  altprov:
+    baseUrl: https://api.provider.example
+    apiKey: ${ALTPROV_API_KEY}
+    api: anthropic-messages
+
+overrides:
+  # Redirect any claude-sonnet requests to altprov
+  - match: claude-sonnet-4-6
+    provider: altprov
+    model: example-model-large
+
+  # Wildcard: catch all unmatched models (use "*" as match)
+  # - match: "*"
+  #   provider: altprov
+  #   model: example-model-large
+
+  # Reference an existing ANIMA provider by ID (from providers.d/)
+  # - match: claude-haiku-4-5
+  #   provider: otherprov
+  #   model: example-model-fast

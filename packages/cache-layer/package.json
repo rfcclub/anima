@@ -1,0 +1,23 @@
+{
+  "name": "@anima/cache-layer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./anthropic": "./dist/anthropic/index.js",
+    "./openai": "./dist/openai/index.js",
+    "./shared": "./dist/shared/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}

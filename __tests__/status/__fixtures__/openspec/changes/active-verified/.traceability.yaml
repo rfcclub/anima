@@ -1,0 +1,7 @@
+scenarios:
+  SC-001:
+    test: test/verified.test.ts
+    status: pass
+  SC-002:
+    test: test/verified.test.ts
+    status: pass

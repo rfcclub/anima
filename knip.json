@@ -1,0 +1,39 @@
+{
+  "$schema": "https://unpkg.com/knip@6.43.0/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/{server,cli}.ts",
+        "src/ui/app/server.ts",
+        "src/ui/app/index.html",
+        "src/web-chat/{worker,browser-worker,cli}.ts",
+        "scripts/**/*.{ts,js,mjs}",
+        "__tests__/**/*.test.ts",
+        "src/scripts/**/*.ts",
+        "__tests__/**/fixtures/**/*.ts",
+        "src/continuity/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}",
+        "scripts/**/*.{ts,js,mjs}",
+        "__tests__/**/*.ts"
+      ]
+    },
+    "packages/*": {
+      "entry": [
+        "src/index.{ts,tsx}",
+        "src/{main,cli,server,worker}.ts",
+        "test/**/*.test.{ts,js}",
+        "__tests__/**/*.test.{ts,js}",
+        "tests/**/*.test.{ts,js}",
+        "*.config.{ts,js,mjs}"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx,js}",
+        "test/**/*.{ts,js}",
+        "tests/**/*.{ts,js}",
+        "__tests__/**/*.{ts,js}"
+      ]
+    }
+  }
+}

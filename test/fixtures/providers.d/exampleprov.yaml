@@ -1,0 +1,17 @@
+id: exampleprov
+label: "Nahcrof"
+baseUrl: https://provider.example/v1
+api: openai-completions
+endpoint: /chat/completions
+apiKey: exampleprov_test_key
+headers:
+  X-Test: registry
+extraParams:
+  kwerk_reasoning: true
+models:
+  - id: glm-5.1
+    label: "GLM 5.1"
+    extraParams:
+      thinking: enabled
+  - id: kimi-k2p6
+    label: "Kimi K2.6"

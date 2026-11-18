@@ -1,0 +1,4 @@
+{
+  "phrases": ["example-private-topic", "\\bexample-abbrev\\b"],
+  "words": ["example-word", "two\\s+word\\s+term"]
+}

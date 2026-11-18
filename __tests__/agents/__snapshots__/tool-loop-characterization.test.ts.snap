@@ -1,0 +1,3642 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TC run/no-tools: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+  ],
+  "messageCounts": [
+    1,
+  ],
+  "queries": 1,
+  "result": {
+    "message": {
+      "content": "finished",
+      "role": "assistant",
+    },
+  },
+  "scenario": "no-tools",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "run",
+}
+`;
+
+exports[`TC run/multi: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"one.txt"}",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "1	one",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+  ],
+  "messageCounts": [
+    1,
+    4,
+  ],
+  "queries": 2,
+  "result": {
+    "message": {
+      "content": "finished",
+      "role": "assistant",
+    },
+  },
+  "scenario": "multi",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "run",
+}
+`;
+
+exports[`TC run/error: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"missing.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c3",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: could not parse tool arguments: {",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "Error: ENOENT: no such file or directory, open '<root>/room/missing.txt'",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c3",
+    },
+  ],
+  "messageCounts": [
+    1,
+    5,
+  ],
+  "queries": 2,
+  "result": {
+    "message": {
+      "content": "finished",
+      "role": "assistant",
+    },
+  },
+  "scenario": "error",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "run",
+}
+`;
+
+exports[`TC run/limit: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": "tool loop exceeded 64 iterations",
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": "64",
+  "lastMessages": [
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"62"}",
+            "name": "write",
+          },
+          "id": "c62",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c62",
+    },
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"63"}",
+            "name": "write",
+          },
+          "id": "c63",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c63",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    31,
+    33,
+    35,
+    37,
+    39,
+    41,
+    43,
+    45,
+    47,
+    49,
+    51,
+    53,
+    55,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
+    79,
+    81,
+    83,
+    85,
+    87,
+    89,
+    91,
+    93,
+    95,
+    97,
+    99,
+    101,
+    103,
+    105,
+    107,
+    109,
+    111,
+    113,
+    115,
+    117,
+    119,
+    121,
+    123,
+    125,
+    127,
+  ],
+  "queries": 64,
+  "result": null,
+  "scenario": "limit",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "run",
+}
+`;
+
+exports[`TC run/guard: unauthorized tool refused by auto guard 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+            "name": "write",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: tool blocked — tool 'write' not in allowedTools for this agent",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+  ],
+  "queries": 2,
+  "result": {
+    "message": {
+      "content": "finished",
+      "role": "assistant",
+    },
+  },
+  "scenario": "guard",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "run",
+}
+`;
+
+exports[`TC stream-response/no-tools: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+  ],
+  "messageCounts": [
+    1,
+  ],
+  "queries": 1,
+  "result": null,
+  "scenario": "no-tools",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-response",
+}
+`;
+
+exports[`TC stream-response/multi: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"one.txt"}",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"one.txt"}",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "1	one",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+  ],
+  "messageCounts": [
+    1,
+    4,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "multi",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-response",
+}
+`;
+
+exports[`TC stream-response/error: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"missing.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c3",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"missing.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c3",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: could not parse tool arguments: {",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "Error: ENOENT: no such file or directory, open '<root>/room/missing.txt'",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c3",
+    },
+  ],
+  "messageCounts": [
+    1,
+    5,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "error",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-response",
+}
+`;
+
+exports[`TC stream-response/limit: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"1"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"2"}",
+        "id": "c2",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"3"}",
+        "id": "c3",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"4"}",
+        "id": "c4",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"5"}",
+        "id": "c5",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"6"}",
+        "id": "c6",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"7"}",
+        "id": "c7",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"8"}",
+        "id": "c8",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"9"}",
+        "id": "c9",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"10"}",
+        "id": "c10",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"11"}",
+        "id": "c11",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"12"}",
+        "id": "c12",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"13"}",
+        "id": "c13",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"14"}",
+        "id": "c14",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"15"}",
+        "id": "c15",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"16"}",
+        "id": "c16",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"17"}",
+        "id": "c17",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"18"}",
+        "id": "c18",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"19"}",
+        "id": "c19",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"20"}",
+        "id": "c20",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"21"}",
+        "id": "c21",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"22"}",
+        "id": "c22",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"23"}",
+        "id": "c23",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"24"}",
+        "id": "c24",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"25"}",
+        "id": "c25",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"26"}",
+        "id": "c26",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"27"}",
+        "id": "c27",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"28"}",
+        "id": "c28",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"29"}",
+        "id": "c29",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"30"}",
+        "id": "c30",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"31"}",
+        "id": "c31",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"32"}",
+        "id": "c32",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"33"}",
+        "id": "c33",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"34"}",
+        "id": "c34",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"35"}",
+        "id": "c35",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"36"}",
+        "id": "c36",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"37"}",
+        "id": "c37",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"38"}",
+        "id": "c38",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"39"}",
+        "id": "c39",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"40"}",
+        "id": "c40",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"41"}",
+        "id": "c41",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"42"}",
+        "id": "c42",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"43"}",
+        "id": "c43",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"44"}",
+        "id": "c44",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"45"}",
+        "id": "c45",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"46"}",
+        "id": "c46",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"47"}",
+        "id": "c47",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"48"}",
+        "id": "c48",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"49"}",
+        "id": "c49",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"50"}",
+        "id": "c50",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"51"}",
+        "id": "c51",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"52"}",
+        "id": "c52",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"53"}",
+        "id": "c53",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"54"}",
+        "id": "c54",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"55"}",
+        "id": "c55",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"56"}",
+        "id": "c56",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"57"}",
+        "id": "c57",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"58"}",
+        "id": "c58",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"59"}",
+        "id": "c59",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"60"}",
+        "id": "c60",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"61"}",
+        "id": "c61",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"62"}",
+        "id": "c62",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"63"}",
+        "id": "c63",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"64"}",
+        "id": "c64",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": "64",
+  "lastMessages": [
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"62"}",
+            "name": "write",
+          },
+          "id": "c62",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c62",
+    },
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"63"}",
+            "name": "write",
+          },
+          "id": "c63",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c63",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    31,
+    33,
+    35,
+    37,
+    39,
+    41,
+    43,
+    45,
+    47,
+    49,
+    51,
+    53,
+    55,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
+    79,
+    81,
+    83,
+    85,
+    87,
+    89,
+    91,
+    93,
+    95,
+    97,
+    99,
+    101,
+    103,
+    105,
+    107,
+    109,
+    111,
+    113,
+    115,
+    117,
+    119,
+    121,
+    123,
+    125,
+    127,
+  ],
+  "queries": 64,
+  "result": null,
+  "scenario": "limit",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-response",
+}
+`;
+
+exports[`TC stream-response/guard: unauthorized tool refused by auto guard 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+            "name": "write",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: tool blocked — tool 'write' not in allowedTools for this agent",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "guard",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-response",
+}
+`;
+
+exports[`TC stream-native/no-tools: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+  ],
+  "messageCounts": [
+    1,
+  ],
+  "queries": 1,
+  "result": null,
+  "scenario": "no-tools",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-native",
+}
+`;
+
+exports[`TC stream-native/multi: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"one.txt"}",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"one.txt"}",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"one.txt"}",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "1	one",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+  ],
+  "messageCounts": [
+    1,
+    4,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "multi",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-native",
+}
+`;
+
+exports[`TC stream-native/error: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"missing.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c3",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{",
+        "id": "c1",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"missing.txt"}",
+        "id": "c2",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"two.txt"}",
+        "id": "c3",
+        "name": "read",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"missing.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c3",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: could not parse tool arguments: {",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "Error: ENOENT: no such file or directory, open '<root>/room/missing.txt'",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c3",
+    },
+  ],
+  "messageCounts": [
+    1,
+    5,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "error",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-native",
+}
+`;
+
+exports[`TC stream-native/limit: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"1"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"1"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"2"}",
+        "id": "c2",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"2"}",
+        "id": "c2",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"3"}",
+        "id": "c3",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"3"}",
+        "id": "c3",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"4"}",
+        "id": "c4",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"4"}",
+        "id": "c4",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"5"}",
+        "id": "c5",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"5"}",
+        "id": "c5",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"6"}",
+        "id": "c6",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"6"}",
+        "id": "c6",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"7"}",
+        "id": "c7",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"7"}",
+        "id": "c7",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"8"}",
+        "id": "c8",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"8"}",
+        "id": "c8",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"9"}",
+        "id": "c9",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"9"}",
+        "id": "c9",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"10"}",
+        "id": "c10",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"10"}",
+        "id": "c10",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"11"}",
+        "id": "c11",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"11"}",
+        "id": "c11",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"12"}",
+        "id": "c12",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"12"}",
+        "id": "c12",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"13"}",
+        "id": "c13",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"13"}",
+        "id": "c13",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"14"}",
+        "id": "c14",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"14"}",
+        "id": "c14",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"15"}",
+        "id": "c15",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"15"}",
+        "id": "c15",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"16"}",
+        "id": "c16",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"16"}",
+        "id": "c16",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"17"}",
+        "id": "c17",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"17"}",
+        "id": "c17",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"18"}",
+        "id": "c18",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"18"}",
+        "id": "c18",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"19"}",
+        "id": "c19",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"19"}",
+        "id": "c19",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"20"}",
+        "id": "c20",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"20"}",
+        "id": "c20",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"21"}",
+        "id": "c21",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"21"}",
+        "id": "c21",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"22"}",
+        "id": "c22",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"22"}",
+        "id": "c22",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"23"}",
+        "id": "c23",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"23"}",
+        "id": "c23",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"24"}",
+        "id": "c24",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"24"}",
+        "id": "c24",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"25"}",
+        "id": "c25",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"25"}",
+        "id": "c25",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"26"}",
+        "id": "c26",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"26"}",
+        "id": "c26",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"27"}",
+        "id": "c27",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"27"}",
+        "id": "c27",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"28"}",
+        "id": "c28",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"28"}",
+        "id": "c28",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"29"}",
+        "id": "c29",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"29"}",
+        "id": "c29",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"30"}",
+        "id": "c30",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"30"}",
+        "id": "c30",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"31"}",
+        "id": "c31",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"31"}",
+        "id": "c31",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"32"}",
+        "id": "c32",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"32"}",
+        "id": "c32",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"33"}",
+        "id": "c33",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"33"}",
+        "id": "c33",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"34"}",
+        "id": "c34",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"34"}",
+        "id": "c34",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"35"}",
+        "id": "c35",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"35"}",
+        "id": "c35",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"36"}",
+        "id": "c36",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"36"}",
+        "id": "c36",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"37"}",
+        "id": "c37",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"37"}",
+        "id": "c37",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"38"}",
+        "id": "c38",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"38"}",
+        "id": "c38",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"39"}",
+        "id": "c39",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"39"}",
+        "id": "c39",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"40"}",
+        "id": "c40",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"40"}",
+        "id": "c40",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"41"}",
+        "id": "c41",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"41"}",
+        "id": "c41",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"42"}",
+        "id": "c42",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"42"}",
+        "id": "c42",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"43"}",
+        "id": "c43",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"43"}",
+        "id": "c43",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"44"}",
+        "id": "c44",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"44"}",
+        "id": "c44",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"45"}",
+        "id": "c45",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"45"}",
+        "id": "c45",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"46"}",
+        "id": "c46",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"46"}",
+        "id": "c46",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"47"}",
+        "id": "c47",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"47"}",
+        "id": "c47",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"48"}",
+        "id": "c48",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"48"}",
+        "id": "c48",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"49"}",
+        "id": "c49",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"49"}",
+        "id": "c49",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"50"}",
+        "id": "c50",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"50"}",
+        "id": "c50",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"51"}",
+        "id": "c51",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"51"}",
+        "id": "c51",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"52"}",
+        "id": "c52",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"52"}",
+        "id": "c52",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"53"}",
+        "id": "c53",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"53"}",
+        "id": "c53",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"54"}",
+        "id": "c54",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"54"}",
+        "id": "c54",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"55"}",
+        "id": "c55",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"55"}",
+        "id": "c55",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"56"}",
+        "id": "c56",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"56"}",
+        "id": "c56",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"57"}",
+        "id": "c57",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"57"}",
+        "id": "c57",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"58"}",
+        "id": "c58",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"58"}",
+        "id": "c58",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"59"}",
+        "id": "c59",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"59"}",
+        "id": "c59",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"60"}",
+        "id": "c60",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"60"}",
+        "id": "c60",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"61"}",
+        "id": "c61",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"61"}",
+        "id": "c61",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"62"}",
+        "id": "c62",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"62"}",
+        "id": "c62",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"63"}",
+        "id": "c63",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"63"}",
+        "id": "c63",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "still working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"64"}",
+        "id": "c64",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"iteration.txt","content":"64"}",
+        "id": "c64",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": "64",
+  "lastMessages": [
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"62"}",
+            "name": "write",
+          },
+          "id": "c62",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c62",
+    },
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"63"}",
+            "name": "write",
+          },
+          "id": "c63",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c63",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    31,
+    33,
+    35,
+    37,
+    39,
+    41,
+    43,
+    45,
+    47,
+    49,
+    51,
+    53,
+    55,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
+    79,
+    81,
+    83,
+    85,
+    87,
+    89,
+    91,
+    93,
+    95,
+    97,
+    99,
+    101,
+    103,
+    105,
+    107,
+    109,
+    111,
+    113,
+    115,
+    117,
+    119,
+    121,
+    123,
+    125,
+    127,
+  ],
+  "queries": 64,
+  "result": null,
+  "scenario": "limit",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-native",
+}
+`;
+
+exports[`TC stream-native/guard: unauthorized tool refused by auto guard 1`] = `
+{
+  "chunks": [
+    {
+      "content": "working",
+      "type": "text",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "tool_call": {
+        "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+        "id": "c1",
+        "name": "write",
+      },
+      "type": "tool_call",
+    },
+    {
+      "content": "finished",
+      "type": "text",
+    },
+  ],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+            "name": "write",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: tool blocked — tool 'write' not in allowedTools for this agent",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "guard",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": "",
+  "surface": "stream-native",
+}
+`;
+
+exports[`TC cli/no-tools: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+  ],
+  "messageCounts": [
+    1,
+  ],
+  "queries": 1,
+  "result": null,
+  "scenario": "no-tools",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": 
+"finished
+"
+,
+  "surface": "cli",
+}
+`;
+
+exports[`TC cli/multi: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"one.txt"}",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "1	one",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+  ],
+  "messageCounts": [
+    1,
+    4,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "multi",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": 
+"finished
+"
+,
+  "surface": "cli",
+}
+`;
+
+exports[`TC cli/error: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{",
+            "name": "read",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"missing.txt"}",
+            "name": "read",
+          },
+          "id": "c2",
+          "type": "function",
+        },
+        {
+          "function": {
+            "arguments": "{"path":"two.txt"}",
+            "name": "read",
+          },
+          "id": "c3",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: could not parse tool arguments: {",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+    {
+      "content": "Error: ENOENT: no such file or directory, open '<root>/room/missing.txt'",
+      "role": "tool",
+      "tool_call_id": "c2",
+    },
+    {
+      "content": "1	two",
+      "role": "tool",
+      "tool_call_id": "c3",
+    },
+  ],
+  "messageCounts": [
+    1,
+    5,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "error",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": 
+"finished
+"
+,
+  "surface": "cli",
+}
+`;
+
+exports[`TC cli/limit: public entrypoint behavior before TurnRunner 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": "64",
+  "lastMessages": [
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"63"}",
+            "name": "write",
+          },
+          "id": "c63",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c63",
+    },
+    {
+      "content": "still working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"iteration.txt","content":"64"}",
+            "name": "write",
+          },
+          "id": "c64",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Written 2 chars to <root>/room/iteration.txt",
+      "role": "tool",
+      "tool_call_id": "c64",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    31,
+    33,
+    35,
+    37,
+    39,
+    41,
+    43,
+    45,
+    47,
+    49,
+    51,
+    53,
+    55,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
+    79,
+    81,
+    83,
+    85,
+    87,
+    89,
+    91,
+    93,
+    95,
+    97,
+    99,
+    101,
+    103,
+    105,
+    107,
+    109,
+    111,
+    113,
+    115,
+    117,
+    119,
+    121,
+    123,
+    125,
+    127,
+    129,
+  ],
+  "queries": 65,
+  "result": null,
+  "scenario": "limit",
+  "sentinelExists": false,
+  "stderr": "",
+  "stdout": 
+"still working
+"
+,
+  "surface": "cli",
+}
+`;
+
+exports[`TC cli/guard: unauthorized tool refused by auto guard 1`] = `
+{
+  "chunks": [],
+  "error": null,
+  "files": [
+    "one",
+    "two",
+  ],
+  "lastExecutedIteration": null,
+  "lastMessages": [
+    {
+      "content": "exercise tools",
+      "role": "user",
+    },
+    {
+      "content": "working",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{"path":"<root>/room/sentinel.txt","content":"must not be written"}",
+            "name": "write",
+          },
+          "id": "c1",
+          "type": "function",
+        },
+      ],
+    },
+    {
+      "content": "Error: tool blocked — tool 'write' not in allowedTools for this agent",
+      "role": "tool",
+      "tool_call_id": "c1",
+    },
+  ],
+  "messageCounts": [
+    1,
+    3,
+  ],
+  "queries": 2,
+  "result": null,
+  "scenario": "guard",
+  "sentinelExists": false,
+  "stderr": 
+"{"level":"info","ts":"<time>","msg":"auto execution complete","type":"auto_execution_complete","agent":"loop-fixture","sessionId":"<session>","tools":["write"],"count":1}
+"
+,
+  "stdout": 
+"finished
+"
+,
+  "surface": "cli",
+}
+`;

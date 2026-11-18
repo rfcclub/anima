@@ -1,0 +1,29 @@
+name: anima-memory
+version: 0.1.0
+description: Cross-platform per-agent memory for Hermes — SQLite with FTS5, hybrid search, and knowledge graph (19 tools). Shared with ANIMA, OpenClaw, and CLI.
+author: ANIMA contributors
+provides_tools:
+  - anima_remember
+  - anima_recall
+  - anima_stats
+  - anima_triple_add
+  - anima_triple_query
+  - anima_sleep
+  - anima_scratchpad_write
+  - anima_scratchpad_read
+  - anima_scratchpad_clear
+  - anima_invalidate
+  - anima_export
+  - anima_import
+  - anima_update
+  - anima_forget
+  - anima_diagnose
+  - anima_bootstrap
+  - anima_context_search
+  - anima_memory_list
+  - anima_agent_status
+provides_hooks:
+  - pre_llm_call
+  - on_session_start
+  - post_tool_call
+dependencies: []

@@ -1,0 +1,4 @@
+scenarios:
+  SC-001:
+    test: test/archived.test.ts
+    status: pass

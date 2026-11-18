@@ -1,0 +1,10 @@
+FROM rust:1-alpine AS build
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf
+RUN cargo install low --version 0.1.19 --locked --root /opt/low
+
+FROM alpine:3.22
+RUN apk add --no-cache python3 git ca-certificates libgcc openssl
+COPY --from=build /opt/low/bin/low /usr/local/bin/low
+COPY worker.py /opt/anima/worker.py
+RUN mkdir -p /run/anima && chown 1000:1000 /run/anima
+USER 1000:1000

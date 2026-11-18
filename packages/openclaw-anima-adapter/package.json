@@ -1,0 +1,26 @@
+{
+  "name": "@anima/openclaw-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw Anima Adapter \u2014 wraps @anima/context-engine and AnimaMemoryStore as an OpenClaw plugin",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@anima/context-engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

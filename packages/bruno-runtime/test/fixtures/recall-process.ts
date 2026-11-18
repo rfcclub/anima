@@ -1,0 +1,10 @@
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+const [root, query, ...sources] = process.argv.slice(2);
+if (!root || !isAbsolute(root) || homedir() !== root || process.env.ANIMA_HOME !== root) throw Error("fixture root forbidden before imports");
+if (["RECALL_FIXTURE_CANARY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN"].some((key) => process.env[key])) throw Error("inherited environment forbidden before imports");
+globalThis.fetch = Object.assign(async () => { throw Error("fixture network forbidden"); }, { preconnect: () => { throw Error("fixture network forbidden"); } });
+const { recall } = await import("../../src/recall-dispatcher");
+import type { RecallSource } from "../../src/recall-dispatcher";
+if (sources.some((source) => !["hive", "bruno_entity"].includes(source))) throw Error("invalid fixture source");
+console.log(JSON.stringify(await recall(query, { classifier: { classify: async () => sources as RecallSource[] } })));

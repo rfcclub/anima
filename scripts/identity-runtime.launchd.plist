@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.owner.identity-runtime</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>/Users/user/work/anima/packages/identity-runtime/src/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/user/work/anima</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ANIMA_CONTINUITY_URL</key>
+    <string>http://127.0.0.1:3700</string>
+    <key>IDENTITY_RUNTIME_HOST</key>
+    <string>127.0.0.1</string>
+    <key>IDENTITY_RUNTIME_PORT</key>
+    <string>13541</string>
+    <key>IDENTITY_RUNTIME_DB</key>
+    <string>/Users/user/.anima/identity-runtime/identity-runtime.db</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/user/.anima/logs/identity-runtime.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/user/.anima/logs/identity-runtime.log</string>
+</dict>
+</plist>

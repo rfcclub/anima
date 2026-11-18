@@ -1,0 +1,14 @@
+{
+  "autoMerge": ["src/**", "packages/**", "scripts/**", "__tests__/**"],
+  "humanOnly": [
+    ".github/**",
+    "**/intent.md",
+    "src/tools/policy-enforcer.ts",
+    "packages/identity-runtime/src/bruno-recall-policy.ts",
+    "scripts/anima.env",
+    "**/*.env*",
+    "**/*.pem",
+    "**/*secret*",
+    "**/*credential*"
+  ]
+}

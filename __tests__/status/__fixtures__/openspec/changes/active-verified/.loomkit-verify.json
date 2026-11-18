@@ -1,0 +1,9 @@
+{
+  "gate": "pass",
+  "change": "active-verified",
+  "specScenarios": ["SC-001", "SC-002"],
+  "manualScenarios": [],
+  "testResults": {
+    "test/verified.test.ts": { "passed": 2, "failed": 0, "scenarios": ["SC-001", "SC-002"] }
+  }
+}

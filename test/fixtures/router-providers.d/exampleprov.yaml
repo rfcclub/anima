@@ -1,0 +1,8 @@
+id: exampleprov
+label: "Nahcrof"
+baseUrl: https://provider.example/v1
+api: openai-completions
+apiKey: exampleprov_test_key
+models:
+  - id: glm-5.1
+  - id: kimi-k2p6

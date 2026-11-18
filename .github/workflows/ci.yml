@@ -1,0 +1,116 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+      options: --init
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare clean container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git openssh-client unzip lsof procps libstdc++6 sqlite3 jq python3 uuid-runtime
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Verify runtime pin and absent sibling
+        run: |
+          test "$(bun --version)" = "$(cat .bun-version)"
+          test ! -e ../colony-mesh
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.bun/install/cache/*
+            !~/.bun/install/cache/@G@*
+          key: bun-registry-v2-container-${{ runner.os }}-${{ hashFiles('.bun-version', 'bun.lock') }}
+      - name: Install frozen private dependency without lifecycle scripts
+        run: bash .github/scripts/install-dependencies.sh
+        env:
+          COLONY_MESH_DEPLOY_KEY: ${{ secrets.COLONY_MESH_DEPLOY_KEY }}
+      - name: Synchronize repository skills without dependency credentials
+        run: |
+          bash .github/scripts/pin-bun-runtime.sh "$(command -v bun)"
+          bun run skills:sync
+      - name: Typecheck clean-container installation
+        run: bun run typecheck
+  test:
+    needs: install
+    # Ubuntu24.04 AppArmor blocks user namespaces for downloaded Chromium.
+    # Keep the Chromium sandbox enabled on this supported hosted image.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare hosted Linux tools
+        run: |
+          test "$(id -u)" -ne 0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sqlite3 jq python3 uuid-runtime
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - name: Verify runtime pin and absent sibling
+        run: |
+          test "$(bun --version)" = "$(cat .bun-version)"
+          test ! -e ../colony-mesh
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.bun/install/cache/*
+            !~/.bun/install/cache/@G@*
+          key: bun-registry-v2-${{ runner.os }}-${{ hashFiles('.bun-version', 'bun.lock') }}
+      - name: Install frozen private dependency without lifecycle scripts
+        run: bash .github/scripts/install-dependencies.sh
+        env:
+          COLONY_MESH_DEPLOY_KEY: ${{ secrets.COLONY_MESH_DEPLOY_KEY }}
+      - name: Synchronize repository skills without dependency credentials
+        run: |
+          bash .github/scripts/pin-bun-runtime.sh "$(command -v bun)"
+          bun run skills:sync
+      - name: Install locked Chromium and system dependencies
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/anima-playwright" bun node_modules/playwright/cli.js install --with-deps chromium
+      - name: Prove Chromium sandbox is available
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/anima-playwright" node .github/scripts/probe-chromium.mjs
+      - name: Typecheck, full tests and build in owned state
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          owned=$(mktemp -d "$RUNNER_TEMP/anima-ci.XXXXXXXX")
+          trap 'code=$?; if ((code != 0)); then ps -eo pid,ppid,state,comm; fi; rm -rf -- "$owned"; exit "$code"' EXIT
+          mkdir -p "$owned/tmp"
+          env -i PATH="$PATH" HOME="$owned" TMPDIR="$owned/tmp" \
+            ANIMA_HOME="$owned/anima" ANIMA_STATE_DIR="$owned/state" \
+            ANIMA_UI_STATE_DIR="$owned/ui" ANIMA_ROOMS_DIR="$owned/rooms" \
+            ANIMA_SHARED_CONVERSATIONS=0 ANIMA_MESH_PRESENCE=off \
+            ANIMA_ACTIVATION_MODE=off ANIMA_COST_DB=:memory: \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$GITHUB_WORKSPACE" \
+            ANIMA_BREAKER_DISABLED=false NODE_ENV=test TZ=America/Toronto NO_COLOR=1 \
+            PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/anima-playwright" \
+            bash -euo pipefail -c 'bun run typecheck; bun test; bun run build'

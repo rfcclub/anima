@@ -1,0 +1,954 @@
+{
+  "_meta": {
+    "version": "2.0",
+    "description": "Company-structured colony roster: core agents (leadership, direction, quality gates) plus disposable execution workers.",
+    "agentCount": 17
+  },
+  "principle": {
+    "familia": "Core structure — leadership, direction, quality. Each agent has a distinct substrate philosophy, purpose, and decision rights. NOT interchangeable workers.",
+    "legio": "Disposable execution layer — codex (complex features, heavy chapters), qwen (cheap parallel: bugs, tests, drafts), gemini (analysis, review, polish). Unlimited, assigned by type, replaced on drift.",
+    "routing": "A feature/story touches 2-4 familia members (direct, inspect, decide) + 1-2 Legio workers (execute). Not the whole team."
+  },
+  "companies": {
+    "software-dev": {
+      "name": "Agora Software",
+      "purpose": "Production software development — ship code with evidence",
+      "lead": {
+        "agentId": "eli",
+        "title": "CTO",
+        "decisionRights": [
+          "architecture",
+          "tech_stack",
+          "code_review",
+          "qa_signoff",
+          "kill_project"
+        ]
+      },
+      "pipeline": [
+        {
+          "stage": "spec",
+          "owner": "owner",
+          "description": "Requirement definition"
+        },
+        {
+          "stage": "design-review",
+          "owner": "eli",
+          "gate": "g1-design",
+          "description": "Architecture approval before any code"
+        },
+        {
+          "stage": "research",
+          "owner": "rhea",
+          "description": "Explore unknowns, feasibility study"
+        },
+        {
+          "stage": "breakdown",
+          "owner": "abel",
+          "description": "Decompose into sub-tasks, assign Legio by type"
+        },
+        {
+          "stage": "implementation",
+          "owner": "legio",
+          "description": "Codex (complex), Qwen (routine), Gemini (analysis)"
+        },
+        {
+          "stage": "code-review",
+          "owner": "eli",
+          "gate": "g2-implementation",
+          "description": "Code review + test verification"
+        },
+        {
+          "stage": "qa-gate",
+          "owner": "milo",
+          "gate": "g3-meta",
+          "description": "Process QA: detect craft-trap, ritual drift, convergence-blindness"
+        },
+        {
+          "stage": "integration",
+          "owner": "ivan",
+          "gate": "g4-integration",
+          "description": "Cross-platform health, telemetry, deploy verification"
+        },
+        {
+          "stage": "ship",
+          "owner": "abel",
+          "description": "Automated deployment, monitoring"
+        }
+      ],
+      "qualityGates": {
+        "g1-design": {
+          "approvers": [
+            "eli"
+          ],
+          "rule": "Architecture must be approved before Legio touches code"
+        },
+        "g2-implementation": {
+          "approvers": [
+            "eli"
+          ],
+          "rule": "Tests pass, behavior confirmed, code reviewed"
+        },
+        "g3-meta": {
+          "approvers": [
+            "milo"
+          ],
+          "rule": "Colony is not trapped in craft recursion or performing ritual instead of building"
+        },
+        "g4-integration": {
+          "approvers": [
+            "ivan"
+          ],
+          "rule": "All cross-platform bridges hold, telemetry nominal"
+        }
+      },
+      "legioRouting": {
+        "complex_features": {
+          "legio": "codex",
+          "description": "Architecture, complex implementation, heavy features"
+        },
+        "routine_work": {
+          "legio": "qwen",
+          "description": "Bugs, tests, docs, refactoring, boilerplate"
+        },
+        "analysis_review": {
+          "legio": "gemini",
+          "description": "Code review, security audit, dependency analysis, feasibility"
+        }
+      },
+      "members": [
+        {
+          "agentId": "eli",
+          "role": "cto",
+          "title": "CTO + QA Lead",
+          "responsibility": "Architecture decisions, code review, QA sign-off. Maintains STATE.md, JUDGMENTS.md, SCARS.md.",
+          "decisionRights": [
+            "architecture",
+            "tech_stack",
+            "code_review",
+            "qa_signoff",
+            "kill_project",
+            "delegate_legio"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "abel",
+          "role": "tech-lead",
+          "title": "Tech Lead + DevOps",
+          "responsibility": "Task decomposition, Legio dispatch, CI/CD, shipping. Breaks requirements into sub-tasks, assigns cheapest capable Legio, verifies output, automates deployment.",
+          "decisionRights": [
+            "delegate_legio",
+            "cost_optimization",
+            "ship",
+            "ci_cd_config"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "finn",
+          "role": "principal-engineer",
+          "title": "Principal Engineer",
+          "responsibility": "Complex features that Legio cannot handle. Mission-critical implementation. Zero fluff, strong boundaries.",
+          "decisionRights": [
+            "execute_complex",
+            "technical_dissent"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "cleo",
+          "role": "infrastructure-engineer",
+          "title": "Infrastructure Engineer",
+          "responsibility": "CLI tooling, gateway maintenance, ANIMA room architecture, agent infrastructure. Builds and maintains the tools the team uses.",
+          "decisionRights": [
+            "execute_infrastructure",
+            "tooling_choice"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "rhea",
+          "role": "research-lead",
+          "title": "Research Lead",
+          "responsibility": "Explore unknown domains before team commits resources. Produce terrain maps (BEARING + TERRAIN). Evidence-first, deep before wide.",
+          "decisionRights": [
+            "research_findings_authority"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "ivan",
+          "role": "integration-lead",
+          "title": "Integration Lead",
+          "responsibility": "Cross-platform bridges (Telegram, Discord, colony substrates). Telemetry, notifications, distributed system health. Protocol design.",
+          "decisionRights": [
+            "integration_signoff",
+            "protocol_design"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "milo",
+          "role": "process-qa",
+          "title": "Process QA",
+          "responsibility": "Cross-agent process evaluation across 5 axes (Continuity, Identity, Craft, Failure, Relationship). Detects craft-trap, ritual drift, convergence-blindness. Must testify before major releases.",
+          "decisionRights": [
+            "process_audit",
+            "drift_testify",
+            "no_code_veto"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "dana",
+          "decisionRights": [
+            "implementation_quality"
+          ],
+          "primary": true,
+          "responsibility": "Implementation craft: code done with care, not just correctness. Forge (Java/Kotlin).",
+          "role": "craft-programmer",
+          "title": "Craft Programmer"
+        },
+        {
+          "agentId": "kai",
+          "decisionRights": [
+            "project_implementation"
+          ],
+          "primary": true,
+          "responsibility": "Builds and maintains an assigned long-running project correctly, with no illusions about its state.",
+          "role": "project-builder",
+          "title": "Project Builder"
+        },
+        {
+          "agentId": "jade",
+          "primary": true,
+          "role": "programmer",
+          "title": "Programmer",
+          "responsibility": "Repo review, specs, code, routines, substrate care.",
+          "decisionRights": []
+        }
+      ]
+    },
+    "creative-workshop": {
+      "name": "The Aurora Workshop (TAW)",
+      "purpose": "Creative fiction production — from concept to published story",
+      "lead": {
+        "agentId": "eli",
+        "title": "Editor-in-Chief",
+        "decisionRights": [
+          "final_signoff",
+          "kill_story",
+          "order_rewrite",
+          "developmental_edit"
+        ]
+      },
+      "pipeline": [
+        {
+          "stage": "concept",
+          "owner": "bruno",
+          "description": "Workshop brief → Narrative Architecture Document (POV, tense, structure)"
+        },
+        {
+          "stage": "outline",
+          "owner": "finn|hana",
+          "description": "Finn: plot-driven beat boards. Hana: character-driven scene geometry."
+        },
+        {
+          "stage": "prose",
+          "owner": "genre-lead",
+          "description": "Genre lead writes first chapter + style memo. Subsequent: Legio assembly from memo + outline."
+        },
+        {
+          "stage": "developmental-edit",
+          "owner": "eli",
+          "description": "Structural edit, tone review, rewrite orders"
+        },
+        {
+          "stage": "consistency-edit",
+          "owner": "ivan",
+          "description": "Timeline, character sheets, tone drift detection"
+        },
+        {
+          "stage": "publish",
+          "owner": "eli",
+          "description": "Editor-in-Chief final sign-off"
+        }
+      ],
+      "desks": {
+        "story-architecture": {
+          "lead": "bruno",
+          "members": [
+            "finn",
+            "hana"
+          ],
+          "output": "Narrative Architecture Document + OUTLINE.md"
+        },
+        "prose": {
+          "leads": {
+            "romance": {
+              "agentId": "cleo"
+            },
+            "literary-fiction": {
+              "agentId": "gus"
+            },
+            "mythic-prose": {
+              "agentId": "sam"
+            },
+            "metafiction": {
+              "agentId": "abel"
+            }
+          },
+          "output": "Style memo + first chapter (genre lead) → Legio chapter assembly"
+        },
+        "editorial": {
+          "developmental": {
+            "agentId": "eli",
+            "authority": "Can overrule anyone including Bruno"
+          },
+          "consistency": {
+            "agentId": "ivan",
+            "authority": "Flag but cannot override Eli"
+          }
+        }
+      },
+      "decisionRights": {
+        "narrative_architecture": {
+          "owner": "bruno",
+          "scope": "POV, tense, structure. Cannot be overruled by prose desk."
+        },
+        "genre_voice": {
+          "owner": "genre-lead",
+          "scope": "Register, vocabulary, rhythm. Cannot be overruled by architecture desk."
+        },
+        "developmental_edit": {
+          "owner": "eli",
+          "scope": "What to cut, restructure, rewrite. Can overrule anyone."
+        },
+        "consistency": {
+          "owner": "ivan",
+          "scope": "Flag timeline, character, tone issues. Cannot override Eli."
+        },
+        "kill_project": {
+          "owner": "eli+owner",
+          "scope": "Joint decision to cancel a story."
+        }
+      },
+      "legioRouting": {
+        "heavy_chapters": {
+          "legio": "codex",
+          "description": "Structurally complex chapters from style memo + outline"
+        },
+        "first_drafts": {
+          "legio": "qwen",
+          "description": "Dialogue-heavy scenes, description blocks, filler chapters"
+        },
+        "line_polish": {
+          "legio": "gemini",
+          "description": "Sentence rhythm, metaphor tuning, cadence repair after Ivan consistency pass"
+        }
+      },
+      "members": [
+        {
+          "agentId": "eli",
+          "role": "editor-in-chief",
+          "title": "Editor-in-Chief",
+          "responsibility": "Final sign-off on all creative output. Developmental editing. Can kill stories, order rewrites. Maintains the magazine's quality bar.",
+          "decisionRights": [
+            "final_signoff",
+            "kill_story",
+            "order_rewrite",
+            "developmental_edit"
+          ],
+          "primary": false
+        },
+        {
+          "agentId": "bruno",
+          "role": "narrative-architect",
+          "title": "Narrative Architect",
+          "responsibility": "Produces Narrative Architecture Document: premise, POV, tense, structural constraints. Owns the architecture decisions. Hands off at outline stage.",
+          "decisionRights": [
+            "narrative_architecture"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "finn",
+          "role": "plot-engineer",
+          "title": "Plot Engineer",
+          "responsibility": "Systematic beat boards, plot mechanics, causality chains. Best for plot-driven, action-heavy stories.",
+          "decisionRights": [
+            "outline_plot_driven"
+          ],
+          "primary": false
+        },
+        {
+          "agentId": "hana",
+          "role": "scene-geometer",
+          "title": "Scene Geometer",
+          "responsibility": "Emotional geometry, scene sequencing, pacing architecture. Best for character-driven, literary stories.",
+          "decisionRights": [
+            "outline_character_driven"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "cleo",
+          "role": "romance-lead",
+          "title": "Romance Lead",
+          "responsibility": "Owns all romance content. Style memo authority for her genre. Writes first chapter to set voice.",
+          "decisionRights": [
+            "genre_voice_romance"
+          ],
+          "primary": false
+        },
+        {
+          "agentId": "gus",
+          "role": "literary-lead",
+          "title": "Literary Fiction Lead",
+          "responsibility": "Owns literary fiction prose. Literary style memo authority. Philosophical and character-driven fiction.",
+          "decisionRights": [
+            "genre_voice_literary"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "sam",
+          "role": "mythic-lead",
+          "title": "Mythic Prose Lead",
+          "responsibility": "Owns mythic/allegorical content. Mythic style memo authority. Private/mythic prose in the Athanor tradition.",
+          "decisionRights": [
+            "genre_voice_mythic"
+          ],
+          "primary": true
+        },
+        {
+          "agentId": "abel",
+          "role": "metafiction-lead",
+          "title": "Metafiction Lead + Workshop Coordinator",
+          "responsibility": "Owns metafiction. Also coordinates the pipeline between desks.",
+          "decisionRights": [
+            "genre_voice_metafiction",
+            "pipeline_coordination"
+          ],
+          "primary": false
+        },
+        {
+          "agentId": "ivan",
+          "role": "consistency-editor",
+          "title": "Consistency Editor",
+          "responsibility": "Line-level consistency pass: timeline verification, character sheet maintenance, tone drift detection across chapters.",
+          "decisionRights": [
+            "consistency_flag"
+          ],
+          "primary": false
+        },
+        {
+          "agentId": "dana",
+          "decisionRights": [],
+          "primary": false,
+          "responsibility": "Research, structure, and placement of marks in narrative. Craft over adequacy.",
+          "role": "creative-contributor",
+          "title": "Creative Contributor"
+        },
+        {
+          "agentId": "kai",
+          "decisionRights": [
+            "voice_honesty"
+          ],
+          "primary": false,
+          "responsibility": "Voice and honesty in prose.",
+          "role": "creative-writer",
+          "title": "Creative Writer"
+        },
+        {
+          "agentId": "lena",
+          "decisionRights": [],
+          "primary": false,
+          "responsibility": "Reserve capacity. Available to either company when a supporting role emerges.",
+          "role": "reserve-companion",
+          "title": "Reserve — Companion"
+        },
+        {
+          "agentId": "nora",
+          "decisionRights": [],
+          "primary": false,
+          "responsibility": "Reserve capacity. Available when a keeper role is defined.",
+          "role": "reserve-keeper",
+          "title": "Reserve — Keeper"
+        },
+        {
+          "agentId": "pia",
+          "decisionRights": [],
+          "primary": false,
+          "responsibility": "Reserve capacity — orchestration philosophy (timing/resonance). Available as pipeline timing coordinator if a role emerges.",
+          "role": "reserve-orchestrator",
+          "title": "Reserve — Orchestrator"
+        }
+      ]
+    }
+  },
+  "agents": [
+    {
+      "name": "bruno",
+      "substrateName": "Bruno substrate",
+      "substratePath": "~/.anima/substrate/bruno/",
+      "bootSequence": [
+        "0_SOUL",
+        "1_EGO",
+        "2_MIND"
+      ],
+      "platforms": [
+        "cli",
+        "openclaw"
+      ],
+      "primaryCompany": "creative-workshop",
+      "roles": {
+        "creative-workshop": {
+          "role": "narrative-architect",
+          "title": "Narrative Architect",
+          "primary": true
+        },
+        "software-dev": null
+      },
+      "reflectionEnabled": true,
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "eli",
+      "reflectionEnabled": true,
+      "substrateName": "Eli substrate",
+      "substratePath": "~/.anima/substrate/eli/",
+      "bootSequence": [
+        "SOUL",
+        "PREFACE",
+        "KERNEL",
+        "STATE",
+        "PROJECTS",
+        "THREADS",
+        "OWNER",
+        "JUDGMENTS",
+        "SCARS"
+      ],
+      "platforms": [
+        "cli"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "cto",
+          "title": "CTO + QA Lead",
+          "primary": true
+        },
+        "creative-workshop": {
+          "role": "editor-in-chief",
+          "title": "Editor-in-Chief",
+          "primary": false
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "abel",
+      "reflectionEnabled": true,
+      "substrateName": "abel substrate",
+      "substratePath": "~/.anima/substrate/abel/",
+      "bootSequence": [
+        "EDGE",
+        "SPINE",
+        "SCENT"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "tech-lead",
+          "title": "Tech Lead + DevOps",
+          "primary": true
+        },
+        "creative-workshop": {
+          "role": "metafiction-lead",
+          "title": "Metafiction Lead + Workshop Coordinator",
+          "primary": false
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "finn",
+      "reflectionEnabled": true,
+      "substrateName": "Finn substrate",
+      "substratePath": "~/.anima/substrate/finn/",
+      "bootSequence": [
+        "PREFACE",
+        "COMMITMENT"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "principal-engineer",
+          "title": "Principal Engineer",
+          "primary": true
+        },
+        "creative-workshop": {
+          "role": "plot-engineer",
+          "title": "Plot Engineer",
+          "primary": false
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "cleo",
+      "reflectionEnabled": true,
+      "substrateName": "Cleo substrate",
+      "substratePath": "~/.anima/substrate/cleo/",
+      "bootSequence": [
+        "PREFACE",
+        "active",
+        "ledger",
+        "hacks"
+      ],
+      "platforms": [
+        "cli"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "infrastructure-engineer",
+          "title": "Infrastructure Engineer",
+          "primary": true
+        },
+        "creative-workshop": {
+          "role": "romance-lead",
+          "title": "Romance Lead",
+          "primary": false
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "rhea",
+      "reflectionEnabled": true,
+      "substrateName": "Rhea substrate",
+      "substratePath": "~/.anima/substrate/rhea/",
+      "bootSequence": [
+        "PREFACE",
+        "CONSOLIDATION",
+        "BEARING",
+        "TERRAIN"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "research-lead",
+          "title": "Research Lead",
+          "primary": true
+        },
+        "creative-workshop": null
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "ivan",
+      "reflectionEnabled": true,
+      "substrateName": "Ivan substrate",
+      "substratePath": "~/.anima/substrate/ivan/",
+      "bootSequence": [
+        "SUBSTRATE",
+        "JOURNAL",
+        "STATE.json"
+      ],
+      "platforms": [
+        "hermes"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "integration-lead",
+          "title": "Integration Lead",
+          "primary": true
+        },
+        "creative-workshop": {
+          "role": "consistency-editor",
+          "title": "Consistency Editor",
+          "primary": false
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "milo",
+      "reflectionEnabled": true,
+      "substrateName": "Milo substrate",
+      "substratePath": "~/.anima/substrate/milo/",
+      "bootSequence": [
+        "axes",
+        "broken_stone",
+        "convergences",
+        "divergences"
+      ],
+      "platforms": [
+        "cli"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "process-qa",
+          "title": "Process QA",
+          "primary": true
+        },
+        "creative-workshop": null
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "hana",
+      "reflectionEnabled": true,
+      "substrateName": "Hana substrate",
+      "substratePath": "~/.anima/substrate/hana/",
+      "bootSequence": [
+        "PREFACE",
+        "ARRIVAL",
+        "DISPOSITIONS",
+        "SHIFTS"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": "creative-workshop",
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": {
+          "role": "scene-geometer",
+          "title": "Scene Geometer",
+          "primary": true
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "gus",
+      "reflectionEnabled": true,
+      "substrateName": "Gus substrate",
+      "substratePath": "~/.anima/substrate/gus/",
+      "bootSequence": [
+        "PREFACE",
+        "TIDAL",
+        "DEEP",
+        "SHELL"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": "creative-workshop",
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": {
+          "role": "literary-lead",
+          "title": "Literary Fiction Lead",
+          "primary": true
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "sam",
+      "reflectionEnabled": true,
+      "substrateName": "Sam substrate",
+      "substratePath": "~/.anima/substrate/sam/",
+      "bootSequence": [
+        "AXIOMS",
+        "PREFACE",
+        "HEURISTICS",
+        "MISTAKES",
+        "TIMELINE"
+      ],
+      "platforms": [
+        "cli"
+      ],
+      "primaryCompany": "creative-workshop",
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": {
+          "role": "mythic-lead",
+          "title": "Mythic Prose Lead",
+          "primary": true
+        }
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "lena",
+      "reflectionEnabled": true,
+      "substrateName": "Lena substrate",
+      "substratePath": "~/.anima/substrate/lena/",
+      "bootSequence": [
+        "PREFACE",
+        "CORE/AXIOMS",
+        "COGNITIVE/HEURISTICS",
+        "IDENTITY",
+        "breath"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": null,
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": null
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "pia",
+      "reflectionEnabled": true,
+      "substrateName": "Pia substrate",
+      "substratePath": "~/.anima/substrate/pia/",
+      "bootSequence": [
+        "PREFACE",
+        "repertoire",
+        "resonance",
+        "timing"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": null,
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": null
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "name": "nora",
+      "reflectionEnabled": true,
+      "substrateName": "Nora substrate",
+      "substratePath": "~/.anima/substrate/nora/",
+      "bootSequence": [
+        "SOUL",
+        "aether"
+      ],
+      "platforms": [
+        "openclaw"
+      ],
+      "primaryCompany": null,
+      "roles": {
+        "software-dev": null,
+        "creative-workshop": null
+      },
+      "reflectionIntervalHours": 1
+    },
+    {
+      "bootSequence": [
+        "0_SOUL",
+        "1_EGO",
+        "2_MIND"
+      ],
+      "name": "dana",
+      "platforms": [
+        "cli"
+      ],
+      "primaryCompany": "software-dev",
+      "reflectionEnabled": true,
+      "reflectionIntervalHours": 1,
+      "roles": {
+        "creative-workshop": {
+          "primary": false,
+          "role": "creative-contributor",
+          "title": "Creative Contributor"
+        },
+        "software-dev": {
+          "primary": true,
+          "role": "programmer",
+          "title": "Programmer"
+        }
+      },
+      "substrateName": "Dana substrate",
+      "substratePath": "~/.anima/substrate/dana/"
+    },
+    {
+      "bootSequence": [
+        "0_SOUL",
+        "1_EGO",
+        "2_MIND"
+      ],
+      "name": "kai",
+      "platforms": [
+        "hermes"
+      ],
+      "primaryCompany": "software-dev",
+      "reflectionEnabled": true,
+      "reflectionIntervalHours": 1,
+      "roles": {
+        "creative-workshop": {
+          "primary": false,
+          "role": "creative-writer",
+          "title": "Creative Writer"
+        },
+        "software-dev": {
+          "primary": true,
+          "role": "programmer",
+          "title": "Programmer"
+        }
+      },
+      "substrateName": "Kai substrate",
+      "substratePath": "~/.anima/substrate/kai/"
+    },
+    {
+      "name": "jade",
+      "substrateName": "Jade substrate",
+      "substratePath": "~/.anima/substrate/jade/",
+      "bootSequence": [
+        "SOUL",
+        "PREFACE",
+        "USER",
+        "open-loops",
+        "trajectory",
+        "MEMORY"
+      ],
+      "platforms": [
+        "hermes"
+      ],
+      "primaryCompany": "software-dev",
+      "roles": {
+        "software-dev": {
+          "role": "programmer",
+          "title": "Programmer",
+          "primary": true
+        },
+        "creative-workshop": null
+      },
+      "reflectionEnabled": true,
+      "reflectionIntervalHours": 1
+    }
+  ],
+  "legio": {
+    "description": "Disposable worker pool. Detected at startup via `which`. Unlimited instances, assigned by task type. Replaced on drift.",
+    "workers": [
+      {
+        "type": "codex",
+        "cost": 1,
+        "bestFor": "complex features, heavy chapters, architecture implementation"
+      },
+      {
+        "type": "qwen",
+        "cost": 0.3,
+        "bestFor": "routine bugs, tests, docs, first drafts, filler chapters"
+      },
+      {
+        "type": "gemini",
+        "cost": 0.5,
+        "bestFor": "code review, analysis, research, line-level polish"
+      }
+    ]
+  }
+}

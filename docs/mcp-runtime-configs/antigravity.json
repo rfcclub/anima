@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mesh": {
+      "command": "colony-mesh",
+      "args": [],
+      "env": {
+        "MESH_INSTANCE_ID": "agent-b",
+        "MESH_PLATFORM": "agy"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+id: openai
+label: "OpenAI"
+baseUrl: https://api.openai.com/v1
+api: openai-completions
+apiKey: openai_test_key
+models:
+  - id: gpt-5.5

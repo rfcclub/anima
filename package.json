@@ -1,0 +1,66 @@
+{
+  "name": "anima",
+  "version": "0.1.41",
+  "module": "src/cli.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun src/server.ts",
+    "start:ui": "ANIMA_UI_ENABLED=true bun src/server.ts",
+    "start:ui-only": "bun src/ui/app/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "dev:ui": "ANIMA_UI_ENABLED=true bun --watch src/server.ts",
+    "cli": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/server.ts --outfile .anima/dist/server.js --target bun --format esm --minify --sourcemap=inline && bun build src/cli.ts --outfile .anima/dist/cli.js --target bun --format esm --minify && bun build src/web-chat/worker.ts --outfile .anima/dist/web-chat-worker.js --target bun --format esm --minify && bun build src/web-chat/browser-worker.ts --outfile .anima/dist/web-chat-browser-worker.mjs --target node --format esm --external playwright && bun build src/web-chat/cli.ts --outfile .anima/dist/web-chat-cli.js --target bun --format esm --minify",
+    "import-memory": "bun scripts/import-cross-platform.ts",
+    "deploy": "bash scripts/deploy.sh",
+    "install:service": "bash scripts/install.sh",
+    "docs:dev": "vitepress dev docs-site",
+    "docs:build": "vitepress build docs-site",
+    "docs:preview": "vitepress preview docs-site",
+    "skills:sync": "bun scripts/sync-skills.ts",
+    "skills:check": "bun scripts/sync-skills.ts --check",
+    "postinstall": "bun run skills:sync"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "@drincs/pixi-vn": "^1.8.17",
+    "@google/generative-ai": "^0.24.1",
+    "@tailwindcss/postcss": "^4.0.0",
+    "bun-plugin-tailwind": "^0.1.2",
+    "colony-mesh": "git+ssh://git@github.com/rfcclub/colony-mesh.git#7c0ea5e89a4a68d3163dbcd382970e92a4bd2f97",
+    "dompurify": "^3.4.12",
+    "glob": "^13.0.6",
+    "js-yaml": "^4.1.0",
+    "marked": "^18.0.6",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-router-dom": "^6.26.0",
+    "sharp": "^0.35.4",
+    "tailwindcss": "^4.0.0",
+    "playwright": "1.61.1",
+    "@anima/context-engine": "workspace:*",
+    "@anima/continuity-core": "workspace:*",
+    "@anima/identity-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "vitepress": "^1.6.4"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "trustedDependencies": [
+    "@tsparticles/engine",
+    "bun"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
+  "license": "MIT"
+}
