@@ -87,6 +87,7 @@ export function buildWorkRuntime(config: MeshJobsWorkConfig, deps: WorkRuntimeDe
     ...(deps.treeRead ? { recordStop: createStopRecorder({ store: deps.store, read: deps.treeRead }) } : {}),
     ...(deps.treeRead ? { continuation: (work: WorkRecord) => checkContinuation(deps.store, work, deps.treeRead!) } : {}),
     authors: (config.extraAuthors ?? []).map((extra) => extra.agent),
+    maxConcurrentWorks: config.maxConcurrentWorks,
     config: loadWorkConfig({
       author: config.author,
       externalAdapter: config.externalAdapter,

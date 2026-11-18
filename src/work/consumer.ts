@@ -78,6 +78,7 @@ export interface WorkHandlerDeps {
   config?: WorkConfig;
   /** Agents that may carry works besides `config.author`; each work is pinned to the one that first claims it. */
   authors?: string[];
+  maxConcurrentWorks?: number;
   /**
    * Host-side safety net for a session that committed but did not publish. It returns
    * published=true only after the host itself pushed the branch and, for a start-work, opened the PR; the normal
@@ -115,6 +116,8 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const config = deps.config ?? loadWorkConfig({});
   const log: ConsumerLog = deps.log ?? (() => {});
   const authors = new Set([config.author, ...(deps.authors ?? [])]);
+  const maxConcurrentWorks = deps.maxConcurrentWorks ?? authors.size;
+  let activeWorks = 0;
 
   const block = (workId: string, reason: string): WorkOutcome => {
     store.setState(workId, "blocked", reason);
@@ -122,7 +125,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
     return failed;
   };
 
-  return {
+  const handler: WorkJobHandler = {
     async run({ worker, claim, job, jobs }): Promise<WorkOutcome> {
       const ref = parseWorkRef(job.workRef);
       if (!ref) {
@@ -216,6 +219,19 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
         return await runOne(work, claim, job, jobs, block);
       } finally {
         lock.release();
+      }
+    },
+  };
+
+  return {
+    async run(input) {
+      if (!authors.has(input.worker)) return handler.run(input);
+      if (activeWorks >= maxConcurrentWorks) return { kind: "release" };
+      activeWorks += 1;
+      try {
+        return await handler.run(input);
+      } finally {
+        activeWorks -= 1;
       }
     },
   };

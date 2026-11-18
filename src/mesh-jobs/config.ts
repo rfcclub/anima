@@ -40,6 +40,8 @@ export interface MeshJobsWorkConfig {
    * the model and the limits above. Absent or empty: `author` alone carries every work, as before.
    */
   extraAuthors?: WorkExtraAuthor[];
+  /** Maximum simultaneous works in this runtime. Defaults to the number of authors. */
+  maxConcurrentWorks?: number;
   /** The presence agent whose mesh identity enqueues and confirms review and revise jobs. */
   enqueuer: string;
   base: string;
@@ -143,7 +145,7 @@ function parseWorker(value: unknown, index: number): MeshJobsWorker {
 }
 
 const MESH_ID = /^[a-z0-9][a-z0-9_.-]*@[a-z0-9][a-z0-9_.-]*$/;
-const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "extraAuthors", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
+const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "extraAuthors", "maxConcurrentWorks", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
 
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const BASE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -253,6 +255,10 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
   const repoBases = raw.repoBases === undefined ? undefined : parseRepoBases(raw.repoBases);
 
   const extraAuthors = parseExtraAuthors(raw.extraAuthors, workers, author, authorMeshId, raw.reviewers);
+  const maxConcurrentWorks = raw.maxConcurrentWorks === undefined ? 1 + extraAuthors.length : raw.maxConcurrentWorks;
+  if (typeof maxConcurrentWorks !== "number" || !Number.isSafeInteger(maxConcurrentWorks) || maxConcurrentWorks < 1) {
+    fail("maxConcurrentWorks");
+  }
 
   if (!Array.isArray(raw.reviewers) || raw.reviewers.length === 0) fail("reviewers");
   const reviewers: WorkReviewer[] = (raw.reviewers as unknown[]).map((entry) => {
@@ -284,7 +290,7 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
 
   return {
     author, ...(provider && model ? { provider, model } : {}), ...(caps !== undefined ? { caps } : {}), externalAdapter: externalAdapter as "off" | "low", hostPublish: hostPublish as boolean,
-    authorActor, authorMeshId, extraAuthors, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
+    authorActor, authorMeshId, extraAuthors, maxConcurrentWorks: maxConcurrentWorks as number, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
     releaseBackoffMs: ms("releaseBackoffMs", 30_000, 5_000),
     reconcileIntervalMs: ms("reconcileIntervalMs", 60_000, 10_000),
     perToolCallMs: ms("perToolCallMs", 120_000, 1_000, 600_000),

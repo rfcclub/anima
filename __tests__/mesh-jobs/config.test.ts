@@ -139,6 +139,18 @@ describe("loadMeshJobsConfig", () => {
       },
     });
 
+    test("work-pool-lane-config: defaults to the author count and accepts a smaller limit", () => {
+      const extraAuthors = [{ agent: "jade", meshId: "jade@anima" }];
+      write(work({ extraAuthors }));
+      expect(Reflect.get(loadMeshJobsConfig(path)!.work!, "maxConcurrentWorks")).toBe(2);
+      write(work({ extraAuthors, maxConcurrentWorks: 1 }));
+      expect(Reflect.get(loadMeshJobsConfig(path)!.work!, "maxConcurrentWorks")).toBe(1);
+      for (const maxConcurrentWorks of [0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1]) {
+        write(work({ extraAuthors, maxConcurrentWorks }));
+        expect(errorOf(() => loadMeshJobsConfig(path))).toMatch(/invalid work\.maxConcurrentWorks/);
+      }
+    });
+
     test("absent means no extra authors", () => {
       write(work());
       expect(loadMeshJobsConfig(path)!.work!.extraAuthors).toEqual([]);

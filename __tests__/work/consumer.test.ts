@@ -138,6 +138,47 @@ function build(over: { executor?: FakeExecutor; jobs?: FakeJobs; evidence?: (wor
   return { jobs, executor, consumer, logs };
 }
 
+test("work-pool-lane-limit: four lanes run six queued works without duplicate writers", async () => {
+  const agents = ["finn", "writer-a", "writer-b", "writer-c", "writer-d", "writer-e"];
+  const jobs = new FakeJobs();
+  const started: Array<{ issue: number; author: string }> = [];
+  const barrier = Promise.withResolvers<void>();
+  const executor: SessionExecutor = {
+    ready: async () => ({ ok: true }),
+    async runSession({ work }) {
+      started.push({ issue: work.issue, author: work.author });
+      await barrier.promise;
+      return { stopCause: "max_reached", iterations: 1, execMs: 1000, cessation: "proven" };
+    },
+  };
+  const handler = createWorkHandler({
+    store, executor, github: { ...github, issue: async () => ({ title: "Work", body: BODY }) },
+    heartbeatMs: 1000, authors: agents.slice(1), ...{ maxConcurrentWorks: 4 },
+    collectEvidence: async () => ({ ok: false, reason: "no pull request" }),
+  });
+  const consumer = new MeshJobConsumer({
+    workers: agents.map((agent) => ({ agent, jobs })), github, work: handler,
+    heartbeatMs: 1000, now: () => clock, turnTimeoutMs: 1000,
+    runTurn: async () => { throw new Error("review path not used"); },
+  });
+  jobs.queued.push(...agents.map((_, index) => workJob({
+    id: `pool-${index}`, target: { repo: "rfcclub/anima", kind: "issue", number: 20 + index },
+    workRef: `w${(1000 + index).toString(16).padStart(10, "0")}.${DIGEST}`,
+  })));
+  const tick = consumer.tick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const overlapped = started.length;
+  const persisted = store.listWorks().length;
+  const returned = jobs.queued.map((job) => job.id).sort();
+  barrier.resolve();
+  await tick;
+
+  expect({ overlapped, persisted, returned }).toEqual({ overlapped: 4, persisted: 4, returned: ["pool-4", "pool-5"] });
+  expect(jobs.reports).toEqual([]);
+  expect(new Set(started.map(({ author }) => author)).size).toBe(4);
+  expect(new Set(started.map(({ issue }) => issue)).size).toBe(4);
+});
+
 describe("a bounded session and release", () => {
   test("a start-work claim creates the work, runs session 1 with the caps, and a stop on the iteration cap releases the claim without a report", async () => {
     const { jobs, executor, consumer } = build();
