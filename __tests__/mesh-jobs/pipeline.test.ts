@@ -338,6 +338,48 @@ describe("intent review dispatch", () => {
     expect(enqueued[0]).toMatchObject({ type: "review-intent", target: { repo: "rfcclub/anima", kind: "issue", number: 7 } });
   });
 
+  test("logs each newly created revision once, even when polls are close together", async () => {
+    const logs = logLines();
+    const jobs = new Map<string, { id: string; state: "queued"; createdAt: number }>();
+    let now = 100_000;
+    let body = "first";
+    const poll = () => dispatchIntentReviews({
+      config: CONFIG, work: WORK, store: { listWorks: () => [] }, now: () => now,
+      mesh: { enqueue: async (input) => {
+        const key = String(input.idempotencyKey);
+        const job = jobs.get(key) ?? { id: `job-${jobs.size + 1}`, state: "queued", createdAt: now };
+        jobs.set(key, job);
+        return job as never;
+      } },
+      gh: async () => JSON.stringify([issue(7, body, ["orca:intent"])]),
+      log: (level, message, fields) => logs.push({ level, message, fields }),
+    });
+    expect(await poll()).toBe(1);
+    now += 1_000;
+    expect(await poll()).toBe(1); // Preserve the count's existing clock skew allowance.
+    now += 1_000;
+    body = "updated";
+    expect(await poll()).toBe(1);
+    expect(logs.filter((line) => line.message === "intent review dispatched").map((line) => line.fields?.revision))
+      .toEqual([intentRevision("issue 7", "first"), intentRevision("issue 7", "updated")]);
+  });
+
+  test("still logs each enqueue failure", async () => {
+    const logs = logLines();
+    const poll = () => dispatchIntentReviews({
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: async () => { throw new Error("queue unavailable"); } },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level, message, fields) => logs.push({ level, message, fields }),
+    });
+    expect(await poll()).toBe(0);
+    expect(await poll()).toBe(0);
+    expect(logs).toEqual(Array.from({ length: 2 }, () => ({
+      level: "error", message: "intent review enqueue failed",
+      fields: { repo: CONFIG.repos[0], issue: 7, error: "queue unavailable" },
+    })));
+  });
+
   test("an intent authored by a configured reviewer excludes that reviewer", async () => {
     const enqueued: Array<Record<string, any>> = [];
     const authored = { ...issue(7, "body", ["orca:intent"]), author: { login: "cleo-gotako[bot]" } };
