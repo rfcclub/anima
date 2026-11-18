@@ -11,6 +11,10 @@
 # cleanup script archives. Nothing here is deleted, and no raw trace is relocated
 # outside the decision folders (promoted/ and pruned/).
 #
+# Every run scores the whole pending set, so a trace left pending is re-scored
+# once the owner completes it. Each trace keeps exactly one line in
+# session-traces/evaluations.jsonl: the latest decision replaces the previous one.
+#
 # Criteria format in GATES.md, one per line:
 #   - <metric> <op> <value>
 # e.g.
@@ -41,7 +45,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --help|-h)
-      sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+      # Print the header comment block whatever its length: lines after the
+      # shebang, up to the first line of code.
+      awk 'NR > 1 { if ($0 !~ /^#/) exit; print }' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "evaluate-session-traces.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -138,8 +144,15 @@ fi
 LEDGER="$TRACE_DIR/evaluations.jsonl"
 promoted=0; pruned=0; held=0
 
-record() { # <trace> <outcome> <score>
-  printf '{"trace":"%s","outcome":"%s","score":%d,"criteria":%d}\n' "$1" "$2" "$3" "$COUNT"
+# record <trace> <outcome> <score>
+# One line per trace: a trace that stays pending is scored again on the next run,
+# so its previous line is replaced instead of accumulating.
+record() {
+  if [[ -f "$LEDGER" ]]; then
+    grep -Fv "\"trace\":\"$1\"" "$LEDGER" > "$LEDGER.next" || true
+    mv "$LEDGER.next" "$LEDGER"
+  fi
+  printf '{"trace":"%s","outcome":"%s","score":%d,"criteria":%d}\n' "$1" "$2" "$3" "$COUNT" >> "$LEDGER"
 }
 
 if (( DRY_RUN == 0 )); then
@@ -159,12 +172,6 @@ for file in "${pending[@]}"; do
   fi
 
   printf '%-40s %s (%d/%d)\n' "$name" "$outcome" "$SCORE" "$COUNT"
-
-  # A trace recorded in a previous run is not scored again: its decision stands,
-  # so a rerun never duplicates an EMBERS.md section or a ledger line.
-  if [[ -f "$LEDGER" ]] && grep -qF "\"trace\":\"$name\"" "$LEDGER"; then
-    continue
-  fi
 
   if (( DRY_RUN == 1 )); then
     case "$outcome" in
@@ -200,7 +207,7 @@ for file in "${pending[@]}"; do
       held=$((held + 1)) ;;
   esac
 
-  record "$name" "$outcome" "$SCORE" >> "$LEDGER"
+  record "$name" "$outcome" "$SCORE"
 done
 
 if (( DRY_RUN == 1 )); then

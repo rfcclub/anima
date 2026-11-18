@@ -39,13 +39,13 @@ function fixture(gates: string | null = GATES) {
   return { root, kai, traces };
 }
 
-function run(root: string, extraEnv: Record<string, string> = {}) {
-  const result = Bun.spawnSync(["bash", SCRIPT], { env: { ...process.env, AGORA_ROOT: root, ...extraEnv } });
+function run(root: string, extraEnv: Record<string, string> = {}, args: string[] = []) {
+  const result = Bun.spawnSync(["bash", SCRIPT, ...args], { env: { ...process.env, AGORA_ROOT: root, ...extraEnv } });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
 
-function runOk(root: string, extraEnv: Record<string, string> = {}) {
-  const result = run(root, extraEnv);
+function runOk(root: string, extraEnv: Record<string, string> = {}, args: string[] = []) {
+  const result = run(root, extraEnv, args);
   if (result.code !== 0) throw new Error(result.err);
   return result;
 }
@@ -107,6 +107,34 @@ describe("evaluate-session-traces.sh", () => {
     expect(ledger(traces)).toHaveLength(1);
   });
 
+  test("a borderline trace is scored again on the next run and can still be promoted", () => {
+    const { root, kai, traces } = fixture();
+    const file = join(traces, "growing.md");
+    writeFileSync(file, borderline);
+    runOk(root);
+    expect(ledger(traces)).toEqual([{ trace: "growing.md", outcome: "borderline", score: 3, criteria: 4 }]);
+    expect(existsSync(file)).toBe(true);
+
+    // The owner completes the trace; the next run promotes it without a second ledger line.
+    writeFileSync(file, passing);
+    runOk(root);
+    expect(ledger(traces)).toEqual([{ trace: "growing.md", outcome: "promoted", score: 4, criteria: 4 }]);
+    expect(readFileSync(join(kai, "EMBERS.md"), "utf8")).toContain("## growing");
+    expect(existsSync(file)).toBe(false);
+  });
+
+  test("--dry-run reports the decisions and writes nothing", () => {
+    const { root, kai, traces } = fixture();
+    writeFileSync(join(traces, "passing.md"), passing);
+    writeFileSync(join(traces, "failing.md"), failing);
+    const before = readdirSync(traces).sort();
+
+    const result = runOk(root, {}, ["--dry-run"]);
+    expect(result.out).toContain("dry run");
+    expect(readdirSync(traces).sort()).toEqual(before);
+    expect(existsSync(join(kai, "EMBERS.md"))).toBe(false);
+  });
+
   test("no GATES.md or no criteria fails without touching a single trace", () => {
     for (const gates of [null, "# Kai gates\n\nno criteria here\n"]) {
       const { root, kai, traces } = fixture(gates);
@@ -118,6 +146,14 @@ describe("evaluate-session-traces.sh", () => {
       expect(readdirSync(traces)).toEqual(["passing.md"]);
       expect(existsSync(join(kai, "EMBERS.md"))).toBe(false);
     }
+  });
+
+  test("--help prints the full header and exits without scoring", () => {
+    const { root } = fixture();
+    const result = runOk(root, {}, ["--help"]);
+    expect(result.out).toContain("Usage: evaluate-session-traces.sh [--dry-run]");
+    expect(result.out).toContain("Exit codes:");
+    expect(result.out).not.toContain("set -euo");
   });
 
   test("an empty pending set is a no-op success", () => {
