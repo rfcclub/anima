@@ -40,12 +40,12 @@ test("buildSessionMessages injects unread mail context as first system message",
   const messages = buildSessionMessages(
     context,
     "hello",
-    "[Unread A2A — from bruno in topic nexus-design at 2026-05-17T15:00:00Z]\naria: Please review.",
+    "[Unread A2A — from bruno in topic nexus-design at 2026-05-17T15:00:00Z]\nbruno: Please review.",
   );
 
   expect(messages[0]).toEqual({
     role: "system",
-    content: "[Unread A2A — from bruno in topic nexus-design at 2026-05-17T15:00:00Z]\naria: Please review.",
+    content: "[Unread A2A — from bruno in topic nexus-design at 2026-05-17T15:00:00Z]\nbruno: Please review.",
   });
   expect(messages.at(-1)).toEqual({ role: "user", content: "hello" });
 });

@@ -11,7 +11,7 @@ test("formatStatus lists each tenant with no flag when clean", () => {
     runtime: "identity-runtime",
     tenants: [{ agentId: "bruno", pendingMutations: 0 }, { agentId: "eli", pendingMutations: 0 }],
   });
-  expect(output).toBe("bruno: pendingMutations=0\ncoda: pendingMutations=0");
+  expect(output).toBe("bruno: pendingMutations=0\neli: pendingMutations=0");
 });
 
 test("formatStatus flags a tenant with pending mutations and points at the recovery command", () => {
