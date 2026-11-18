@@ -76,6 +76,8 @@ export interface WorkHandlerDeps {
   /** Recheck the standing review before a revision spends a work session. */
   validateRevision?: (work: WorkRecord) => Promise<{ ok: true } | { ok: false; reason: string }>;
   config?: WorkConfig;
+  /** Agents that may carry works besides `config.author`; each work is pinned to the one that first claims it. */
+  authors?: string[];
   /**
    * Host-side safety net for a session that committed but did not publish. It returns
    * published=true only after the host itself pushed the branch and, for a start-work, opened the PR; the normal
@@ -112,6 +114,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
   const config = deps.config ?? loadWorkConfig({});
   const log: ConsumerLog = deps.log ?? (() => {});
+  const authors = new Set([config.author, ...(deps.authors ?? [])]);
 
   const block = (workId: string, reason: string): WorkOutcome => {
     store.setState(workId, "blocked", reason);
@@ -126,12 +129,17 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
         log("error", "work job has no readable work reference", { claimId: claim.id });
         return failed;
       }
-      if (worker !== config.author) {
+      if (!authors.has(worker)) {
         log("info", "work job is not for this worker", { agent: worker, author: config.author, claimId: claim.id });
         return failed;
       }
 
       const existing = store.getWork(ref.workId);
+      // Another listed author owns this work: leave the job for it. Failing it would end a live work.
+      if (existing && existing.author !== worker && authors.has(existing.author)) {
+        log("info", "work job is pinned to another author", { agent: worker, workId: existing.workId, claimId: claim.id });
+        return { kind: "release" };
+      }
       let work: WorkRecord;
       if (existing) {
         work = existing;
@@ -141,7 +149,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
           return failed;
         }
         const created = store.createWork({
-          repo: job.target.repo, issue: job.target.number, approvedDigest: ref.digest, config, workId: ref.workId,
+          repo: job.target.repo, issue: job.target.number, approvedDigest: ref.digest, config: { ...config, author: worker }, workId: ref.workId,
         });
         if (created.refused) {
           log("info", "work refused", { reason: created.refused, workId: created.work.workId });

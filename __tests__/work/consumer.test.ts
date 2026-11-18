@@ -117,12 +117,13 @@ class FakeExecutor implements SessionExecutor {
   }
 }
 
-function build(over: { executor?: FakeExecutor; jobs?: FakeJobs; evidence?: (workId: string) => Promise<{ ok: true; url: string } | { ok: false; reason: string }>; agent?: string; releaseBackoffMs?: number; findPublishedPr?: () => Promise<boolean>; publishFallback?: (input: { work: unknown; kind: "start-work" | "revise"; stopCause: string; limitTerminal?: boolean }) => Promise<{ published: boolean; reason?: string; host?: { sha: string; prOutput: string; checks: string[] }; hostPushed?: boolean; hostSha?: string }> } = {}) {
+function build(over: { executor?: FakeExecutor; jobs?: FakeJobs; evidence?: (workId: string) => Promise<{ ok: true; url: string } | { ok: false; reason: string }>; agent?: string; authors?: string[]; releaseBackoffMs?: number; findPublishedPr?: () => Promise<boolean>; publishFallback?: (input: { work: unknown; kind: "start-work" | "revise"; stopCause: string; limitTerminal?: boolean }) => Promise<{ published: boolean; reason?: string; host?: { sha: string; prOutput: string; checks: string[] }; hostPushed?: boolean; hostSha?: string }> } = {}) {
   const jobs = over.jobs ?? new FakeJobs();
   const executor = over.executor ?? new FakeExecutor();
   const logs: string[] = [];
   const handler = createWorkHandler({
     store, executor, github, heartbeatMs: 10, now: () => clock,
+    ...(over.authors ? { authors: over.authors } : {}),
     collectEvidence: over.evidence ?? (async () => ({ ok: false, reason: "no pull request" })),
     findPublishedPr: over.findPublishedPr ?? (async () => false),
       heartbeatTimeoutMs: 30,
@@ -236,6 +237,40 @@ describe("who may run it", () => {
     await consumer.tick();
     expect(executor.inputs.length).toBe(0);
     expect(jobs.reports.map((r) => r.report.outcome)).toEqual(["failed"]);
+  });
+
+  test("a listed extra author may start a new work, and the work is pinned to it", async () => {
+    const { jobs, executor, consumer } = build({ agent: "jade", authors: ["jade"] });
+    jobs.queued.push(workJob());
+    await consumer.tick();
+    expect(executor.inputs.length).toBe(1);
+    expect(store.listWorks().map((w) => w.author)).toEqual(["jade"]);
+  });
+
+  test("an agent that is neither the author nor a listed extra author is still refused", async () => {
+    const { jobs, executor, consumer } = build({ agent: "kai", authors: ["jade"] });
+    jobs.queued.push(workJob());
+    await consumer.tick();
+    expect(executor.inputs.length).toBe(0);
+    expect(jobs.reports.map((r) => r.report.outcome)).toEqual(["failed"]);
+    expect(store.listWorks().length).toBe(0);
+  });
+
+  test("a work pinned to one author is handed back, not failed, when another listed author claims it", async () => {
+    const first = build({ agent: "finn", authors: ["jade"] });
+    first.jobs.queued.push(workJob());
+    await first.consumer.tick();
+    expect(store.listWorks().map((w) => w.author)).toEqual(["finn"]);
+    const before = first.executor.inputs.length;
+
+    const second = build({ agent: "jade", authors: ["jade"] });
+    second.jobs.queued.push(workJob());
+    await second.consumer.tick();
+    expect(second.executor.inputs.length).toBe(0);
+    expect(second.jobs.reports).toEqual([]);
+    expect(second.jobs.released.length).toBe(1);
+    expect(store.listWorks().map((w) => w.author)).toEqual(["finn"]);
+    expect(first.executor.inputs.length).toBe(before);
   });
 
   test("a job without a readable work reference is not run", async () => {

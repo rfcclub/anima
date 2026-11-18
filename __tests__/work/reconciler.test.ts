@@ -82,10 +82,10 @@ class FakeMesh implements MeshEnqueuer {
   jobs(type: string) { return [...this.byKey.values()].filter((j) => j.input.type === type); }
 }
 
-function make() {
+function make(cfg: ReconcilerConfig = config) {
   const github = new FakeGitHub();
   const mesh = new FakeMesh();
-  const make = () => new Reconciler({ store, github, mesh, config, now: () => clock });
+  const make = () => new Reconciler({ store, github, mesh, config: cfg, now: () => clock });
   return { github, mesh, reconciler: make(), restart: make };
 }
 
@@ -206,6 +206,39 @@ describe("revise cycle", () => {
     await ctx.reconciler.tick();
     return ctx;
   }
+
+  describe("with several authors", () => {
+    const pool: ReconcilerConfig = {
+      ...config,
+      authorMeshIds: ["finn@anima", "jade@anima"],
+      authorMeshIdByAgent: { finn: "finn@anima", jade: "jade@anima" },
+    };
+
+    async function poolInReview() {
+      store.close();
+      store = WorkStore.open(":memory:", { rootBase: "/w" });
+      workId = store.createWork({ repo: "rfcclub/anima", issue: 7, approvedDigest: "d1d1d1d1d1d1", config: loadWorkConfig({ author: "jade" }) }).work.workId;
+      store.setState(workId, "running");
+      const ctx = make(pool);
+      ctx.github.prByBranch = pr();
+      await ctx.reconciler.collectEvidence(workId);
+      store.setState(workId, "in-review");
+      await ctx.reconciler.tick();
+      return ctx;
+    }
+
+    test("the review job excludes every author", async () => {
+      const { mesh } = await poolInReview();
+      expect(mesh.jobs("review")[0]!.input.excluded).toEqual(["finn@anima", "jade@anima"]);
+    });
+
+    test("a revise job is eligible only for the author the work is pinned to", async () => {
+      const { github, mesh, reconciler } = await poolInReview();
+      github.reviewList = [review()];
+      await reconciler.tick();
+      expect(mesh.jobs("revise")[0]!.input.eligible).toEqual(["jade@anima"]);
+    });
+  });
 
   test("a changes-requested review on the current head yields one author-only revise job, however often it is seen", async () => {
     const { github, mesh, reconciler } = await inReview();

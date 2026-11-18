@@ -168,6 +168,14 @@ describe("buildStartWorkJob", () => {
     });
     expect(String(job.workRef)).toMatch(/^w[0-9a-f]{10}\.abcdef123456$/);
   });
+
+  test("every listed author is eligible, the primary first", () => {
+    const job = buildStartWorkJob({
+      repo: "rfcclub/anima", issue: 7, digest: "abcdef123456", authorMeshId: WORK.authorMeshId,
+      extraAuthorMeshIds: ["jade@anima", "kai@anima"], now: 1_000,
+    });
+    expect(job.eligible).toEqual([WORK.authorMeshId, "jade@anima", "kai@anima"]);
+  });
 });
 
 describe("dispatchApprovedIssues", () => {
@@ -186,6 +194,19 @@ describe("dispatchApprovedIssues", () => {
     expect(enqueued).toHaveLength(1);
     expect(enqueued[0]).toMatchObject({ type: "start-work", target: { repo: "rfcclub/anima", kind: "issue", number: 7 } });
     expect(logs.some((line) => line.message === "issue dispatched")).toBe(true);
+  });
+
+  test("makes the extra authors eligible for the start-work job", async () => {
+    const enqueued: Array<Record<string, unknown>> = [];
+    await dispatchApprovedIssues({
+      config: CONFIG, work: { ...WORK, extraAuthors: [{ agent: "jade", meshId: "jade@anima" }] },
+      store: { listWorks: () => [] },
+      mesh: { enqueue: async (input) => { enqueued.push(input); return { id: "job-1", state: "queued", createdAt: Date.now() } as never; } },
+      gh: async () => JSON.stringify([issue(7, "body")]),
+      log: () => {},
+      now: () => 1_000,
+    });
+    expect(enqueued[0]!.eligible).toEqual([WORK.authorMeshId, "jade@anima"]);
   });
 
   test("skips an issue whose work is still active", async () => {

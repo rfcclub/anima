@@ -36,6 +36,11 @@ export interface ReconcilerConfig {
   authorActor: string;
   /** Mesh IDs of the author; excluded from review jobs and the only ones eligible for revise jobs. */
   authorMeshIds: string[];
+  /**
+   * The mesh ID of each author agent. With several authors a revise job is eligible only for the author the work is
+   * pinned to. Absent: every `authorMeshIds` entry is eligible, as with a single author.
+   */
+  authorMeshIdByAgent?: Record<string, string>;
   reviewers: Array<{ agent: string; meshId: string; login: string }>;
   /** Outside reviewers whose standing change request starts a revise; never counted as approvals. */
   externalReviewers?: string[];
@@ -242,6 +247,9 @@ export class Reconciler {
         excluded: config.authorMeshIds, expiresAt, idempotencyKey: `review:work:${work.workId}:${payload.number}@${payload.head}`,
       });
     } else if (entry.purpose === "revise") {
+      const pinned = config.authorMeshIdByAgent?.[work.author];
+      if (config.authorMeshIdByAgent && !pinned) throw new Error("revise refused: the work's author has no mesh ID");
+      const reviseEligible = pinned ? [pinned] : config.authorMeshIds;
       const retry = entry.key.startsWith("revise-retry:");
       const port = retry && mesh.retrySession ? mesh.retrySession() : mesh;
       if (retry) {
@@ -265,9 +273,9 @@ export class Reconciler {
         }
         if (!payload.failedJobId || !port.getJob) throw new Error("retry refused: prior Mesh job cannot be read");
         const old = await port.getJob(payload.failedJobId);
-        const author = config.authorMeshIds[0];
+        const author = reviseEligible[0];
         const matchesAuthor = (value: string) => value.toLowerCase() === author?.toLowerCase();
-        if (config.authorMeshIds.length !== 1 || !author || old.id !== payload.failedJobId || old.type !== "revise" ||
+        if (reviseEligible.length !== 1 || !author || old.id !== payload.failedJobId || old.type !== "revise" ||
             !matchesAuthor(old.enqueuer) ||
             !["queued", "expired"].includes(old.state) || old.slots !== 1 ||
             old.target.repo.toLowerCase() !== work.repo.toLowerCase() || old.target.kind !== "pr" ||
@@ -287,7 +295,7 @@ export class Reconciler {
         }
       }
       await port.enqueue({
-        type: "revise", target, slots: 1, eligible: config.authorMeshIds, priority: -10, expiresAt,
+        type: "revise", target, slots: 1, eligible: reviseEligible, priority: -10, expiresAt,
         workRef: `${work.workId}.${work.approvedDigest.slice(0, 12)}`,
         idempotencyKey: retry ? entry.key : `revise:work:${work.workId}@${payload.head}`,
       });
