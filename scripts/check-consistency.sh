@@ -16,9 +16,16 @@
 # a later duplicate entry is not reported. Divergences list all of the topic's
 # entries so each one can be checked by hand.
 #
+# Known limitation: because MEMORY.md may extend a residue, a residue that is
+# itself the negated part of an entry is not detected. Residue "deploy:
+# approved" is consistent with "deploy: approved? no, rejected", and "done"
+# with "done not". Only an entry that negates before or within the residue text
+# ("not done") is reported.
+#
 # Detection and report only: MEMORY.md and the SCENT residues are never
 # written by this script. REPORT_FILE is rejected (exit 2) when it resolves to
-# MEMORY_FILE or inside SCENT_DIR.
+# MEMORY_FILE or inside SCENT_DIR, and when it is the same file as MEMORY.md or
+# a residue (symlink or hardlink).
 #
 # Usage: bash check-consistency.sh
 #   BLADE_DIR    BLADE root (default ~/agora/familia/abel/BLADE)
@@ -93,6 +100,23 @@ report_canon="$(canonical_path "$REPORT_FILE")" ||
 
 if [[ "$report_canon" == "$scent_canon" || "$report_canon" == "$scent_canon"/* ]]; then
   die "REPORT_FILE must not be inside the SCENT directory: $REPORT_FILE"
+fi
+
+# Path comparison misses hardlinks and case-insensitive aliases, which are the
+# same file with different names. Compare inodes instead, and only when the
+# report already exists: -ef is a filesystem identity check.
+if [[ -e "$REPORT_FILE" ]]; then
+  [[ ! "$REPORT_FILE" -ef "$MEMORY_FILE" ]] ||
+    die "REPORT_FILE must not be the same file as MEMORY.md: $REPORT_FILE"
+  shopt -s nullglob
+  existing_residues=("$SCENT_DIR"/*.md)
+  shopt -u nullglob
+  for residue_file in ${existing_residues[@]+"${existing_residues[@]}"}; do
+    [[ -f "$residue_file" ]] || continue
+    [[ ! "$REPORT_FILE" -ef "$residue_file" ]] ||
+      die "REPORT_FILE must not be the same file as SCENT residue: $residue_file"
+  done
+  unset existing_residues residue_file
 fi
 
 # Find every MEMORY.md entry for a topic. Sets MEM_LINES and MEM_TEXTS (empty

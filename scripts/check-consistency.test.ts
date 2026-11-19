@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -229,6 +237,37 @@ describe("check-consistency.sh", () => {
     expect(result.code).toBe(2);
     expect(result.err).toContain("MEMORY.md");
     expect(readFileSync(memory, "utf-8")).toBe(original);
+  });
+
+  test("refuses a report destination hard-linked to the memory input", () => {
+    const original = "# MEMORY\n\n- voice: held em stance\n";
+    writeFileSync(join(scent, "2026-05-01.md"), "# voice: held em stance\n", "utf-8");
+    writeFileSync(memory, original, "utf-8");
+    const link = join(blade, "hard-report.md");
+    linkSync(memory, link);
+
+    const result = run({ REPORT_FILE: link });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("MEMORY.md");
+    expect(readFileSync(memory, "utf-8")).toBe(original);
+    expect(readFileSync(link, "utf-8")).toBe(original);
+  });
+
+  test("refuses a report destination hard-linked to a SCENT residue", () => {
+    const original = "# voice: held em stance\n";
+    const residueFile = join(scent, "2026-05-01.md");
+    writeFileSync(residueFile, original, "utf-8");
+    writeFileSync(memory, "# MEMORY\n\n- voice: held em stance\n", "utf-8");
+    const link = join(blade, "hard-report.md");
+    linkSync(residueFile, link);
+
+    const result = run({ REPORT_FILE: link });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("SCENT");
+    expect(readFileSync(residueFile, "utf-8")).toBe(original);
+    expect(readFileSync(link, "utf-8")).toBe(original);
   });
 
   test("refuses a report destination inside the SCENT directory", () => {
