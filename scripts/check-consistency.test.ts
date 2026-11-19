@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -150,5 +150,96 @@ describe("check-consistency.sh", () => {
     expect(listed).toHaveLength(2);
     expect(result.report).toContain("2026-05-02.md:1");
     expect(result.report).toContain("felt present in review");
+  });
+
+  test("missing SCENT directory is an input error, not a false clean run", () => {
+    rmSync(scent, { recursive: true, force: true });
+
+    const result = run({ SCENT_DIR: join(root, "agora/familia/abel/BLADE/NOPE") });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("SCENT");
+    expect(result.report).toBe("");
+  });
+
+  test("SCENT path that is a file is an input error", () => {
+    const notADir = join(blade, "SCENT-is-a-file.md");
+    writeFileSync(notADir, "# voice: held em stance\n", "utf-8");
+
+    const result = run({ SCENT_DIR: notADir });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("SCENT");
+  });
+
+  test("a residue must not pass on a substring of the memory entry", () => {
+    writeFileSync(join(scent, "2026-05-01.md"), "# deploy: done\n", "utf-8");
+    writeFileSync(memory, "# MEMORY\n\n- deploy: not done\n", "utf-8");
+
+    const result = run();
+
+    expect(result.code).toBe(1);
+    expect(result.report).toContain("Mismatches: 1");
+    expect(result.report).toContain("diverged");
+    expect(result.report).toContain("not done");
+  });
+
+  test("a residue matching a later duplicate topic entry is consistent", () => {
+    writeFileSync(join(scent, "2026-05-01.md"), "# mood: steady\n", "utf-8");
+    writeFileSync(memory, "# MEMORY\n\n- mood: restless\n- mood: steady\n", "utf-8");
+
+    const result = run();
+
+    expect(result.code).toBe(0);
+    expect(result.report).toContain("Mismatches: 0");
+  });
+
+  test("duplicate topics are still checked when none of them match", () => {
+    writeFileSync(join(scent, "2026-05-01.md"), "# mood: steady\n", "utf-8");
+    writeFileSync(memory, "# MEMORY\n\n- mood: restless\n- mood: frayed\n", "utf-8");
+
+    const result = run();
+
+    expect(result.code).toBe(1);
+    expect(result.report).toContain("diverged");
+    expect(result.report).toContain("frayed");
+  });
+
+  test("refuses a report destination that is the memory input", () => {
+    const original = "# MEMORY\n\n- voice: held em stance\n";
+    writeFileSync(join(scent, "2026-05-01.md"), "# voice: held em stance\n", "utf-8");
+    writeFileSync(memory, original, "utf-8");
+
+    const result = run({ REPORT_FILE: memory });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("MEMORY.md");
+    expect(readFileSync(memory, "utf-8")).toBe(original);
+  });
+
+  test("refuses a report destination symlinked to the memory input", () => {
+    const original = "# MEMORY\n\n- voice: held em stance\n";
+    writeFileSync(join(scent, "2026-05-01.md"), "# voice: held em stance\n", "utf-8");
+    writeFileSync(memory, original, "utf-8");
+    const link = join(blade, "sneaky-report.md");
+    symlinkSync(memory, link);
+
+    const result = run({ REPORT_FILE: link });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("MEMORY.md");
+    expect(readFileSync(memory, "utf-8")).toBe(original);
+  });
+
+  test("refuses a report destination inside the SCENT directory", () => {
+    const original = "# voice: held em stance\n";
+    writeFileSync(join(scent, "2026-05-01.md"), original, "utf-8");
+    writeFileSync(memory, "# MEMORY\n\n- voice: held em stance\n", "utf-8");
+
+    const result = run({ REPORT_FILE: join(scent, "consistency-report.md") });
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("SCENT");
+    expect(readFileSync(join(scent, "2026-05-01.md"), "utf-8")).toBe(original);
   });
 });

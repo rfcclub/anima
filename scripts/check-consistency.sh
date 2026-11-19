@@ -6,9 +6,19 @@
 # reads both and reports, for every residue:
 #
 #   missing  — MEMORY.md has no entry for that topic at all
-#   diverged — MEMORY.md has an entry, but it does not contain the residue text
+#   diverged — MEMORY.md has entries for that topic, but none of them starts
+#              with the residue text (matched at a whole-word boundary: the
+#              residue may be extended by MEMORY.md, so "held em stance" is
+#              consistent with "held em stance through the review", while
+#              "done" is not consistent with "not done")
 #
-# Detection and report only: MEMORY.md is never written by this script.
+# Every MEMORY.md entry for the topic is considered, so a residue that matches
+# a later duplicate entry is not reported. Divergences list all of the topic's
+# entries so each one can be checked by hand.
+#
+# Detection and report only: MEMORY.md and the SCENT residues are never
+# written by this script. REPORT_FILE is rejected (exit 2) when it resolves to
+# MEMORY_FILE or inside SCENT_DIR.
 #
 # Usage: bash check-consistency.sh
 #   BLADE_DIR    BLADE root (default ~/agora/familia/abel/BLADE)
@@ -32,6 +42,8 @@ die() {
 }
 
 [[ -f "$MEMORY_FILE" ]] || die "MEMORY.md not found: $MEMORY_FILE"
+[[ -d "$SCENT_DIR" && -r "$SCENT_DIR" ]] ||
+  die "SCENT directory not found or unreadable: $SCENT_DIR"
 
 trim() {
   local s="$1"
@@ -40,23 +52,78 @@ trim() {
   printf '%s' "$s"
 }
 
-# Find the MEMORY.md entry for a topic. Sets MEM_LINE and MEM_TEXT (empty when
-# the topic was never recorded).
+# Follow a chain of symlinks without depending on GNU/BSD realpath flags.
+resolve_symlinks() {
+  local p="$1" target hops=0
+  while [[ -L "$p" ]]; do
+    hops=$((hops + 1))
+    [[ "$hops" -le 40 ]] || return 1
+    target="$(readlink "$p")"
+    case "$target" in
+      /*) p="$target" ;;
+      *) p="$(dirname "$p")/$target" ;;
+    esac
+  done
+  printf '%s' "$p"
+}
+
+# Absolute, symlink-free path for a file that may not exist yet: resolve the
+# file's symlinks, then resolve its nearest existing ancestor directory.
+canonical_path() {
+  local path dir base suffix=""
+  path="$(resolve_symlinks "$1")" || return 1
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  while [[ ! -d "$dir" ]]; do
+    [[ -z "$dir" || "$dir" == "." || "$dir" == "/" ]] && break
+    suffix="/$(basename "$dir")$suffix"
+    dir="$(dirname "$dir")"
+  done
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  printf '%s%s/%s' "${dir%/}" "$suffix" "$base"
+}
+
+memory_canon="$(canonical_path "$MEMORY_FILE")" || die "cannot resolve MEMORY.md: $MEMORY_FILE"
+scent_canon="$(canonical_path "$SCENT_DIR")" || die "cannot resolve SCENT: $SCENT_DIR"
+report_canon="$(canonical_path "$REPORT_FILE")" ||
+  die "cannot resolve report destination: $REPORT_FILE"
+
+[[ "$report_canon" != "$memory_canon" ]] ||
+  die "REPORT_FILE must not be MEMORY.md: $REPORT_FILE"
+
+if [[ "$report_canon" == "$scent_canon" || "$report_canon" == "$scent_canon"/* ]]; then
+  die "REPORT_FILE must not be inside the SCENT directory: $REPORT_FILE"
+fi
+
+# Find every MEMORY.md entry for a topic. Sets MEM_LINES and MEM_TEXTS (empty
+# when the topic was never recorded).
 memory_lookup() {
   local topic="$1" line body n=0
-  MEM_LINE=""
-  MEM_TEXT=""
+  MEM_LINES=()
+  MEM_TEXTS=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     body="$(trim "$line")"
     [[ "$body" == [-*]\ * ]] || continue
     body="$(trim "${body:2}")"
     if [[ "$body" == "$topic:"* ]]; then
-      MEM_LINE="$n"
-      MEM_TEXT="$(trim "${body#"$topic:"}")"
-      return 0
+      MEM_LINES+=("$n")
+      MEM_TEXTS+=("$(trim "${body#"$topic:"}")")
     fi
   done < "$MEMORY_FILE"
+}
+
+# A residue is consistent with a MEMORY.md entry when it equals the entry text
+# or is a whole-word prefix of it. Substring containment is deliberately not
+# enough: residue "done" must not pass against "not done".
+residue_matches() {
+  local mem="$1" residue="$2"
+  mem="${mem#"${mem%%[![:space:]]*}"}"
+  mem="${mem%"${mem##*[![:space:]]}"}"
+  [[ "$mem" == "$residue" ]] && return 0
+  [[ "$mem" == "$residue"* ]] || return 1
+  mem="${mem#"$residue"}"
+  [[ "$mem" == [[:space:][:punct:]]* ]]
 }
 
 mismatch_count=0
@@ -83,10 +150,17 @@ for file in ${residue_files[@]+"${residue_files[@]}"}; do
     memory_lookup "$topic"
 
     kind=""
-    if [[ -z "$MEM_LINE" ]]; then
+    if [[ "${#MEM_LINES[@]}" -eq 0 ]]; then
       kind="missing"
-    elif [[ "$MEM_TEXT" != *"$residue"* ]]; then
-      kind="diverged"
+    else
+      matched=""
+      for mem_text in "${MEM_TEXTS[@]}"; do
+        if residue_matches "$mem_text" "$residue"; then
+          matched=1
+          break
+        fi
+      done
+      [[ -n "$matched" ]] || kind="diverged"
     fi
     [[ -n "$kind" ]] || continue
 
@@ -96,7 +170,9 @@ for file in ${residue_files[@]+"${residue_files[@]}"}; do
     if [[ "$kind" == "missing" ]]; then
       details+=("  - memory: no \`$topic\` entry in MEMORY.md")
     else
-      details+=("  - memory: $(basename "$MEMORY_FILE"):$MEM_LINE: $MEM_TEXT")
+      for i in "${!MEM_TEXTS[@]}"; do
+        details+=("  - memory: $(basename "$MEMORY_FILE"):${MEM_LINES[$i]}: ${MEM_TEXTS[$i]}")
+      done
     fi
     details+=("")
   done < "$file"
