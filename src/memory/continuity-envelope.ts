@@ -275,16 +275,36 @@ export function sourceRoot(source: ContinuitySourceRef): string {
  * it contributes only the roots it was derived from, and a record with no
  * parents contributes nothing. Repeating one reflection over one episode many
  * times therefore yields one root at most, never corroboration.
+ *
+ * Parents are record keys, not roots, so a parent is resolved through the
+ * supplied records to *its* roots. Counting a parent key as a root would let a
+ * single verified outcome plus a reflection of it look like two independent
+ * sources; a parent that resolves to no supplied record is not evidence at all.
  */
 export function independentEvidence(records: ContinuityEnvelopeV1[]): string[] {
-  const roots = new Set<string>();
+  const byKey = new Map<string, ContinuityEnvelopeV1>();
   for (const record of records) {
-    if (record.epistemic === "derived") {
-      for (const parent of record.parents) roots.add(parent);
-      continue;
-    }
-    roots.add(sourceRoot(record.source));
+    byKey.set(record.idempotencyKey, record);
+    const recordKey = (record as Partial<CoalescedContinuityRecord>).recordKey;
+    if (recordKey) byKey.set(recordKey, record);
   }
+
+  const roots = new Set<string>();
+  const visited = new Set<ContinuityEnvelopeV1>();
+  const visit = (record: ContinuityEnvelopeV1): void => {
+    if (visited.has(record)) return; // cycles cannot inflate or hang
+    visited.add(record);
+    if (record.epistemic !== "derived") {
+      roots.add(sourceRoot(record.source));
+      return;
+    }
+    for (const parent of record.parents) {
+      const parentRecord = byKey.get(parent);
+      if (parentRecord) visit(parentRecord);
+    }
+  };
+
+  for (const record of records) visit(record);
   return [...roots].sort();
 }
 

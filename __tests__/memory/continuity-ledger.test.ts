@@ -10,6 +10,14 @@ import { ContinuityLedger } from "../../src/memory/continuity-ledger";
 
 const dbPath = () => join(mkdtempSync(join(tmpdir(), "continuity-ledger-")), "continuity.db");
 
+const ALL_VISIBILITIES = ["identity", "private", "heartwood", "shared"] as const;
+
+/**
+ * Reads are always made by one identity with an explicit visibility allowlist.
+ * The ledger has no "read everything" mode: omitting either is a compile error.
+ */
+const reader = (identity = "pilot") => ({ identity, visibility: ALL_VISIBILITIES });
+
 function envelope(overrides: Partial<ContinuityEnvelopeV1> = {}): ContinuityEnvelopeV1 {
   const base = {
     version: CONTINUITY_ENVELOPE_VERSION,
@@ -101,9 +109,9 @@ describe("continuity ledger", () => {
       }),
     );
 
-    const current = ledger.currentForSubject("deploy-window");
+    const current = ledger.currentForSubject("deploy-window", reader());
     expect(current.map((r) => r.content)).toEqual(["Deploy window is Thursday."]);
-    const conflict = ledger.conflicts("deploy-window");
+    const conflict = ledger.conflicts("deploy-window", reader());
     expect(conflict).toHaveLength(1);
     expect(conflict[0]!.unresolved).toBe(true);
     expect(conflict[0]!.recordKeys).toHaveLength(2);
@@ -123,8 +131,8 @@ describe("continuity ledger", () => {
     );
     ledger.supersede(old.record.recordKey, newer.record.recordKey, "operator replaced the decision");
 
-    expect(ledger.currentForSubject("deploy-window").map((r) => r.content)).toEqual(["Use the production bucket."]);
-    expect(ledger.history("deploy-window").map((r) => r.content)).toEqual([
+    expect(ledger.currentForSubject("deploy-window", reader()).map((r) => r.content)).toEqual(["Use the production bucket."]);
+    expect(ledger.history("deploy-window", reader()).map((r) => r.content)).toEqual([
       "Use the staging bucket.",
       "Use the production bucket.",
     ]);
@@ -139,8 +147,37 @@ describe("continuity ledger", () => {
         expiresAt: "2026-07-03T00:00:00.000Z",
       }),
     );
-    expect(ledger.currentForSubject("deploy-window", { at: "2026-07-09T00:00:00.000Z" })).toHaveLength(0);
-    expect(ledger.history("deploy-window")).toHaveLength(1);
+    expect(ledger.currentForSubject("deploy-window", { ...reader(), at: "2026-07-09T00:00:00.000Z" })).toHaveLength(0);
+    expect(ledger.history("deploy-window", reader())).toHaveLength(1);
+    ledger.close();
+  });
+
+  test("another identity's records never appear in a subject read", () => {
+    const ledger = new ContinuityLedger(dbPath());
+    ledger.commit(envelope({ content: "Pilot's deploy window is Thursday." }));
+    ledger.commit(
+      envelope({
+        identity: "other-agent",
+        source: { kind: "session-turn", id: "sess-2:turn-1", version: "1" },
+        content: "Other agent's deploy window is Monday.",
+      }),
+    );
+
+    const pilotView = ledger.currentForSubject("deploy-window", reader("pilot"));
+    expect(pilotView.map((r) => r.content)).toEqual(["Pilot's deploy window is Thursday."]);
+    expect(ledger.history("deploy-window", reader("pilot")).map((r) => r.identity)).toEqual(["pilot"]);
+    expect(
+      ledger.conflicts("deploy-window", reader("pilot")).flatMap((c) => c.recordKeys).length,
+    ).toBe(0);
+    ledger.close();
+  });
+
+  test("an empty visibility allowlist returns nothing instead of every row", () => {
+    const ledger = new ContinuityLedger(dbPath());
+    ledger.commit(envelope({ content: "Pilot's deploy window is Thursday." }));
+    expect(ledger.currentForSubject("deploy-window", { identity: "pilot", visibility: [] })).toHaveLength(0);
+    expect(ledger.history("deploy-window", { identity: "pilot", visibility: [] })).toHaveLength(0);
+    expect(ledger.conflicts("deploy-window", { identity: "pilot", visibility: [] })).toHaveLength(0);
     ledger.close();
   });
 
@@ -149,8 +186,8 @@ describe("continuity ledger", () => {
     ledger.commit(
       envelope({ content: "The operator is leaving the project.", visibility: "private", scope: "private" }),
     );
-    expect(ledger.currentForSubject("deploy-window", { visibility: ["identity"] })).toHaveLength(0);
-    expect(ledger.currentForSubject("deploy-window", { visibility: ["private"] })).toHaveLength(1);
+    expect(ledger.currentForSubject("deploy-window", { identity: "pilot", visibility: ["identity"] })).toHaveLength(0);
+    expect(ledger.currentForSubject("deploy-window", { identity: "pilot", visibility: ["private"] })).toHaveLength(1);
     ledger.close();
   });
 
@@ -186,7 +223,7 @@ describe("continuity ledger supersession audit", () => {
     const audit = ledger.recordByKey(`${newer.record.recordKey}:supersedes:${old.record.recordKey}`);
     expect(audit?.subject).toBeUndefined();
     expect(audit?.parents).toEqual([old.record.recordKey, newer.record.recordKey]);
-    expect(ledger.currentForSubject("deploy-window").map((r) => r.content)).toEqual(["Use the production bucket."]);
+    expect(ledger.currentForSubject("deploy-window", reader()).map((r) => r.content)).toEqual(["Use the production bucket."]);
     ledger.close();
   });
 
@@ -208,7 +245,7 @@ describe("continuity ledger supersession audit", () => {
     expect(() =>
       reopened.supersede(old.record.recordKey, newer.record.recordKey, "operator replaced the decision"),
     ).not.toThrow();
-    expect(reopened.history("deploy-window").map((r) => r.content)).toEqual([
+    expect(reopened.history("deploy-window", reader()).map((r) => r.content)).toEqual([
       "Use the staging bucket.",
       "Use the production bucket.",
     ]);

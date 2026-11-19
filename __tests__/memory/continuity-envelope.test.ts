@@ -115,6 +115,87 @@ describe("continuity envelope", () => {
     expect(assessment.requiresValidation).toBe(true);
   });
 
+  test("a reflection of one verified outcome is not independent corroboration of it", () => {
+    const outcome = parseContinuityEnvelope(
+      envelope({
+        kind: "verified_outcome",
+        epistemic: "verified",
+        source: { kind: "task-run", id: "run-8", version: "1" },
+        content: "Deploying on Thursday succeeded.",
+      }),
+    );
+    // A reflection whose only parent is that outcome's canonical record key.
+    const reflection = parseContinuityEnvelope(
+      envelope({
+        kind: "reflection",
+        epistemic: "derived",
+        source: { kind: "dream-deep", id: "episode-9", version: "1" },
+        parents: [outcome.idempotencyKey],
+        content: "Thursday deploys work.",
+        eventTime: "2026-07-02T10:00:00.000Z",
+      }),
+    );
+
+    // One real source, so no corroboration: the parent key resolves to the
+    // outcome's root instead of counting as a second independent source.
+    expect(independentEvidence([outcome, reflection])).toEqual(["task-run:run-8"]);
+    const assessment = assessLesson([outcome, reflection]);
+    expect(assessment.independentSources).toBe(1);
+    expect(assessment.status).toBe("provisional");
+
+    // A genuinely independent, unrelated verified source still corroborates.
+    const secondOutcome = parseContinuityEnvelope(
+      envelope({
+        kind: "verified_outcome",
+        epistemic: "verified",
+        source: { kind: "task-run", id: "run-11", version: "1" },
+        content: "A second Thursday deploy also succeeded.",
+        eventTime: "2026-07-03T10:00:00.000Z",
+      }),
+    );
+    expect(assessLesson([outcome, reflection, secondOutcome]).status).toBe("supported");
+  });
+
+  test("a derived chain resolves to its roots without looping or inflating them", () => {
+    const outcome = parseContinuityEnvelope(
+      envelope({
+        kind: "verified_outcome",
+        epistemic: "verified",
+        source: { kind: "task-run", id: "run-8", version: "1" },
+      }),
+    );
+    const first = parseContinuityEnvelope(
+      envelope({
+        kind: "reflection",
+        epistemic: "derived",
+        source: { kind: "dream-lucid", id: "episode-1", version: "1" },
+        parents: [outcome.idempotencyKey],
+      }),
+    );
+    const second = parseContinuityEnvelope(
+      envelope({
+        kind: "reflection",
+        epistemic: "derived",
+        source: { kind: "dream-lucid", id: "episode-2", version: "1" },
+        parents: [first.idempotencyKey],
+      }),
+    );
+    // A parent that no supplied record resolves to is not evidence either.
+    const orphan = parseContinuityEnvelope(
+      envelope({
+        kind: "reflection",
+        epistemic: "derived",
+        source: { kind: "dream-lucid", id: "episode-3", version: "1" },
+        parents: ["ck:does-not-exist"],
+      }),
+    );
+
+    // The outcome itself is supplied, so its key resolves to its root; the
+    // unresolvable parent in `orphan` contributes nothing.
+    expect(independentEvidence([outcome, first, second, orphan])).toEqual(["task-run:run-8"]);
+    expect(independentEvidence([first, second, orphan])).toEqual([]);
+  });
+
   test("an unsupported lesson stays provisional until independent verified evidence exists", () => {
     const onlyClaims = [
       parseContinuityEnvelope(envelope({ kind: "claim", epistemic: "asserted", source: { kind: "session-turn", id: "t1", version: "1" } })),

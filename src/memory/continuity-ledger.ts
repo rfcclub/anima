@@ -63,10 +63,15 @@ export interface CommitResult {
 }
 
 export interface SubjectQuery {
+  /** The identity whose continuity is being read. Required: there is no global read. */
+  identity: string;
+  /**
+   * Visibility values the caller may read. Required, and empty means none:
+   * an omitted or empty allowlist must never widen into "every visibility".
+   */
+  visibility: readonly ContinuityVisibility[];
   /** Evaluate expiry at this instant. Defaults to now. */
   at?: string;
-  /** Visibility values the caller may read. Omitted means every visibility. */
-  visibility?: readonly ContinuityVisibility[];
 }
 
 export interface SubjectConflict {
@@ -417,7 +422,7 @@ export class ContinuityLedger {
    * not expired at `at`, visible to the caller, and not older than the newest
    * event time for that subject.
    */
-  currentForSubject(subject: string, options: SubjectQuery = {}): ContinuityRecord[] {
+  currentForSubject(subject: string, options: SubjectQuery): ContinuityRecord[] {
     const at = options.at ?? new Date().toISOString();
     const rows = this.subjectRows(subject, options);
     const live = rows.filter(
@@ -429,7 +434,7 @@ export class ContinuityLedger {
   }
 
   /** Every record ever stored for a subject, including superseded and expired ones. */
-  history(subject: string, options: SubjectQuery = {}): ContinuityRecord[] {
+  history(subject: string, options: SubjectQuery): ContinuityRecord[] {
     return this.subjectRows(subject, options)
       .sort((a, b) => Date.parse(a.event_time) - Date.parse(b.event_time))
       .map(toRecord);
@@ -439,7 +444,7 @@ export class ContinuityLedger {
    * Live records for a subject that disagree. Kept explicit: conflicting advice
    * is surfaced for review, never averaged into one confident answer.
    */
-  conflicts(subject: string, options: SubjectQuery = {}): SubjectConflict[] {
+  conflicts(subject: string, options: SubjectQuery): SubjectConflict[] {
     const at = options.at ?? new Date().toISOString();
     const live = this.subjectRows(subject, options).filter(
       (row) => row.superseded_by === null && (row.expires_at === null || Date.parse(row.expires_at) > Date.parse(at)),
@@ -456,12 +461,10 @@ export class ContinuityLedger {
   }
 
   private subjectRows(subject: string, options: SubjectQuery): RecordRow[] {
-    const params: string[] = [subject];
-    let sql = `SELECT ${COLUMNS} FROM continuity_records WHERE subject = ?`;
-    if (options.visibility && options.visibility.length > 0) {
-      sql += ` AND visibility IN (${options.visibility.map(() => "?").join(", ")})`;
-      params.push(...options.visibility);
-    }
+    if (options.visibility.length === 0) return [];
+    const params: string[] = [subject, options.identity, ...options.visibility];
+    const sql = `SELECT ${COLUMNS} FROM continuity_records
+      WHERE subject = ? AND identity = ? AND visibility IN (${options.visibility.map(() => "?").join(", ")})`;
     return this.db.query(sql).all(...params) as RecordRow[];
   }
 
