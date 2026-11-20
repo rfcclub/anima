@@ -67,6 +67,7 @@ export default defineConfig({
             { text: 'Kinds', link: '/cartridge/kinds' },
             { text: 'Activation', link: '/cartridge/activation' },
             { text: 'Creating', link: '/cartridge/creating' },
+            { text: 'Agent Skills', link: '/cartridge/skills' },
           ]
         }
       ],
