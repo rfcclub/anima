@@ -305,10 +305,14 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
           repo, issue: issue.number, revision, reviewerMeshIds,
           authorMeshId: work.authorMeshId, excludedMeshIds: excluded, now: now(),
         }));
-        // A replayed enqueue returns the job from an earlier poll; only a job created now is a new dispatch.
+        // The gateway returns the same job for a replay and does not say which call created it, so "new in this
+        // poll" is inferred from createdAt by `freshJob` alone. That is approximate: a dispatcher restarted inside
+        // the freshness window, or gateway clock skew, can make a replayed job look new. The fields say so.
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) {
           dispatched += 1;
-          log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+          log("info", "intent review dispatched", {
+            repo, issue: issue.number, jobId: job.id, revision, freshness: "approximate", createdAt: job.createdAt,
+          });
         }
       } catch (error) {
         log("error", "intent review enqueue failed", { repo, issue: issue.number, error: errorText(error) });

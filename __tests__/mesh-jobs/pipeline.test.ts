@@ -436,6 +436,28 @@ describe("intent review dispatch", () => {
     ]);
   });
 
+  // The gateway says nothing about whether an enqueue created the job, so freshness is inferred from createdAt.
+  // A dispatcher restarted inside the five-second window therefore logs the replayed job again; the line says the
+  // freshness is approximate instead of claiming an unambiguous new dispatch.
+  test("a restart inside the freshness window can repeat the line, marked approximate", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(3_000),
+    };
+
+    await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
+    expect(queue.jobs.size).toBe(1);
+    const dispatched = logs.filter((line) => line.message === "intent review dispatched");
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched.every((line) => line.fields?.freshness === "approximate")).toBe(true);
+  });
+
   test("writes one summary line per poll so the poll itself stays visible", async () => {
     const logs = logLines();
     const queue = fakeQueue();
