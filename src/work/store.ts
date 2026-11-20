@@ -836,6 +836,15 @@ export class WorkStore {
     ]);
   }
 
+  /** Events of `kind` for a work recorded after the latest event of `resetKind` (or all of them when there is none). */
+  countEventsSince(workId: string, kind: string, resetKind: string): number {
+    const row = this.db.query(
+      `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = ?
+         AND seq > COALESCE((SELECT MAX(seq) FROM work_events WHERE work_id = ? AND kind = ?), 0)`,
+    ).get(workId, kind, workId, resetKind) as { n: number };
+    return row.n;
+  }
+
   listEvents(workId: string): WorkEvent[] {
     return (this.db.query("SELECT * FROM work_events WHERE work_id = ? ORDER BY seq").all(workId) as Row[]).map((r) => ({
       seq: r.seq as number,

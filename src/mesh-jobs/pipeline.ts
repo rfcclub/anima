@@ -208,7 +208,12 @@ export interface IssueDispatchDeps {
 async function startJobIsDead(mesh: IssueDispatchDeps["mesh"], job: { id: string; state: string }): Promise<boolean> {
   if (job.state !== "expired" && job.state !== "queued") return false;
   if (!mesh.getJob) return false;
-  const details = await mesh.getJob(job.id);
+  let details: Awaited<ReturnType<NonNullable<typeof mesh.getJob>>>;
+  try {
+    details = await mesh.getJob(job.id);
+  } catch {
+    return false;
+  }
   if (details.claims.some((claim) => claim.state === "active")) return false;
   if (job.state === "expired") return true;
   const eligible = details.eligible ?? [];
@@ -253,8 +258,9 @@ async function recoverQueuedWork(
       log("info", "work blocked: start job expired", { repo, issue, workId: record.workId, attempts: attempts + 1 });
       return false;
     }
-    appendEvent.call(store, record.workId, REDISPATCH_EVENT, { attempt: attempts + 1, expiredJob: current.id });
     const next = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts + 1 }));
+    // Charged only once the replacement job was accepted, so a failing gateway does not use the attempts up.
+    appendEvent.call(store, record.workId, REDISPATCH_EVENT, { attempt: attempts + 1, expiredJob: current.id, jobId: next.id });
     log("info", "start job re-dispatched", { repo, issue, workId: record.workId, attempt: attempts + 1, jobId: next.id });
     return next.state === "queued" || next.state === "reported";
   } catch (error) {
@@ -326,10 +332,12 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         // A replay of an approval whose job expired unclaimed (no work exists yet to recover): try the next attempt
         // key, bounded, so the approval is not stuck behind a dead job.
         const maxAttempts = config.maxStartRedispatch ?? 2;
-        for (let attempt = 1; attempt <= maxAttempts && (await startJobIsDead(mesh, job)); attempt += 1) {
+        let dead = await startJobIsDead(mesh, job);
+        for (let attempt = 1; dead && attempt <= maxAttempts; attempt += 1) {
           job = await mesh.enqueue(buildStartWorkJob({ ...base, attempt }));
+          dead = await startJobIsDead(mesh, job);
         }
-        if (await startJobIsDead(mesh, job)) {
+        if (dead) {
           log("info", "issue dispatch stopped: every start job for this approval is dead", { repo, issue: issue.number, digest });
           continue;
         }

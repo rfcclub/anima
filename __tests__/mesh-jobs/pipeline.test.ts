@@ -460,6 +460,31 @@ describe("dispatchApprovedIssues", () => {
       expect(states).toHaveLength(0);
     });
 
+    test("a failing gateway does not use the re-dispatch attempts up (#643)", async () => {
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          if (String(input.idempotencyKey).endsWith(":r1")) throw new Error("gateway unavailable");
+          return { id: "old", state: "expired", createdAt: 0 } as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a getJob failure on a healthy queued job does not hide the dispatch", async () => {
+      const { store } = fakeStore([]);
+      const count = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => { throw new Error("gateway read failed"); }, enqueue: async () => ({ id: "fresh", state: "queued", createdAt: 1_000 }) as never },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(count).toBe(1);
+    });
+
     test("a work that already ran is never re-dispatched by this path", async () => {
       const enqueued: unknown[] = [];
       const { store } = fakeStore([queuedWork({ state: "running", sessionsUsed: 1 })]);

@@ -211,24 +211,26 @@ describe("a failing issue lookup (#643)", () => {
     for (const message of ["gh issue view exited 1: HTTP 404: Not Found", "gh issue view exited 1: getaddrinfo: host not found", "gh: command not found"]) {
       const { handler } = handlerWith(async () => { throw new Error(message); });
       const result = await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() });
-      expect(result).toEqual({ kind: "release", backoffMs: 30_000 });
+      expect(result).toEqual({ kind: "release" });
       expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
     }
   });
 
-  test("a temporary failure releases the claim with a growing backoff; after the bound the work is blocked with the cause", async () => {
-    const { handler, executor } = handlerWith(async () => { throw new Error("gh issue view exited 1: HTTP 502 Bad Gateway"); });
-    const outcomes: Array<{ kind: string; backoffMs?: number }> = [];
-    for (let i = 0; i < 31; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }) as never);
-    expect(outcomes.slice(0, 30).every((o) => o.kind === "release")).toBe(true);
-    expect(outcomes[0]!.backoffMs).toBe(30_000);
-    expect(outcomes[1]!.backoffMs).toBe(60_000);
-    expect(outcomes[29]!.backoffMs).toBe(300_000);
-    expect(outcomes[30]).toEqual({ kind: "report", report: { outcome: "failed" } });
+  test("a temporary failure releases the claim; the count lives in the work events, so a new handler continues it, and after the bound the work is blocked with the cause", async () => {
+    const outcomes: Array<{ kind: string }> = [];
+    let executorUsed = false;
+    for (let i = 0; i < 241; i++) {
+      // a new handler every time: the bound must not depend on process memory
+      const { handler, executor } = handlerWith(async () => { throw new Error("gh issue view exited 1: HTTP 502 Bad Gateway"); });
+      outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }) as never);
+      if (executor.inputs.length) executorUsed = true;
+    }
+    expect(outcomes.slice(0, 240).every((o) => o.kind === "release")).toBe(true);
+    expect(outcomes[240]).toEqual({ kind: "report", report: { outcome: "failed" } });
     const work = store.getWork("wabc1234ef0")!;
     expect(work.state).toBe("blocked");
     expect(work.blockedReason).toBe("issue lookup kept failing");
-    expect(executor.inputs).toEqual([]);
+    expect(executorUsed).toBe(false);
   });
 
   test("a successful lookup resets the count", async () => {

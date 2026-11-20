@@ -110,22 +110,24 @@ const failed: WorkOutcome = { kind: "report", report: { outcome: "failed" } };
 
 /** GitHub's own answer for an issue number that does not exist. Anything vaguer (a 404 for a missing permission, a missing binary, DNS) may pass and is not proof. */
 const ISSUE_GONE = /could not resolve to an issue or pull request with the number/i;
-/** Consecutive releases for one job after a temporary issue-lookup failure (about two hours with the escalating backoff) before the claim is reported failed. */
-const MAX_TRANSIENT_RELEASES = 30;
-const TRANSIENT_BACKOFF_START_MS = 30_000;
-const TRANSIENT_BACKOFF_CAP_MS = 300_000;
+/** Consecutive releases for one job after a temporary issue-lookup failure (about two hours at the default backoff) before the claim is reported failed. */
+const MAX_TRANSIENT_RELEASES = 240;
+const LOOKUP_RETRY_EVENT = "issue-lookup-retry";
+const LOOKUP_RECOVERED_EVENT = "issue-lookup-recovered";
 
 export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
   const config = deps.config ?? loadWorkConfig({});
   const log: ConsumerLog = deps.log ?? (() => {});
-  const transientReleases = new Map<string, number>();
 
   const block = (workId: string, reason: string): WorkOutcome => {
     store.setState(workId, "blocked", reason);
     log("info", "work blocked", { workId, reason });
     return failed;
   };
+
+  /** Consecutive temporary lookup failures recorded for this work since the last successful lookup. */
+  const lookupRetries = (workId: string): number => store.countEventsSince(workId, LOOKUP_RETRY_EVENT, LOOKUP_RECOVERED_EVENT);
 
   return {
     async run({ worker, claim, job, jobs }): Promise<WorkOutcome> {
@@ -184,19 +186,19 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
         }
         // A temporary failure (network, rate limit, GitHub outage) is not a verdict on the work: hand the claim back
         // so the same job can be claimed again after the backoff, for about two hours of outage; after that the work is blocked with the cause.
-        const tries = (transientReleases.get(job.id) ?? 0) + 1;
+        // The count is kept in the work's own events so it survives a restart of the service.
+        const tries = lookupRetries(work.workId) + 1;
         if (tries <= MAX_TRANSIENT_RELEASES) {
-          transientReleases.set(job.id, tries);
+          store.appendEvent(work.workId, LOOKUP_RETRY_EVENT, { jobId: job.id, tries });
           log("info", "issue lookup failed; releasing the claim", { workId: work.workId, tries, error: text.slice(0, 200) });
-          return { kind: "release", backoffMs: Math.min(TRANSIENT_BACKOFF_START_MS * 2 ** (tries - 1), TRANSIENT_BACKOFF_CAP_MS) };
+          return { kind: "release" };
         }
-        transientReleases.delete(job.id);
         log("error", "issue lookup kept failing; blocking the work", { workId: work.workId, tries, error: text.slice(0, 200) });
         // The claim is reported failed and the queue will not offer the job to this worker again, so the work must
         // not stay queued with no way to run: it is blocked with the cause and an edit of the issue starts a new one.
         return block(work.workId, "issue lookup kept failing");
       }
-      transientReleases.delete(job.id);
+      if (lookupRetries(work.workId) > 0) store.appendEvent(work.workId, LOOKUP_RECOVERED_EVENT, { jobId: job.id });
       if (store.observeApproval(work.workId, issueDigest12(issue.body)) === "blocked") {
         const blocked = store.getWork(work.workId);
         log("info", "work refused", { workId: work.workId, state: "blocked", reason: blocked?.blockedReason ?? null });

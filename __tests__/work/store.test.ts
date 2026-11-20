@@ -78,6 +78,18 @@ describe("identity (WL-1)", () => {
     expect(s.listWorks().length).toBe(1);
   });
 
+  test("countEventsSince counts events after the latest reset event (#643)", () => {
+    const s = open();
+    const w = create(s).work;
+    s.appendEvent(w.workId, "retry");
+    s.appendEvent(w.workId, "retry");
+    expect(s.countEventsSince(w.workId, "retry", "ok")).toBe(2);
+    s.appendEvent(w.workId, "ok");
+    expect(s.countEventsSince(w.workId, "retry", "ok")).toBe(0);
+    s.appendEvent(w.workId, "retry");
+    expect(s.countEventsSince(w.workId, "retry", "ok")).toBe(1);
+  });
+
   test("a blocked work for an older digest does not stop a new work for a new digest (#643)", () => {
     const s = open();
     const first = create(s).work;
