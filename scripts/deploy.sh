@@ -146,7 +146,10 @@ echo "[build] building client bundle..."
 # data/ — sync static colony metadata used by server startup
 mkdir -p "$ANIMA_HOME/data"
 # Install the staged, validated roster; every previous runtime roster is kept under its own timestamped name.
-if [ -f "$ANIMA_HOME/data/colony.json" ]; then cp -p "$ANIMA_HOME/data/colony.json" "$ANIMA_HOME/data/colony.json.pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)"; fi
+if [ -f "$ANIMA_HOME/data/colony.json" ]; then
+  ROSTER_BACKUP="$(mktemp "$ANIMA_HOME/data/colony.json.pre-deploy-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+  cp -p "$ANIMA_HOME/data/colony.json" "$ROSTER_BACKUP"
+fi
 mv "$ROSTER_STAGE" "$ANIMA_HOME/data/colony.json"
 echo "  ✓ data/colony.json installed from $ROSTER_FROM"
 
