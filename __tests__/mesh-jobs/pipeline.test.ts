@@ -639,6 +639,139 @@ describe("intent review dispatch", () => {
     expect(count).toBe(2);
     expect(enqueued).toHaveLength(2);
   });
+
+  // The gateway replays the same job for the same issue and revision; only a new revision creates a new one.
+  function fakeQueue() {
+    const jobs = new Map<string, { id: string; state: string; createdAt: number }>();
+    let clock = 0;
+    return {
+      jobs,
+      advance(ms: number) { clock += ms; return clock; },
+      enqueue: async (input: { idempotencyKey: string }) => {
+        const existing = jobs.get(input.idempotencyKey);
+        if (existing) return existing as never;
+        const job = { id: `job-${jobs.size + 1}`, state: "queued", createdAt: clock };
+        jobs.set(input.idempotencyKey, job);
+        return job as never;
+      },
+    };
+  }
+
+  test("two polls over the same revision log the dispatch once", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    };
+
+    expect(await dispatchIntentReviews(deps)).toBe(1);
+    expect(await dispatchIntentReviews(deps)).toBe(0);
+    expect(queue.jobs.size).toBe(1);
+    expect(logs.filter((line) => line.message === "intent review dispatched")).toHaveLength(1);
+  });
+
+  test("a changed revision logs one new dispatch line", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    let body = "body";
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, body, ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    };
+
+    await dispatchIntentReviews(deps);
+    body = "body edited";
+    await dispatchIntentReviews(deps);
+    const dispatched = logs.filter((line) => line.message === "intent review dispatched");
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched.map((line) => line.fields?.revision)).toEqual([
+      intentRevision("issue 7", "body"), intentRevision("issue 7", "body edited"),
+    ]);
+  });
+
+  // The gateway replays the job from the earlier poll with its original createdAt, and that instant is always
+  // before this poll started, so a restart cannot make a replay look like a dispatch even seconds later.
+  test("a restart seconds later does not log the replayed job again", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    // Each poll starts three seconds after the previous one; the replay keeps the job's first createdAt.
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(3_000),
+    };
+
+    await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
+    expect(queue.jobs.size).toBe(1);
+    expect(logs.filter((line) => line.message === "intent review dispatched")).toHaveLength(1);
+  });
+
+  test("the dispatch line carries no approximate-freshness claim", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    await dispatchIntentReviews({
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    });
+
+    const [line] = logs.filter((entry) => entry.message === "intent review dispatched");
+    expect(line!.fields).toEqual({
+      repo: "rfcclub/anima", issue: 7, jobId: "job-1",
+      revision: intentRevision("issue 7", "body"), createdAt: 600_000,
+    });
+  });
+
+  test("writes one summary line per poll so the poll itself stays visible", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"]), issue(8, "other", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    };
+
+    await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
+    const summary = logs.filter((line) => line.message === "intent review poll");
+    expect(summary).toHaveLength(2);
+    expect(summary.map((line) => line.fields)).toEqual([
+      { repos: CONFIG.repos, eligible: 2, dispatched: 2 },
+      { repos: CONFIG.repos, eligible: 2, dispatched: 0 },
+    ]);
+  });
+
+  test("a failing enqueue is logged as an error on every poll", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    const deps = {
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: async () => { throw new Error("gateway down"); } },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    };
+
+    await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
+    expect(logs.filter((line) => line.message === "intent review enqueue failed")).toHaveLength(2);
+    expect(logs.some((line) => line.message === "intent review dispatched")).toBe(false);
+  });
 });
 
 describe("pull request review dispatch", () => {
