@@ -1,40 +1,67 @@
 import { expect, test } from "bun:test";
-import { chooseRoster, rosterNames } from "./deploy-roster.ts";
+import { canonicalRoster, chooseRoster, isInsidePath, validRoster } from "./deploy-roster.ts";
 
-const repo = JSON.stringify({ agents: [{ name: "alpha" }, { name: "beta" }] });
-const same = JSON.stringify({ agents: [{ name: "beta" }, { name: "alpha" }], extra: 1 });
-const other = JSON.stringify({ agents: [{ name: "gamma" }, { name: "delta" }] });
+const roster = (names: string[], extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ companies: { a: { members: names.map((agentId) => ({ agentId })) } }, agents: names.map((name) => ({ name })), ...extra });
+const repo = roster(["alpha", "beta"]);
+const sameShuffled = JSON.stringify({ agents: [{ name: "alpha" }, { name: "beta" }], companies: { a: { members: [{ agentId: "alpha" }, { agentId: "beta" }] } } });
+const sameNamesOtherMembers = roster(["alpha", "beta"], { companies: { a: { members: [{ agentId: "alpha" }] } } });
+const other = roster(["gamma", "delta"]);
 
-test("rosterNames reads names from a list of objects, a list of strings or a keyed object", () => {
-  expect(rosterNames(repo)).toEqual(["alpha", "beta"]);
-  expect(rosterNames(JSON.stringify({ agents: ["b", "a"] }))).toEqual(["a", "b"]);
-  expect(rosterNames(JSON.stringify({ agents: { b: {}, a: {} } }))).toEqual(["a", "b"]);
-  expect(rosterNames("not json")).toBeNull();
+test("validRoster needs an agents array of named objects, as the runtime loads it", () => {
+  expect(validRoster(repo)).toBe(true);
+  expect(validRoster(JSON.stringify({ agents: { alpha: {} } }))).toBe(false);
+  expect(validRoster(JSON.stringify({ agents: ["alpha"] }))).toBe(false);
+  expect(validRoster(JSON.stringify({ agents: [] }))).toBe(false);
+  expect(validRoster(JSON.stringify({ agents: [{ name: "" }] }))).toBe(false);
+  expect(validRoster("not json")).toBe(false);
 });
 
-test("a configured overlay roster wins over the repository roster", () => {
-  const choice = chooseRoster({ repo, runtime: other, overlay: same });
-  expect(choice).toEqual({ action: "overlay" });
+test("canonicalRoster ignores key order but not content", () => {
+  expect(canonicalRoster(repo)).toBe(canonicalRoster(sameShuffled));
+  expect(canonicalRoster(repo)).not.toBe(canonicalRoster(sameNamesOtherMembers));
+});
+
+test("a configured valid overlay wins over the repository roster", () => {
+  expect(chooseRoster({ repo, runtime: roster(["alpha", "beta"]), overlay: sameShuffled })).toEqual({ action: "overlay" });
+});
+
+test("an overlay with other members than the runtime roster is refused unless accepted", () => {
+  expect(chooseRoster({ repo, runtime: other, overlay: repo }).action).toBe("refuse");
+  expect(chooseRoster({ repo, runtime: other, overlay: repo, accept: true })).toEqual({ action: "overlay" });
+});
+
+test("an overlay the server cannot load stops the deploy", () => {
+  expect(chooseRoster({ repo, runtime: null, overlay: JSON.stringify({ agents: { alpha: {} } }) }).action).toBe("refuse");
+  expect(chooseRoster({ repo, runtime: other, overlay: "oops", accept: true }).action).toBe("refuse");
 });
 
 test("without an overlay the repository roster is installed on a first install", () => {
   expect(chooseRoster({ repo, runtime: null })).toEqual({ action: "repo" });
 });
 
-test("without an overlay the same set of names installs the repository roster", () => {
-  expect(chooseRoster({ repo, runtime: same })).toEqual({ action: "repo" });
+test("without an overlay an identical roster installs the repository roster", () => {
+  expect(chooseRoster({ repo, runtime: sameShuffled })).toEqual({ action: "repo" });
 });
 
-test("without an overlay a different roster stops the deploy before anything is copied", () => {
-  const choice = chooseRoster({ repo, runtime: other });
+test("same agent names with different members or metadata are not the same roster", () => {
+  const choice = chooseRoster({ repo, runtime: sameNamesOtherMembers });
   expect(choice.action).toBe("refuse");
   expect((choice as { reason: string }).reason).toContain("overlay");
 });
 
-test("an unreadable repository roster stops the deploy", () => {
-  expect(chooseRoster({ repo: "oops", runtime: other }).action).toBe("refuse");
+test("a different roster is refused unless the change is accepted on purpose", () => {
+  expect(chooseRoster({ repo, runtime: other }).action).toBe("refuse");
+  expect(chooseRoster({ repo, runtime: other, accept: true })).toEqual({ action: "repo" });
 });
 
-test("an unreadable overlay stops the deploy instead of falling back", () => {
-  expect(chooseRoster({ repo, runtime: other, overlay: "oops" }).action).toBe("refuse");
+test("an unreadable repository roster stops the deploy", () => {
+  expect(chooseRoster({ repo: "oops", runtime: other, accept: true }).action).toBe("refuse");
+});
+
+test("isInsidePath detects a directory inside another and not a sibling with the same prefix", () => {
+  expect(isInsidePath("/work/repo/overlay", "/work/repo")).toBe(true);
+  expect(isInsidePath("/work/repo", "/work/repo")).toBe(true);
+  expect(isInsidePath("/work/repo-private", "/work/repo")).toBe(false);
+  expect(isInsidePath("/home/x/overlay", "/work/repo")).toBe(false);
 });
