@@ -94,6 +94,8 @@ export interface LoopRunOptions {
   onTurn?: (n: number, output: string, signal: LoopSignal) => void;
   signal?: AbortSignal;
   mailContext?: string;
+  /** Text appended to the next continuation message, for example a notice that the session is nearly out of time. */
+  windDown?: (iteration: number, lastIteration: number) => string | undefined;
   /** Write a checkpoint when the run ends for any reason other than `done` (rfcclub/anima#71). */
   checkpoints?: boolean;
   /** Continue from the latest open checkpoint for this agent and goal, if any. */
@@ -372,6 +374,8 @@ export async function runLoopMode(
     currentMessage = toolResults
       ? `[loop:${i}/${last}] Tool results:\n${toolResults}\n\nContinue. Previous step: ${reason}`
       : `[loop:${i}/${last}] Continue. Previous step: ${reason}`;
+    const hint = options.windDown?.(i, last);
+    if (hint) currentMessage += `\n\n${hint}`;
   }
 
   return finish("max_reached", last, { reason: "max_reached", outcome: "completed" });

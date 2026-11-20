@@ -482,3 +482,25 @@ describe("the goal", () => {
     expect(g).not.toContain("action 'open_pr'");
   });
 });
+
+sbx("a loop session near its deadline (wind-down)", () => {
+  const messagesOf = (p: ReturnType<typeof provider>, n: number) => JSON.stringify(p.requests[n]?.messages ?? []);
+
+  test("asks the worker to commit and leave a note once most of the session time is used", async () => {
+    const p = provider([{ text: "working on it" }, { text: '<DONE reason="stopped" />' }]);
+    // The clock jumps far past the session deadline as soon as the first model request has been made.
+    const { executor } = setup(p, { now: () => 1_000 + p.requests.length * 10_000_000 });
+    await run(executor, { maxIterations: 5 });
+    expect(p.requests.length).toBe(2);
+    expect(messagesOf(p, 1)).toMatch(/nearly out of time/);
+    expect(messagesOf(p, 1)).toMatch(/commit/);
+  });
+
+  test("does not ask early: a session with plenty of time left gets no wind-down text", async () => {
+    const p = provider([{ text: "working on it" }, { text: '<DONE reason="stopped" />' }]);
+    const { executor } = setup(p, { now: () => 1_000 });
+    await run(executor, { maxIterations: 5 });
+    expect(p.requests.length).toBe(2);
+    expect(messagesOf(p, 1)).not.toMatch(/nearly out of time/);
+  });
+});

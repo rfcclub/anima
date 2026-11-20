@@ -139,6 +139,12 @@ export function createSessionExecutor(deps: ExecutorDeps): SessionExecutor {
   };
 }
 
+/** Share of the session deadline after which the worker is asked to commit and leave a note. */
+const WIND_DOWN_FRACTION = 0.8;
+const WIND_DOWN_HINT =
+  "[time] This session is nearly out of time. Stop starting new work. Commit what you have on the work branch " +
+  "(git add the files you changed, then git commit), then write a short note of what is done and what remains in your answer.";
+
 /** Adapter #0: the author's in-process loop, unchanged (identity prompt, work tools, host-mediated publish). */
 export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
   const now = deps.now ?? Date.now;
@@ -146,6 +152,7 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
     kind: "loop",
     async run(input): Promise<WorkerAdapterResult> {
       const { work, session, signal, workspace: ws } = input;
+      const startedAt = now();
 
       const workTools = createWorkTools({
         root: ws.root, tree: ws.tree, tmp: ws.tmp, home: ws.home, denyReadRoots: deps.denyReadRoots ?? [],
@@ -202,6 +209,7 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
         result = await runLoopMode(agent, goal, provider, deps.sessionManager, deps.sessionStore, {
           maxIterations: input.maxIterations, signal, checkpoints: true, resume: true, host, now,
           cleanWorkPrompt,
+          windDown: () => (now() - startedAt >= input.deadlineMs * WIND_DOWN_FRACTION ? WIND_DOWN_HINT : undefined),
           onWorkConversationStarted: (id) => {
             conversationSessionId = id;
             try {
