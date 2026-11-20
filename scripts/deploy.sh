@@ -17,6 +17,9 @@ echo ""
 echo "[0/9] Checking working tree..."
 (cd "$PROJECT_DIR" && bun scripts/deploy-guard.ts)
 
+# 0b. Refuse before anything is built or copied when the roster cannot be installed safely.
+bun "$PROJECT_DIR/scripts/deploy-roster.ts" "$PROJECT_DIR/data/colony.json" "$ANIMA_HOME/data/colony.json" "${ANIMA_OVERLAY_DIR:-}" > /dev/null
+
 # 1. Build
 echo ""
 echo "[1/4] Building server..."
@@ -135,8 +138,12 @@ echo "[build] building client bundle..."
 
 # data/ — sync static colony metadata used by server startup
 mkdir -p "$ANIMA_HOME/data"
-cp "$PROJECT_DIR/data/colony.json" "$ANIMA_HOME/data/colony.json"
-echo "  ✓ data/colony.json synced"
+# The roster comes from a private overlay (ANIMA_OVERLAY_DIR, outside every repository) or from the checkout when it
+# names the same agents as the runtime roster. Anything else stops the deploy before a file is copied.
+ROSTER_SRC="$(bun "$PROJECT_DIR/scripts/deploy-roster.ts" "$PROJECT_DIR/data/colony.json" "$ANIMA_HOME/data/colony.json" "${ANIMA_OVERLAY_DIR:-}")"
+if [ -f "$ANIMA_HOME/data/colony.json" ]; then cp -p "$ANIMA_HOME/data/colony.json" "$ANIMA_HOME/data/colony.json.pre-deploy"; fi
+cp "$ROSTER_SRC" "$ANIMA_HOME/data/colony.json"
+echo "  ✓ data/colony.json synced from $( [ "$ROSTER_SRC" = "$PROJECT_DIR/data/colony.json" ] && echo checkout || echo overlay )"
 
 # openspec/ — when present, sync the change tree so the /projects dashboard
 # (reads openspec/changes + openspec/archive) has data. Without it the
@@ -254,6 +261,13 @@ else
   exit 1
 fi
 
+DEPLOYED_COMMIT="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+ORIGIN_HEAD="$(git -C "$PROJECT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7 || true)"
+echo "  deployed commit: $DEPLOYED_COMMIT; origin head: ${ORIGIN_HEAD:-unknown}"
+# Optional work log (ANIMA_WORKLOG): one line per deploy with the commit, the build and the roster source.
+if [ -n "${ANIMA_WORKLOG:-}" ]; then
+  echo "- $(date -u +%Y-%m-%dT%H:%M:%SZ) deploy commit=$DEPLOYED_COMMIT origin=${ORIGIN_HEAD:-unknown} build=$BUILD_VERSION roster=$( [ -n "${ANIMA_OVERLAY_DIR:-}" ] && echo overlay || echo checkout )" >> "$ANIMA_WORKLOG"
+fi
 echo "[10/10] Done."
 echo ""
 echo "=== ~/.anima/ structure ==="
