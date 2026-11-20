@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { version } from "../package.json";
 import type { ProviderDef } from "../src/config/types";
 import { OpenAIv1ChatProvider } from "../src/providers/openai-v1-chat";
 
@@ -6,6 +7,113 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+});
+
+test("OpenCode Go sends stable versioned metadata to a fake server", async () => {
+  const received: Headers[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      received.push(request.headers);
+      return jsonResponse();
+    },
+  });
+
+  try {
+    const provider = new OpenAIv1ChatProvider(providerDef({
+      id: "opencode-go-oai",
+      baseUrl: new URL("/v1", server.url).href,
+      headers: {
+        "User-Agent": "configured-client",
+        "X-OpenCode-Session": "configured-session",
+        "X-Test-Header": "preserved",
+      },
+    }));
+    const request = {
+      agent: "worker",
+      mode: "plan" as const,
+      model: "deepseek-v4-flash",
+      sessionId: " conversation-1 ",
+      messages: [{ role: "user" as const, content: "hello" }],
+    };
+    await provider.query(request);
+    await provider.query(request);
+
+    expect(received).toHaveLength(2);
+    for (const headers of received) {
+      expect(headers.get("user-agent")).toBe(`anima/${version} (worker)`);
+      expect(headers.get("x-opencode-session")).toBe("conversation-1");
+      expect(headers.get("authorization")).toBe("Bearer test-key");
+      expect(headers.get("x-test-header")).toBe("preserved");
+    }
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("OpenCode Go injects metadata only for the canonical URL alias", async () => {
+  const received: Headers[] = [];
+  globalThis.fetch = (async (_input, init = {}) => {
+    received.push(new Headers(init.headers));
+    return jsonResponse();
+  }) as typeof fetch;
+
+  const request = {
+    agent: "worker",
+    mode: "plan" as const,
+    model: "deepseek-v4-flash",
+    sessionId: "conversation-1",
+    messages: [{ role: "user" as const, content: "hello" }],
+  };
+  for (const baseUrl of [
+    "https://opencode.ai/zen/go/v1",
+    "https://opencode.ai/zen/gopher/v1",
+    "https://opencode.test/zen/go/v1",
+    "https://provider.test/v1",
+  ]) {
+    const provider = new OpenAIv1ChatProvider(providerDef({ baseUrl, headers: { "User-Agent": "custom-client" } }));
+    await provider.query(request);
+  }
+
+  expect(received.map((headers) => headers.get("x-opencode-session"))).toEqual(["conversation-1", null, null, null]);
+  expect(received.map((headers) => headers.get("user-agent"))).toEqual([
+    `anima/${version} (worker)`, "custom-client", "custom-client", "custom-client",
+  ]);
+});
+
+test("OpenCode Go uses a generic metadata label when the agent label is invalid", async () => {
+  let capturedHeaders: Headers | undefined;
+  globalThis.fetch = (async (_input, init = {}) => {
+    capturedHeaders = new Headers(init.headers);
+    return jsonResponse();
+  }) as typeof fetch;
+
+  const provider = new OpenAIv1ChatProvider(providerDef({ id: "opencode-go-oai" }));
+  await provider.query({
+    agent: "worker label",
+    mode: "plan",
+    model: "deepseek-v4-flash",
+    messages: [{ role: "user", content: "hello" }],
+  });
+
+  expect(capturedHeaders?.get("user-agent")).toBe(`anima/${version} (agent)`);
+  expect(capturedHeaders?.get("x-opencode-session")).toBe("anima:worker label");
+});
+
+test.each([
+  [401, "unauthorized"],
+  [403, "forbidden"],
+])("OpenCode Go preserves AUTH_ERROR for %i %s", async (status, message) => {
+  globalThis.fetch = (async () => new Response(message, { status })) as unknown as typeof fetch;
+
+  const provider = new OpenAIv1ChatProvider(providerDef({ id: "opencode-go-oai" }));
+  await expect(provider.query({
+    agent: "worker",
+    mode: "plan",
+    model: "deepseek-v4-flash",
+    messages: [{ role: "user", content: "hello" }],
+  })).rejects.toMatchObject({ code: "AUTH_ERROR", message, retryable: false });
 });
 
 test("OpenCode Go receives the conversation session header", async () => {
