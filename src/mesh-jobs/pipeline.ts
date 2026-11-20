@@ -296,9 +296,18 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         continue;
       }
       try {
-        const job = await mesh.enqueue(buildStartWorkJob({
-          repo, issue: issue.number, digest, authorMeshId: work.authorMeshId, now: now(),
-        }));
+        const base = { repo, issue: issue.number, digest, authorMeshId: work.authorMeshId, now: now() };
+        let job = await mesh.enqueue(buildStartWorkJob(base));
+        // A replay of an approval whose job expired unclaimed (no work exists yet to recover): try the next attempt
+        // key, bounded, so the approval is not stuck behind a dead job.
+        const maxAttempts = config.maxStartRedispatch ?? 2;
+        for (let attempt = 1; job.state === "expired" && attempt <= maxAttempts; attempt += 1) {
+          job = await mesh.enqueue(buildStartWorkJob({ ...base, attempt }));
+        }
+        if (job.state === "expired") {
+          log("info", "issue dispatch stopped: every start job for this approval expired", { repo, issue: issue.number, digest });
+          continue;
+        }
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
         log("info", "issue dispatched", { repo, issue: issue.number, jobId: job.id, digest });
       } catch (error) {

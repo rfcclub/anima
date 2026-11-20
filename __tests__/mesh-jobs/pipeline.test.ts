@@ -329,6 +329,34 @@ describe("dispatchApprovedIssues", () => {
       expect(enqueued[0]).toMatchObject({ type: "start-work", idempotencyKey: `work:rfcclub/anima#7:${digest}` });
     });
 
+    test("an approval whose first job expired before any work existed gets the next attempt, bounded", async () => {
+      const keys: string[] = [];
+      const { store } = fakeStore([]);
+      const count = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { enqueue: async (input: Record<string, unknown>) => {
+          keys.push(String(input.idempotencyKey));
+          return (String(input.idempotencyKey).endsWith(":r1")
+            ? { id: "new-job", state: "queued", createdAt: 1_000 }
+            : { id: "old-job", state: "expired", createdAt: 0 }) as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}`, `work:rfcclub/anima#7:${digest}:r1`]);
+      expect(count).toBe(1);
+
+      const exhausted: string[] = [];
+      const none = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { enqueue: async (input: Record<string, unknown>) => { exhausted.push(String(input.idempotencyKey)); return { id: "dead", state: "expired", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(exhausted).toHaveLength(3);
+      expect(none).toBe(0);
+    });
+
     test("a work that already ran is never re-dispatched by this path", async () => {
       const enqueued: unknown[] = [];
       const { store } = fakeStore([queuedWork({ state: "running", sessionsUsed: 1 })]);
