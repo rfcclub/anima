@@ -383,17 +383,25 @@ export class WorkStore {
     if (input.workId !== undefined && !WORK_ID.test(input.workId)) throw new RangeError(`invalid work id ${input.workId}`);
 
     return this.db.transaction((): CreateWorkResult => {
-      const active = this.db
-        .query("SELECT * FROM works WHERE repo = ? AND issue = ? AND state != 'accepted' ORDER BY created_at DESC LIMIT 1")
+      // An open work (queued, running, checkpointed, in review, revising) decides first: the same digest is the same
+      // work, another digest blocks it and is refused so a second writer never starts.
+      const open = this.db
+        .query("SELECT * FROM works WHERE repo = ? AND issue = ? AND state NOT IN ('accepted', 'blocked') ORDER BY created_at DESC LIMIT 1")
         .get(input.repo, input.issue) as Row | null;
-      if (active) {
-        if ((active.approved_digest as string).toLowerCase() === input.approvedDigest.toLowerCase()) {
-          return { created: false, work: toWork(active) };
+      if (open) {
+        if ((open.approved_digest as string).toLowerCase() === input.approvedDigest.toLowerCase()) {
+          return { created: false, work: toWork(open) };
         }
         // A second revision must never start a second writer: block the one that exists.
-        this.blockIfOpen(active.work_id as string, "approval changed");
-        return { created: false, work: this.mustGet(active.work_id as string), refused: "approval changed" };
+        this.blockIfOpen(open.work_id as string, "approval changed");
+        return { created: false, work: this.mustGet(open.work_id as string), refused: "approval changed" };
       }
+      // A blocked work is final for its own digest (an edited issue is the only way to ask for a new attempt), but it
+      // must never stop a new work for a new digest of the same issue.
+      const blockedSame = this.db
+        .query("SELECT * FROM works WHERE repo = ? AND issue = ? AND state = 'blocked' AND approved_digest = ? ORDER BY created_at DESC LIMIT 1")
+        .get(input.repo, input.issue, input.approvedDigest.toLowerCase()) as Row | null;
+      if (blockedSame) return { created: false, work: toWork(blockedSame) };
 
       const workId = input.workId ?? id("w");
       if (this.db.query("SELECT 1 FROM works WHERE work_id = ?").get(workId)) {
@@ -826,6 +834,15 @@ export class WorkStore {
     this.db.run("INSERT INTO work_events (work_id, at, kind, detail_json) VALUES (?, ?, ?, ?)", [
       workId, this.stamp(), kind, JSON.stringify(redact(detail)),
     ]);
+  }
+
+  /** Events of `kind` for a work recorded after the latest event of `resetKind` (or all of them when there is none). */
+  countEventsSince(workId: string, kind: string, resetKind: string): number {
+    const row = this.db.query(
+      `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = ?
+         AND seq > COALESCE((SELECT MAX(seq) FROM work_events WHERE work_id = ? AND kind = ?), 0)`,
+    ).get(workId, kind, workId, resetKind) as { n: number };
+    return row.n;
   }
 
   listEvents(workId: string): WorkEvent[] {

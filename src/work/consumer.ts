@@ -108,6 +108,13 @@ export interface WorkHandlerDeps {
 
 const failed: WorkOutcome = { kind: "report", report: { outcome: "failed" } };
 
+/** GitHub's own answer for an issue number that does not exist. Anything vaguer (a 404 for a missing permission, a missing binary, DNS) may pass and is not proof. */
+const ISSUE_GONE = /could not resolve to an issue or pull request with the number/i;
+/** Consecutive releases for one job after a temporary issue-lookup failure (about two hours at the default backoff) before the claim is reported failed. */
+const MAX_TRANSIENT_RELEASES = 240;
+const LOOKUP_RETRY_EVENT = "issue-lookup-retry";
+const LOOKUP_RECOVERED_EVENT = "issue-lookup-recovered";
+
 export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
   const config = deps.config ?? loadWorkConfig({});
@@ -118,6 +125,9 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
     log("info", "work blocked", { workId, reason });
     return failed;
   };
+
+  /** Consecutive temporary lookup failures recorded for this work since the last successful lookup. */
+  const lookupRetries = (workId: string): number => store.countEventsSince(workId, LOOKUP_RETRY_EVENT, LOOKUP_RECOVERED_EVENT);
 
   return {
     async run({ worker, claim, job, jobs }): Promise<WorkOutcome> {
@@ -165,7 +175,30 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
       }
 
       // The approval check is against the approved ISSUE, not the job target: a revise job targets the PR number.
-      const issue = await deps.github.issue(work.repo, work.issue);
+      let issue: Awaited<ReturnType<typeof deps.github.issue>>;
+      try {
+        issue = await deps.github.issue(work.repo, work.issue);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        if (ISSUE_GONE.test(text)) {
+          // The approved issue was deleted or moved: no later claim can succeed, so the work ends with the cause.
+          return block(work.workId, "issue no longer exists");
+        }
+        // A temporary failure (network, rate limit, GitHub outage) is not a verdict on the work: hand the claim back
+        // so the same job can be claimed again after the backoff, for about two hours of outage; after that the work is blocked with the cause.
+        // The count is kept in the work's own events so it survives a restart of the service.
+        const tries = lookupRetries(work.workId) + 1;
+        if (tries <= MAX_TRANSIENT_RELEASES) {
+          store.appendEvent(work.workId, LOOKUP_RETRY_EVENT, { jobId: job.id, tries });
+          log("info", "issue lookup failed; releasing the claim", { workId: work.workId, tries, error: text.slice(0, 200) });
+          return { kind: "release" };
+        }
+        log("error", "issue lookup kept failing; blocking the work", { workId: work.workId, tries, error: text.slice(0, 200) });
+        // The claim is reported failed and the queue will not offer the job to this worker again, so the work must
+        // not stay queued with no way to run: it is blocked with the cause and an edit of the issue starts a new one.
+        return block(work.workId, "issue lookup kept failing");
+      }
+      if (lookupRetries(work.workId) > 0) store.appendEvent(work.workId, LOOKUP_RECOVERED_EVENT, { jobId: job.id });
       if (store.observeApproval(work.workId, issueDigest12(issue.body)) === "blocked") {
         const blocked = store.getWork(work.workId);
         log("info", "work refused", { workId: work.workId, state: "blocked", reason: blocked?.blockedReason ?? null });

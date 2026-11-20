@@ -95,8 +95,15 @@ describe("loadPipelineConfig", () => {
       repos: ["rfcclub/anima"], reviewRepos: ["rfcclub/anima"], intervalMs: 300_000,
       issueLabel: "orca:approved", intentLabel: "orca:intent",
       notBefore: Date.parse("2026-11-01T20:00:00Z"),
-      maxPerPoll: 3, maxIntentPerPoll: 2, maxReviewPerPoll: 3,
+      maxPerPoll: 3, maxIntentPerPoll: 2, maxReviewPerPoll: 3, maxStartRedispatch: 2,
     });
+  });
+
+  test("maxStartRedispatch is a bounded integer", () => {
+    write({ repos: ["rfcclub/anima"], notBefore: "2026-11-01T20:00:00Z", maxStartRedispatch: 0 });
+    expect(loadPipelineConfig(path)!.maxStartRedispatch).toBe(0);
+    write({ repos: ["rfcclub/anima"], notBefore: "2026-11-01T20:00:00Z", maxStartRedispatch: 11 });
+    expect(errorOf(() => loadPipelineConfig(path))).toContain("maxStartRedispatch");
   });
 
   test("notBefore is required so a missing field cannot drain the backlog", () => {
@@ -236,6 +243,259 @@ describe("dispatchApprovedIssues", () => {
     });
     expect(count).toBe(0);
     expect(enqueued).toHaveLength(0);
+  });
+
+  describe("a start job that expired without running (#643)", () => {
+    const body = "orphan body";
+    const digest = issueDigest(body);
+    function fakeStore(works: WorkRecord[], events: Array<{ kind: string }> = []) {
+      const recorded: Array<{ workId: string; kind: string; detail: unknown }> = [];
+      const states: Array<{ workId: string; state: string; reason?: string }> = [];
+      return {
+        recorded, states,
+        store: {
+          listWorks: () => works,
+          listEvents: () => events as never,
+          appendEvent: (workId: string, kind: string, detail: unknown) => { recorded.push({ workId, kind, detail }); },
+          setState: (workId: string, state: string, reason?: string) => { states.push({ workId, state, reason }); },
+        },
+      };
+    }
+    const queuedWork = (over: Partial<WorkRecord> = {}) => workRecord({
+      issue: 7, state: "queued", workId: "w1111111111", approvedDigest: digest, sessionsUsed: 0, ...over,
+    });
+
+    test("a queued work whose start job expired gets a fresh job for the same work", async () => {
+      const keys: string[] = [];
+      const refs: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          keys.push(String(input.idempotencyKey)); refs.push(String(input.workRef));
+          return (String(input.idempotencyKey).endsWith(":r1")
+            ? { id: "new-job", state: "queued", createdAt: 1_000 }
+            : { id: "old-job", state: "expired", createdAt: 0 }) as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}`, `work:rfcclub/anima#7:${digest}:r1`]);
+      expect(refs[1]).toBe(`w1111111111.${digest}`);
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({ workId: "w1111111111", kind: "start-job-redispatched" });
+    });
+
+    test("a queued work whose start job is still live is left alone", async () => {
+      const keys: string[] = [];
+      const { store, recorded, states } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "live", state: "queued", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+      expect(states).toHaveLength(0);
+    });
+
+    test("after the configured number of re-dispatches the work is blocked with the cause", async () => {
+      const keys: string[] = [];
+      const { store, states } = fakeStore([queuedWork()], [{ kind: "start-job-redispatched" }, { kind: "start-job-redispatched" }]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}:r2`]);
+      expect(states).toHaveLength(1);
+      expect(states[0]).toMatchObject({ workId: "w1111111111", state: "blocked" });
+      expect(states[0].reason).toContain("expired");
+    });
+
+    test("a never-started work for older issue text is superseded and the edited issue is dispatched", async () => {
+      const enqueued: Array<Record<string, unknown>> = [];
+      const { store, states } = fakeStore([queuedWork({ approvedDigest: "0123456789ab" })]);
+      const count = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { enqueued.push(input); return { id: "job-new", state: "queued", createdAt: 1_000 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(states).toEqual([{ workId: "w1111111111", state: "blocked", reason: expect.stringContaining("superseded") }]);
+      expect(count).toBe(1);
+      expect(enqueued[0]).toMatchObject({ type: "start-work", idempotencyKey: `work:rfcclub/anima#7:${digest}` });
+    });
+
+    test("an approval whose first job expired before any work existed gets the next attempt, bounded", async () => {
+      const keys: string[] = [];
+      const { store } = fakeStore([]);
+      const count = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          keys.push(String(input.idempotencyKey));
+          return (String(input.idempotencyKey).endsWith(":r1")
+            ? { id: "new-job", state: "queued", createdAt: 1_000 }
+            : { id: "old-job", state: "expired", createdAt: 0 }) as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}`, `work:rfcclub/anima#7:${digest}:r1`]);
+      expect(count).toBe(1);
+
+      const exhausted: string[] = [];
+      const none = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { exhausted.push(String(input.idempotencyKey)); return { id: "dead", state: "expired", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(exhausted).toHaveLength(3);
+      expect(none).toBe(0);
+    });
+
+    test("an expired job that still has an active claim is not re-dispatched, nor blocked (#643)", async () => {
+      const keys: string[] = [];
+      const { store, recorded, states } = fakeStore([queuedWork()], [{ kind: "start-job-redispatched" }, { kind: "start-job-redispatched" }]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [{ id: "c", state: "active" }] }) as never,
+          enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+      expect(states).toHaveLength(0);
+    });
+
+    test("when the claim cannot be read the expired job is left alone (fail closed)", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a recovery job counts toward maxPerPoll", async () => {
+      const keys: string[] = [];
+      const a = queuedWork({ issue: 7, workId: "w1111111111" });
+      const b = queuedWork({ issue: 8, workId: "w2222222222" });
+      const { store } = fakeStore([a, b]);
+      const count = await dispatchApprovedIssues({
+        config: { ...CONFIG, maxPerPoll: 1 }, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          keys.push(String(input.idempotencyKey));
+          return (String(input.idempotencyKey).endsWith(":r1")
+            ? { id: "new-job", state: "queued", createdAt: 1_000 }
+            : { id: "old-job", state: "expired", createdAt: 0 }) as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body), issue(8, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(count).toBe(1);
+      expect(keys.filter((k) => k.endsWith(":r1"))).toHaveLength(1);
+    });
+
+    test("a queued job whose only eligible worker already holds a failed claim is dead and gets the next attempt (#643)", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [{ worker: WORK.authorMeshId, state: "failed" }], eligible: [WORK.authorMeshId] }) as never,
+          enqueue: async (input: Record<string, unknown>) => {
+            keys.push(String(input.idempotencyKey));
+            return (String(input.idempotencyKey).endsWith(":r1")
+              ? { id: "new-job", state: "queued", createdAt: 1_000 }
+              : { id: "stuck-job", state: "queued", createdAt: 0 }) as never;
+          },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}`, `work:rfcclub/anima#7:${digest}:r1`]);
+      expect(recorded).toHaveLength(1);
+    });
+
+    test("a queued job nobody has claimed yet is alive and left alone", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [], eligible: [WORK.authorMeshId] }) as never,
+          enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "live", state: "queued", createdAt: 0 } as never; },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a work that changed while the job was being read is not touched (#643)", async () => {
+      const works = [queuedWork()];
+      const { store, recorded, states } = fakeStore(works);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => { works[0] = queuedWork({ state: "running", sessionsUsed: 1 }); return { claims: [] } as never; },
+          enqueue: async () => ({ id: "old", state: "expired", createdAt: 0 }) as never,
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(recorded).toHaveLength(0);
+      expect(states).toHaveLength(0);
+    });
+
+    test("a failing gateway does not use the re-dispatch attempts up (#643)", async () => {
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          if (String(input.idempotencyKey).endsWith(":r1")) throw new Error("gateway unavailable");
+          return { id: "old", state: "expired", createdAt: 0 } as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a getJob failure on a healthy queued job does not hide the dispatch", async () => {
+      const { store } = fakeStore([]);
+      const count = await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { getJob: async () => { throw new Error("gateway read failed"); }, enqueue: async () => ({ id: "fresh", state: "queued", createdAt: 1_000 }) as never },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(count).toBe(1);
+    });
+
+    test("a work that already ran is never re-dispatched by this path", async () => {
+      const enqueued: unknown[] = [];
+      const { store } = fakeStore([queuedWork({ state: "running", sessionsUsed: 1 })]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { enqueue: async (input) => { enqueued.push(input); return { id: "x", state: "queued", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(enqueued).toHaveLength(0);
+    });
   });
 
   test("skips issues created before notBefore", async () => {
