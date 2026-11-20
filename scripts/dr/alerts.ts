@@ -9,13 +9,21 @@ export interface Transport { send(text: string): Promise<void> }
 const MAX_MESSAGE_LENGTH = 400;
 const redact = (value: string): string => value.replace(/[A-Za-z0-9_:-]{30,}/g, "[redacted]");
 const safeText = (text: string): string => redact(text).slice(0, MAX_MESSAGE_LENGTH);
+const shortId = (value: string): string => createHash("sha256").update(value).digest("hex").slice(0, 8);
+// Redaction hides long tokens, but the message still has to name the incident: when part of a key
+// is redacted, a short stable hash prefix of the whole key keeps distinct incidents distinct.
+const visibleKey = (key: string, limit: number): string => {
+  const redacted = redact(key);
+  if (redacted === key) return redacted.slice(0, limit);
+  const suffix = `#${shortId(key)}`;
+  return `${redacted.slice(0, Math.max(0, limit - suffix.length))}${suffix}`;
+};
 
 export function messagesFor(events: IncidentEvent[], actions: AlertAction[], done: string[]): Message[] {
   const messages: Message[] = [];
   for (const event of events) {
     if (event.kind === "opened") {
-      const safeKey = redact(event.key);
-      const keyLabel = safeKey.slice(0, 100);
+      const keyLabel = visibleKey(event.key, 100);
       const prefix = `INCIDENT ${keyLabel}: `;
       const reason = redact(event.reason).slice(0, MAX_MESSAGE_LENGTH - prefix.length);
       const remaining = Math.max(0, MAX_MESSAGE_LENGTH - prefix.length - reason.length);
@@ -23,7 +31,7 @@ export function messagesFor(events: IncidentEvent[], actions: AlertAction[], don
       const text = `${prefix}${reason}${doneText}`;
       messages.push({ kind: "open", key: event.key, text: safeText(text) });
     } else {
-      messages.push({ kind: "recovered", key: event.key, text: safeText(`RECOVERED ${redact(event.key)}`) });
+      messages.push({ kind: "recovered", key: event.key, text: safeText(`RECOVERED ${visibleKey(event.key, MAX_MESSAGE_LENGTH)}`) });
     }
   }
   for (const action of actions) {

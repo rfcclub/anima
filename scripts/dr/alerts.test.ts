@@ -166,3 +166,35 @@ test("telegramTransport: non-2xx errors omit the token", async () => {
   await expect(transport.send("hello")).rejects.toThrow("Telegram answered 400");
   await expect(transport.send("hello")).rejects.not.toThrow("sensitive-token");
 });
+
+test("SC-021 regression: an incident key with a UUID keeps a stable short identity in the message", () => {
+  const key = "claim|00000000-0000-4000-8000-000000000001";
+  const other = "claim|00000000-0000-4000-8000-000000000002";
+  const uuid = "00000000-0000-4000-8000-000000000001";
+
+  const first = messagesFor([open(key, "not joined")], [], [])[0]!;
+  const again = messagesFor([open(key, "not joined")], [], [])[0]!;
+  const second = messagesFor([open(other, "not joined")], [], [])[0]!;
+  const recovery = messagesFor([recovered(key)], [], [])[0]!;
+
+  expect(first.text).not.toContain(uuid);
+  expect(first.text).toContain("not joined");
+  // A short stable id survives redaction, so the reader can still tell incidents apart.
+  expect(first.text).toMatch(/INCIDENT claim\|\[redacted\]#[0-9a-f]{8}: not joined/);
+  expect(first.text).toBe(again.text);
+  expect(second.text).not.toBe(first.text);
+  expect(recovery.text).toMatch(/^RECOVERED claim\|\[redacted\]#[0-9a-f]{8}$/);
+  expect(recovery.text).toBe(`RECOVERED claim|${first.text.slice("INCIDENT claim|".length, "INCIDENT claim|".length + "[redacted]#12345678".length)}`);
+});
+
+test("SC-021 regression: a truncated long incident key keeps its short identity", () => {
+  const uuid = "00000000-0000-4000-8000-000000000001";
+  const key = `claim|${"x".repeat(120)}|${uuid}`;
+  const message = messagesFor([open(key, "not joined")], [], [])[0]!;
+  const other = messagesFor([open(key.replace("0001", "0002"), "not joined")], [], [])[0]!;
+
+  expect(message.text).not.toContain(uuid);
+  expect(message.text).toMatch(/\[redacted\]#[0-9a-f]{8}: not joined$/);
+  expect(message.text.length).toBeLessThanOrEqual(400);
+  expect(other.text).not.toBe(message.text);
+});

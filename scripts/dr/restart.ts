@@ -78,6 +78,10 @@ export function decideRestarts(
 
     const restarts = (next.restarts[label] ?? []).filter((time) => time >= now - windowMs);
     next.restarts[label] = restarts;
+    // The cap alert belongs to one window: an empty window starts over, so a later cap alerts again.
+    if (restarts.length === 0) {
+      for (const key of restartableIncidentKeys(label)) next.incidents[key]!.capAlertSent = false;
+    }
     if (restarts.length < config.thresholds.restartCap) {
       restarts.push(now);
       actions.push({ kind: "kickstart", label });

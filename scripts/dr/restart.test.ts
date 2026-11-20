@@ -224,3 +224,35 @@ test("duplicate owned labels do not kickstart and then cap in the same call", ()
   expect(decision.actions).toEqual([{ kind: "kickstart", label: "worker" }]);
   expect(decision.state.restarts.worker).toEqual([100, 200, 1000]);
 });
+
+test("the cap alert is sent again after the restart window empties for a still-open incident", () => {
+  const results = [result("health.ready", "worker", "fail")];
+  let state = emptyState();
+  state.restarts.worker = [1, 2, 3];
+  open(state, "health.ready|worker");
+
+  const first = decideRestarts(state, results, config(["worker"]), 1_000);
+  expect(first.actions).toEqual([{ kind: "alert-cap", label: "worker" }]);
+  expect(first.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
+
+  // Nothing changes while the same window still holds its restarts.
+  const quiet = decideRestarts(first.state, results, config(["worker"]), 2_000);
+  expect(quiet.actions).toEqual([]);
+  expect(quiet.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
+
+  // The window expires: the old restarts fall out and the cap is spent again from scratch.
+  let decision = decideRestarts(first.state, results, config(["worker"]), 1_000 + 3_600_000 + 1);
+  expect(decision.actions).toEqual([{ kind: "kickstart", label: "worker" }]);
+  expect(decision.state.incidents["health.ready|worker"]?.capAlertSent).toBe(false);
+
+  let now = 1_000 + 3_600_000 + 2;
+  for (const _ of [0, 1]) {
+    decision = decideRestarts(decision.state, results, config(["worker"]), now);
+    expect(decision.actions).toEqual([{ kind: "kickstart", label: "worker" }]);
+    now += 1_000;
+  }
+
+  const capped = decideRestarts(decision.state, results, config(["worker"]), now);
+  expect(capped.actions).toEqual([{ kind: "alert-cap", label: "worker" }]);
+  expect(capped.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
+});
