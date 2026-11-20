@@ -261,6 +261,7 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
   const startedAt = now();
   const reviewerMeshIds = work.reviewers.map((reviewer) => reviewer.meshId);
   let dispatched = 0;
+  let eligible = 0;
 
   for (const repo of config.repos) {
     let raw: string;
@@ -288,6 +289,7 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
       log("error", "intent dispatch poll returned invalid JSON", { repo });
       continue;
     }
+    eligible += issues.length;
 
     for (const issue of issues) {
       if (dispatched >= config.maxIntentPerPoll) break;
@@ -303,14 +305,19 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
           repo, issue: issue.number, revision, reviewerMeshIds,
           authorMeshId: work.authorMeshId, excludedMeshIds: excluded, now: now(),
         }));
-        if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
-        log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+        // A replayed enqueue returns the job from an earlier poll; only a job created now is a new dispatch.
+        if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) {
+          dispatched += 1;
+          log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+        }
       } catch (error) {
         log("error", "intent review enqueue failed", { repo, issue: issue.number, error: errorText(error) });
       }
     }
     if (dispatched >= config.maxIntentPerPoll) break;
   }
+  // One heartbeat per poll so an operator can see that the poll ran and which intents are waiting for review.
+  log("info", "intent review poll", { repos: config.repos, eligible, dispatched });
   return dispatched;
 }
 
