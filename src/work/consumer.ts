@@ -108,10 +108,16 @@ export interface WorkHandlerDeps {
 
 const failed: WorkOutcome = { kind: "report", report: { outcome: "failed" } };
 
+/** GitHub says the issue is not there (deleted or transferred), as opposed to a failure that may pass. */
+const ISSUE_GONE = /could not resolve to an issue|\b404\b|not found|was deleted|has been transferred/i;
+/** Consecutive releases for one job after a temporary issue-lookup failure before the claim is reported failed. */
+const MAX_TRANSIENT_RELEASES = 5;
+
 export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
   const config = deps.config ?? loadWorkConfig({});
   const log: ConsumerLog = deps.log ?? (() => {});
+  const transientReleases = new Map<string, number>();
 
   const block = (workId: string, reason: string): WorkOutcome => {
     store.setState(workId, "blocked", reason);
@@ -165,7 +171,28 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
       }
 
       // The approval check is against the approved ISSUE, not the job target: a revise job targets the PR number.
-      const issue = await deps.github.issue(work.repo, work.issue);
+      let issue: Awaited<ReturnType<typeof deps.github.issue>>;
+      try {
+        issue = await deps.github.issue(work.repo, work.issue);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        if (ISSUE_GONE.test(text)) {
+          // The approved issue was deleted or moved: no later claim can succeed, so the work ends with the cause.
+          return block(work.workId, "issue no longer exists");
+        }
+        // A temporary failure (network, rate limit, GitHub outage) is not a verdict on the work: hand the claim back
+        // so the same job can be claimed again after the backoff, but only a few times in a row.
+        const tries = (transientReleases.get(job.id) ?? 0) + 1;
+        if (tries <= MAX_TRANSIENT_RELEASES) {
+          transientReleases.set(job.id, tries);
+          log("info", "issue lookup failed; releasing the claim", { workId: work.workId, tries, error: text.slice(0, 200) });
+          return { kind: "release" };
+        }
+        transientReleases.delete(job.id);
+        log("error", "issue lookup kept failing; reporting failed", { workId: work.workId, tries, error: text.slice(0, 200) });
+        return failed;
+      }
+      transientReleases.delete(job.id);
       if (store.observeApproval(work.workId, issueDigest12(issue.body)) === "blocked") {
         const blocked = store.getWork(work.workId);
         log("info", "work refused", { workId: work.workId, state: "blocked", reason: blocked?.blockedReason ?? null });

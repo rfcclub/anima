@@ -181,6 +181,55 @@ describe("a bounded session and release", () => {
   });
 });
 
+describe("a failing issue lookup (#643)", () => {
+  function handlerWith(lookup: () => Promise<{ title: string; body: string }>) {
+    const executor = new FakeExecutor();
+    const logs: string[] = [];
+    const gh: GitHubReader = { ...github, issue: lookup as never };
+    const handler = createWorkHandler({
+      store, executor, github: gh, heartbeatMs: 10,
+      collectEvidence: async () => ({ ok: false, reason: "unused" }),
+      log: (_level, message) => logs.push(message),
+    });
+    return { handler, executor, logs };
+  }
+  const claim = { id: "claim-1", jobId: "job-1" } as MeshClaim;
+
+  test("an issue that no longer exists blocks the work with the cause and reports failed once", async () => {
+    const { handler, executor } = handlerWith(async () => {
+      throw new Error("gh issue view exited 1: GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)");
+    });
+    const result = await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() });
+    expect(result).toEqual({ kind: "report", report: { outcome: "failed" } });
+    const work = store.getWork("wabc1234ef0")!;
+    expect(work.state).toBe("blocked");
+    expect(work.blockedReason).toBe("issue no longer exists");
+    expect(executor.inputs).toEqual([]);
+  });
+
+  test("a temporary failure releases the claim so the job can be claimed again, a bounded number of times", async () => {
+    const { handler, executor } = handlerWith(async () => { throw new Error("gh issue view exited 1: HTTP 502 Bad Gateway"); });
+    const outcomes = [];
+    for (let i = 0; i < 6; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }));
+    expect(outcomes.slice(0, 5)).toEqual(Array(5).fill({ kind: "release" }));
+    expect(outcomes[5]).toEqual({ kind: "report", report: { outcome: "failed" } });
+    expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
+    expect(executor.inputs).toEqual([]);
+  });
+
+  test("a successful lookup resets the count", async () => {
+    let fail = true;
+    const { handler } = handlerWith(async () => { if (fail) throw new Error("gh issue view exited 1: timeout"); return { title: "t", body: BODY }; });
+    expect((await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() })).kind).toBe("release");
+    fail = false;
+    await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() });
+    fail = true;
+    const outcomes = [];
+    for (let i = 0; i < 5; i++) outcomes.push((await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() })).kind);
+    expect(outcomes).toEqual(Array(5).fill("release"));
+  });
+});
+
 describe("who may run it", () => {
   test("blocked and accepted claims log their reason without executing a session", async () => {
     store.createWork({

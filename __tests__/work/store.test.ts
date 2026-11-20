@@ -78,6 +78,30 @@ describe("identity (WL-1)", () => {
     expect(s.listWorks().length).toBe(1);
   });
 
+  test("a blocked work for an older digest does not stop a new work for a new digest (#643)", () => {
+    const s = open();
+    const first = create(s).work;
+    s.setState(first.workId, "blocked", "execution time limit reached");
+    const second = create(s, { approvedDigest: "e2e2e2e2e2e2" });
+    expect(second.created).toBe(true);
+    expect(second.refused).toBeUndefined();
+    expect(second.work.workId).not.toBe(first.workId);
+    expect(second.work.approvedDigest).toBe("e2e2e2e2e2e2");
+    expect(second.work.state).toBe("queued");
+    expect(s.getWork(first.workId)!.state).toBe("blocked");
+    expect(s.getWork(first.workId)!.blockedReason).toBe("execution time limit reached");
+  });
+
+  test("a blocked work is final for its own digest: the same digest returns it and creates nothing (#643)", () => {
+    const s = open();
+    const first = create(s).work;
+    s.setState(first.workId, "blocked", "execution time limit reached");
+    const again = create(s);
+    expect(again.created).toBe(false);
+    expect(again.work.workId).toBe(first.workId);
+    expect(s.listWorks().length).toBe(1);
+  });
+
   test("observeApproval blocks an active work whose issue digest changed and leaves a matching one alone", () => {
     const s = open();
     const w = create(s).work;
