@@ -436,12 +436,12 @@ describe("intent review dispatch", () => {
     ]);
   });
 
-  // The gateway says nothing about whether an enqueue created the job, so freshness is inferred from createdAt.
-  // A dispatcher restarted inside the five-second window therefore logs the replayed job again; the line says the
-  // freshness is approximate instead of claiming an unambiguous new dispatch.
-  test("a restart inside the freshness window can repeat the line, marked approximate", async () => {
+  // The gateway replays the job from the earlier poll with its original createdAt, and that instant is always
+  // before this poll started, so a restart cannot make a replay look like a dispatch even seconds later.
+  test("a restart seconds later does not log the replayed job again", async () => {
     const logs = logLines();
     const queue = fakeQueue();
+    // Each poll starts three seconds after the previous one; the replay keeps the job's first createdAt.
     const deps = {
       config: CONFIG, work: WORK, store: { listWorks: () => [] },
       mesh: { enqueue: queue.enqueue },
@@ -452,10 +452,27 @@ describe("intent review dispatch", () => {
 
     await dispatchIntentReviews(deps);
     await dispatchIntentReviews(deps);
+    await dispatchIntentReviews(deps);
     expect(queue.jobs.size).toBe(1);
-    const dispatched = logs.filter((line) => line.message === "intent review dispatched");
-    expect(dispatched).toHaveLength(2);
-    expect(dispatched.every((line) => line.fields?.freshness === "approximate")).toBe(true);
+    expect(logs.filter((line) => line.message === "intent review dispatched")).toHaveLength(1);
+  });
+
+  test("the dispatch line carries no approximate-freshness claim", async () => {
+    const logs = logLines();
+    const queue = fakeQueue();
+    await dispatchIntentReviews({
+      config: CONFIG, work: WORK, store: { listWorks: () => [] },
+      mesh: { enqueue: queue.enqueue },
+      gh: async () => JSON.stringify([issue(7, "body", ["orca:intent"])]),
+      log: (level: string, message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields }),
+      now: () => queue.advance(300_000),
+    });
+
+    const [line] = logs.filter((entry) => entry.message === "intent review dispatched");
+    expect(line!.fields).toEqual({
+      repo: "rfcclub/anima", issue: 7, jobId: "job-1",
+      revision: intentRevision("issue 7", "body"), createdAt: 600_000,
+    });
   });
 
   test("writes one summary line per poll so the poll itself stays visible", async () => {

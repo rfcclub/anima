@@ -262,6 +262,7 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
   const reviewerMeshIds = work.reviewers.map((reviewer) => reviewer.meshId);
   let dispatched = 0;
   let eligible = 0;
+  const logged = new Set<string>();
 
   for (const repo of config.repos) {
     let raw: string;
@@ -305,13 +306,15 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
           repo, issue: issue.number, revision, reviewerMeshIds,
           authorMeshId: work.authorMeshId, excludedMeshIds: excluded, now: now(),
         }));
-        // The gateway returns the same job for a replay and does not say which call created it, so "new in this
-        // poll" is inferred from createdAt by `freshJob` alone. That is approximate: a dispatcher restarted inside
-        // the freshness window, or gateway clock skew, can make a replayed job look new. The fields say so.
-        if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) {
-          dispatched += 1;
+        if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
+        // A replay returns the job from its first poll with that poll's original createdAt, which is always before
+        // this poll started, so a restarted dispatcher cannot report an old job as a new dispatch. The in-poll set
+        // also stops a gateway that hands back the same job twice from producing two lines. A job created while the
+        // gateway clock lags silently loses its line: no line is better than a line that claims nothing happened.
+        if ((job.state === "queued" || job.state === "reported") && createdInThisPoll(job, startedAt) && !logged.has(job.id)) {
+          logged.add(job.id);
           log("info", "intent review dispatched", {
-            repo, issue: issue.number, jobId: job.id, revision, freshness: "approximate", createdAt: job.createdAt,
+            repo, issue: issue.number, jobId: job.id, revision, createdAt: job.createdAt,
           });
         }
       } catch (error) {
@@ -459,4 +462,12 @@ function errorText(error: unknown): string {
 /** A replayed enqueue returns the existing job with its original createdAt; only a fresh job spends the cap. */
 export function freshJob(job: { createdAt?: number }, startedAt: number): boolean {
   return typeof job.createdAt === "number" && job.createdAt >= startedAt - 5_000;
+}
+
+/**
+ * True when the job cannot predate this poll, so this poll is the call that created it. A replay always carries the
+ * createdAt of the poll that first enqueued it, which is earlier than every later poll start.
+ */
+function createdInThisPoll(job: { createdAt?: number }, startedAt: number): boolean {
+  return typeof job.createdAt === "number" && job.createdAt >= startedAt;
 }
