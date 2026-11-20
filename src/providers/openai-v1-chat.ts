@@ -1,5 +1,25 @@
+import { version } from "../../package.json";
 import type { ProviderDef, ProviderModelDef } from "../config/types";
 import { ProviderError, type Provider, type ProviderMessage, type ProviderRequest, type ProviderResponse } from "./interface";
+
+export function openCodeGoMetadata(
+  config: Pick<ProviderDef, "id" | "baseUrl">,
+  request: Pick<ProviderRequest, "agent" | "sessionId">,
+): { userAgent: string; sessionId: string } | undefined {
+  if (config.id !== "opencode-go-oai") {
+    const url = URL.parse(config.baseUrl);
+    if (url?.origin !== "https://opencode.ai" || !/^\/zen\/go(?:\/|$)/.test(url.pathname)) {
+      return undefined;
+    }
+  }
+
+  const agent = /^[a-z0-9][a-z0-9_.-]{0,63}$/i.test(request.agent) ? request.agent : "agent";
+  const clientVersion = /^[a-z0-9][a-z0-9.+-]{0,63}$/i.test(version) ? version : "unknown";
+  return {
+    userAgent: `anima/${clientVersion} (${agent})`,
+    sessionId: request.sessionId?.trim() || `anima:${request.agent}`,
+  };
+}
 
 export class OpenAIv1ChatProvider implements Provider {
   readonly name: string;
@@ -16,10 +36,6 @@ export class OpenAIv1ChatProvider implements Provider {
 
   private get isAnthropic(): boolean {
     return this.config.api === "anthropic-messages";
-  }
-
-  private get isOpenCodeGo(): boolean {
-    return this.config.id === "opencode-go-oai" || this.config.baseUrl.includes("opencode.ai/zen/go");
   }
 
   async query(req: ProviderRequest): Promise<ProviderResponse> {
@@ -52,9 +68,14 @@ export class OpenAIv1ChatProvider implements Provider {
             "Content-Type": "application/json",
           };
 
-      const requestHeaders = { ...headers, ...this.config.headers };
-      if (this.isOpenCodeGo) {
-        requestHeaders["x-opencode-session"] = req.sessionId?.trim() || `anima:${req.agent}`;
+      const configuredHeaders = { ...headers, ...this.config.headers };
+      const metadata = openCodeGoMetadata(this.config, req);
+      let requestHeaders: HeadersInit = configuredHeaders;
+      if (metadata) {
+        const openCodeHeaders = new Headers(configuredHeaders);
+        openCodeHeaders.set("User-Agent", metadata.userAgent);
+        openCodeHeaders.set("x-opencode-session", metadata.sessionId);
+        requestHeaders = openCodeHeaders;
       }
 
       response = await fetch(this.url(), {
