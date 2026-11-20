@@ -87,7 +87,7 @@ test("isPrivateMode accepts owner-only modes and rejects any group or other acce
   expect(isPrivateMode(0o755)).toBe(false);
 });
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -106,4 +106,32 @@ test("validate decides again on the staged bytes: a roster that changed after th
   expect(runValidate(other, repo)).toBe(1);
   expect(runValidate(other, repo, { ANIMA_ACCEPT_ROSTER_CHANGE: "1" })).toBe(0);
   expect(runValidate("oops", repo, { ANIMA_ACCEPT_ROSTER_CHANGE: "1" })).toBe(1);
+});
+
+test("an overlay roster file that is a link into a repository is refused, a plain private overlay is accepted", () => {
+  const base = mkdtempSync(join(tmpdir(), "roster-overlay-"));
+  const repoDir = join(base, "repo");
+  mkdirSync(repoDir);
+  Bun.spawnSync(["git", "init", "-q", repoDir]);
+  writeFileSync(join(repoDir, "inside.json"), repo);
+  chmodSync(join(repoDir, "inside.json"), 0o600);
+  const project = join(base, "project");
+  mkdirSync(project);
+  writeFileSync(join(project, "colony.json"), repo);
+  const runtime = join(base, "runtime.json");
+  writeFileSync(runtime, repo);
+
+  const linked = join(base, "linked");
+  mkdirSync(linked, { mode: 0o700 });
+  chmodSync(linked, 0o700);
+  symlinkSync(join(repoDir, "inside.json"), join(linked, "colony.json"));
+  const choose = (dir: string) => Bun.spawnSync(["bun", join(import.meta.dir, "deploy-roster.ts"), "choose", join(project, "colony.json"), runtime, dir, project], { stdout: "pipe", stderr: "pipe" });
+  expect(choose(linked).exitCode).toBe(1);
+
+  const plain = join(base, "plain");
+  mkdirSync(plain, { mode: 0o700 });
+  chmodSync(plain, 0o700);
+  writeFileSync(join(plain, "colony.json"), repo, { mode: 0o600 });
+  chmodSync(join(plain, "colony.json"), 0o600);
+  expect(choose(plain).exitCode).toBe(0);
 });

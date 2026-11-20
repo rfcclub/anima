@@ -10,7 +10,7 @@
  *   deploy-roster.ts validate <staged file> [runtime roster]   exit 0 when loadable and, against the runtime roster, allowed
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export type RosterChoice = { action: "overlay" } | { action: "repo" } | { action: "refuse"; reason: string };
 
@@ -125,8 +125,13 @@ if (import.meta.main) {
     if (isInsidePath(real, realpathSync(projectDir)) || insideGitWorkTree(real)) {
       fail("the overlay directory is inside a repository; it must be private and outside every repository");
     }
-    overlayFile = join(real, "colony.json");
-    if (!existsSync(overlayFile)) fail("the overlay directory has no colony.json");
+    const declared = join(real, "colony.json");
+    if (!existsSync(declared)) fail("the overlay directory has no colony.json");
+    // The file may be a link: judge, and later read, the file it really is.
+    overlayFile = realpathSync(declared);
+    if (isInsidePath(overlayFile, realpathSync(projectDir)) || insideGitWorkTree(dirname(overlayFile))) {
+      fail("the overlay roster file resolves to a path inside a repository; it must be outside every repository");
+    }
     if (!isPrivateMode(statSync(real).mode) || !isPrivateMode(statSync(overlayFile).mode)) {
       fail("the overlay directory and its colony.json must not be readable by group or others (use mode 700 and 600)");
     }
