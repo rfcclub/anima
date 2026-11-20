@@ -17,10 +17,20 @@ export type RosterChoice = { action: "overlay" } | { action: "repo" } | { action
 /** The server loads `agents` as an array of objects that carry a name. */
 export function validRoster(text: string): boolean {
   try {
-    const parsed = JSON.parse(text) as { agents?: unknown };
+    const parsed = JSON.parse(text) as { agents?: unknown; companies?: unknown };
     const agents = parsed?.agents;
-    return Array.isArray(agents) && agents.length > 0 &&
+    const agentsOk = Array.isArray(agents) && agents.length > 0 &&
       agents.every((a) => a !== null && typeof a === "object" && typeof (a as { name?: unknown }).name === "string" && (a as { name: string }).name !== "");
+    if (!agentsOk) return false;
+    // The server reads every member's agentId: a null or id-less member would crash startup.
+    const companies = parsed.companies;
+    if (companies === undefined) return true;
+    if (companies === null || typeof companies !== "object" || Array.isArray(companies)) return false;
+    return Object.values(companies as Record<string, unknown>).every((company) => {
+      const members = (company as { members?: unknown } | null)?.members;
+      return members === undefined || (Array.isArray(members) && members.every((m) =>
+        m !== null && typeof m === "object" && typeof (m as { agentId?: unknown }).agentId === "string"));
+    });
   } catch {
     return false;
   }
@@ -41,7 +51,15 @@ export function canonicalRoster(text: string): string {
 
 export function chooseRoster(input: { repo: string; runtime: string | null; overlay?: string | null; accept?: boolean }): RosterChoice {
   const accept = input.accept === true;
-  const differs = (candidate: string): boolean => input.runtime !== null && validRoster(input.runtime) && canonicalRoster(candidate) !== canonicalRoster(input.runtime);
+  // An existing runtime roster that cannot be read as a roster is not "the same": replacing it needs the same consent.
+  const differs = (candidate: string): boolean => {
+    if (input.runtime === null) return false;
+    try {
+      return canonicalRoster(candidate) !== canonicalRoster(input.runtime);
+    } catch {
+      return true;
+    }
+  };
   if (input.overlay !== undefined && input.overlay !== null) {
     if (!validRoster(input.overlay)) return { action: "refuse", reason: "the overlay roster is not a roster the server can load" };
     if (differs(input.overlay) && !accept) {

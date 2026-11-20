@@ -17,6 +17,19 @@ test("validRoster needs an agents array of named objects, as the runtime loads i
   expect(validRoster("not json")).toBe(false);
 });
 
+test("validRoster rejects a company member the server could not read", () => {
+  expect(validRoster(JSON.stringify({ agents: [{ name: "a" }], companies: { c: { members: [null] } } }))).toBe(false);
+  expect(validRoster(JSON.stringify({ agents: [{ name: "a" }], companies: { c: { members: [{}] } } }))).toBe(false);
+  expect(validRoster(JSON.stringify({ agents: [{ name: "a" }], companies: { c: { members: [{ agentId: "a" }] } } }))).toBe(true);
+});
+
+test("an existing runtime roster that is corrupt, legacy or empty is replaced only with consent", () => {
+  for (const runtime of ["oops", JSON.stringify([{ name: "x" }]), JSON.stringify({ agents: [] })]) {
+    expect(chooseRoster({ repo, runtime }).action).toBe("refuse");
+    expect(chooseRoster({ repo, runtime, accept: true })).toEqual({ action: "repo" });
+  }
+});
+
 test("canonicalRoster ignores key order but not content", () => {
   expect(canonicalRoster(repo)).toBe(canonicalRoster(sameShuffled));
   expect(canonicalRoster(repo)).not.toBe(canonicalRoster(sameNamesOtherMembers));
