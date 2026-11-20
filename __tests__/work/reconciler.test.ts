@@ -468,10 +468,55 @@ describe("current-head reconciliation", () => {
     });
     github.current = pr({ headSha: HEAD2 });
     await reconciler.tick();
+    github.reviewList = [review({ state: "APPROVED" })];
     github.current = pr();
     await reconciler.tick();
     expect(mesh.readJobIds).toContain(earlier.id);
     expect(mesh.jobs("review")).toHaveLength(2);
+  });
+
+  test("reports observed during a non-atomic lookup with no standing verdict are replaced", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(earlier.id, {
+      claims: config.reviewers.map((reviewer, index) => ({
+        id: `claim-${index}`, jobId: earlier.id, worker: reviewer.meshId,
+        state: "reported", leaseExpiresAt: clock, evidenceRef: `review-${index}`,
+      })),
+    });
+    github.reviewList = [review({ state: "DISMISSED" })];
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(earlier.id);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1]);
+  });
+
+  test("reported claims in a non-atomic lookup defer when the verdict cannot be read", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(earlier.id, {
+      claims: config.reviewers.map((reviewer, index) => ({
+        id: `claim-${index}`, jobId: earlier.id, worker: reviewer.meshId,
+        state: "reported", leaseExpiresAt: clock, evidenceRef: `review-${index}`,
+      })),
+    });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    github.reviews = async () => { throw new Error("review lookup unavailable"); };
+    await reconciler.tick();
+    expect(mesh.jobs("review")).toHaveLength(2);
+    expect(store.listOutbox(workId).filter((entry) => entry.status === "pending")).toHaveLength(1);
   });
 
   test.each(["unavailable", "mismatched", "malformed"] as const)("a %s previous job defers a returned review", async (problem) => {

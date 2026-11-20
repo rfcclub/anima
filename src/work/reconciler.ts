@@ -268,7 +268,8 @@ export class Reconciler {
         throw new Error("review return deferred: prior Mesh job does not match the pull request");
       }
       let usable = usableReviewJob(prior, this.now());
-      if (prior.state === "reported" || prior.state === "completed") {
+      if (prior.state === "reported" || prior.state === "completed" ||
+          prior.claims.filter((claim) => claim.state === "reported").length >= prior.slots) {
         const reading = readReviews(await this.deps.github.reviews(payload.repo, payload.number), {
           head: payload.head, authorActor: config.authorActor, reviewerLogins: config.reviewers.map((reviewer) => reviewer.login),
         });
