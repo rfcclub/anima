@@ -75,6 +75,12 @@ export interface SessionConfig {
   compactThreshold: number;
   idleTimeoutMs?: number;
   maxTokens?: number;
+  talkRotation?: TalkRotationLimits;
+}
+
+export interface TalkRotationLimits {
+  maxAgeMs: number;
+  maxTurns: number;
 }
 
 export interface BootConfig {
@@ -232,6 +238,7 @@ export function loadRoomConfig(yamlText: string): RoomConfig {
       compactThreshold: readNumber(session, "session.compactThreshold") ?? 60000,
       idleTimeoutMs: readNumber(session, "session.idleTimeoutMs"),
       maxTokens: readNumber(session, "session.maxTokens"),
+      talkRotation: readTalkRotationLimits(session),
     },
     boot: {
       gene,
@@ -336,6 +343,25 @@ function readNumber(parent: Record<string, unknown>, path: string): number | und
     return undefined;
   }
   if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ConfigValidationError(`invalid field: ${path}`);
+  }
+  return value;
+}
+
+function readTalkRotationLimits(session: Record<string, unknown>): TalkRotationLimits {
+  if (session.talkRotation !== undefined && !isRecord(session.talkRotation)) {
+    throw new ConfigValidationError("invalid field: session.talkRotation");
+  }
+
+  return {
+    maxAgeMs: readPositiveSafeInteger(session, "session.talkRotation.maxAgeMs", 86_400_000),
+    maxTurns: readPositiveSafeInteger(session, "session.talkRotation.maxTurns", 200),
+  };
+}
+
+function readPositiveSafeInteger(parent: Record<string, unknown>, path: string, fallback: number): number {
+  const value = readNumber(parent, path) ?? fallback;
+  if (!Number.isSafeInteger(value) || value <= 0) {
     throw new ConfigValidationError(`invalid field: ${path}`);
   }
   return value;

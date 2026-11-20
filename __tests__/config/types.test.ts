@@ -137,3 +137,55 @@ memory:
     expect(config.memory?.hindsightTopK).toBe(3);
   });
 });
+
+describe("Talk rotation limits", () => {
+  const room = (sessionOverrides = "") => `
+identity:
+  name: test-agent
+  label: Test Agent
+provider:
+  type: openai
+policy:
+  allowedRoots: ["/tmp"]
+session:
+  defaultMode: plan
+${sessionOverrides}
+boot:
+  gene: /tmp/gene.md
+  sessionContext:
+    - path: /tmp/context.md
+`;
+
+  test("fills defaults for omitted and empty mappings", async () => {
+    const { loadRoomConfig } = await import("../../src/config/types");
+    const expected = { maxAgeMs: 86_400_000, maxTurns: 200 };
+    expect(loadRoomConfig(room()).session.talkRotation).toEqual(expected);
+    expect(loadRoomConfig(room("  talkRotation: {}")).session.talkRotation).toEqual(expected);
+  });
+
+  test("accepts per-room overrides and defaults missing limits", async () => {
+    const { loadRoomConfig } = await import("../../src/config/types");
+    expect(loadRoomConfig(room("  talkRotation: {maxAgeMs: 1}")).session.talkRotation)
+      .toEqual({ maxAgeMs: 1, maxTurns: 200 });
+    expect(loadRoomConfig(room("  talkRotation: {maxTurns: 25}")).session.talkRotation)
+      .toEqual({ maxAgeMs: 86_400_000, maxTurns: 25 });
+    expect(loadRoomConfig(room("  talkRotation: {maxAgeMs: 9007199254740991, maxTurns: 1}")).session.talkRotation)
+      .toEqual({ maxAgeMs: Number.MAX_SAFE_INTEGER, maxTurns: 1 });
+  });
+
+  test("rejects malformed mappings and invalid limits", async () => {
+    const { ConfigValidationError, loadRoomConfig } = await import("../../src/config/types");
+    for (const value of ["null", "[]", "true", "42"]) {
+      const parse = () => loadRoomConfig(room(`  talkRotation: ${value}`));
+      expect(parse).toThrow(ConfigValidationError);
+      expect(parse).toThrow("invalid field: session.talkRotation");
+    }
+    for (const field of ["maxAgeMs", "maxTurns"]) {
+      for (const value of ["0", "-1", "1.5", '"7"', "null", "9007199254740992"]) {
+        const parse = () => loadRoomConfig(room(`  talkRotation: {${field}: ${value}}`));
+        expect(parse).toThrow(ConfigValidationError);
+        expect(parse).toThrow(`invalid field: session.talkRotation.${field}`);
+      }
+    }
+  });
+});
