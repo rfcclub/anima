@@ -406,7 +406,9 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
           authorMeshId: work.authorMeshId, excludedMeshIds: excluded, now: now(),
         }));
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
-        log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+        if (job.createdAt >= startedAt) {
+          log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+        }
       } catch (error) {
         log("error", "intent review enqueue failed", { repo, issue: issue.number, error: errorText(error) });
       }
