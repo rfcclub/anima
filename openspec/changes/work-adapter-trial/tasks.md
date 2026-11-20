@@ -101,3 +101,18 @@ Parent intent #420. Approve each slice separately and execute its named RED/GREE
 ## Verification
 
 Run the focused commands in the stated dependency order, then run `bun run typecheck` and `bun run build` for production changes. Keep the reviewed design separate from executable acceptance. Preserve Orca plan and code gate verdicts.
+
+## Success Criteria
+
+| Criterion | Tasks | Acceptance evidence |
+| --- | --- | --- |
+| SC-1 | 1–3 | Fake-runner scenarios 1, 2, 3, 5 and 6 cover completion and draft publication, host deadline, lease-loss abort, host publish refusal and startup failure. Record a test result for each. |
+| SC-2 | 4–5 | Record all four real scratch isolation outcomes independently as pass, fail or not run with a reason. No fixture may point at real credential data or unrelated services. |
+| SC-3 | 8–11 | Load the programming view within the admitted author lane, record metadata only and prove a named blocker prevents a provider request on lookup failure. |
+| Parent criterion 3a | 9 | Check that programming and another activity cover different scopes for the same fixture author. Record a view-layer defect if they do not differ. |
+| SC-4 | 12 | Verify the report prints both adapters' fixture metrics and preserves the underlying snapshot. |
+| SC-5 | All | Check committed artifacts for private paths, host names and operator or author identifiers. |
+
+## Non-goals
+
+Running more microVMs at once than the owner has allowed.
