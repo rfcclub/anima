@@ -198,3 +198,17 @@ test("SC-021 regression: a truncated long incident key keeps its short identity"
   expect(message.text.length).toBeLessThanOrEqual(400);
   expect(other.text).not.toBe(message.text);
 });
+
+test("SC-021 regression: a long incident key keeps the same short identity on open and recovery", () => {
+  const key = `launchd.loaded|${"0".repeat(32)}|${"z.".repeat(250)}`;
+  const message = messagesFor([open(key, "not loaded")], [], [])[0]!;
+  const recovery = messagesFor([recovered(key)], [], [])[0]!;
+
+  const openId = message.text.match(/#([0-9a-f]{8})/);
+  expect(openId).not.toBeNull();
+  expect(message.text.length).toBeLessThanOrEqual(400);
+  expect(recovery.text.length).toBeLessThanOrEqual(400);
+  // The recovery message has its own prefix to pay for; it must not clip the identity away.
+  expect(recovery.text).toMatch(/^RECOVERED .*[0-9a-f]{8}$/);
+  expect(recovery.text.endsWith(`#${openId![1]}`)).toBe(true);
+});

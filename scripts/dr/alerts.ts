@@ -31,7 +31,13 @@ export function messagesFor(events: IncidentEvent[], actions: AlertAction[], don
       const text = `${prefix}${reason}${doneText}`;
       messages.push({ kind: "open", key: event.key, text: safeText(text) });
     } else {
-      messages.push({ kind: "recovered", key: event.key, text: safeText(`RECOVERED ${visibleKey(event.key, MAX_MESSAGE_LENGTH)}`) });
+      // Reserve the prefix so the clip cannot cut the short identity off the end of the key.
+      const prefix = "RECOVERED ";
+      messages.push({
+        kind: "recovered",
+        key: event.key,
+        text: safeText(`${prefix}${visibleKey(event.key, MAX_MESSAGE_LENGTH - prefix.length)}`),
+      });
     }
   }
   for (const action of actions) {

@@ -256,3 +256,27 @@ test("the cap alert is sent again after the restart window empties for a still-o
   expect(capped.actions).toEqual([{ kind: "alert-cap", label: "worker" }]);
   expect(capped.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
 });
+
+test("the cap alert is re-armed when a sliding window reopens without emptying", () => {
+  const results = [result("health.ready", "worker", "fail")];
+  const state = emptyState();
+  // Three staggered attempts: exactly one expires first, so the history never becomes empty.
+  state.restarts.worker = [1, 3_599_998, 3_599_999];
+  open(state, "health.ready|worker");
+
+  const capped = decideRestarts(state, results, config(["worker"]), 1_000);
+  expect(capped.actions).toEqual([{ kind: "alert-cap", label: "worker" }]);
+  expect(capped.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
+
+  // The oldest attempt ages out while the other two stay inside the window: one slot reopens even
+  // though the restart history never becomes empty.
+  const reopened = decideRestarts(capped.state, results, config(["worker"]), 3_600_002);
+  expect(reopened.actions).toEqual([{ kind: "kickstart", label: "worker" }]);
+  expect(reopened.state.restarts.worker).toEqual([3_599_998, 3_599_999, 3_600_002]);
+  expect(reopened.state.incidents["health.ready|worker"]?.capAlertSent).toBe(false);
+
+  // The reopened slot is now spent, so the cap is hit again and must alert again.
+  const again = decideRestarts(reopened.state, results, config(["worker"]), 3_600_003);
+  expect(again.actions).toEqual([{ kind: "alert-cap", label: "worker" }]);
+  expect(again.state.incidents["health.ready|worker"]?.capAlertSent).toBe(true);
+});
