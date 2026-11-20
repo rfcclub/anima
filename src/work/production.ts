@@ -167,8 +167,13 @@ export function markLowHandoffAbort(input: WorkerAdapterInput, result: WorkerAda
 }
 
 export function shouldContinueAfterLimit(store: WorkStore, input: PublishFallbackInput): boolean {
-  if (input.kind !== "start-work" || input.limitTerminal !== false || !isLimit(input.stopCause)) return false;
+  if (input.limitTerminal !== false || !isLimit(input.stopCause)) return false;
   input.guard?.();
+  if (input.kind === "revise") {
+    const current = store.getWork(input.work.workId);
+    // Once a PR exists, revision reservations use the session cap, even if the first-run wall is spent.
+    if (!current || current.prNumber === null || current.sessionsUsed >= current.caps.maxSessions) return false;
+  }
   return readLimitHandoff(store, input.work) !== undefined;
 }
 
