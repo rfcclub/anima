@@ -207,12 +207,21 @@ describe("a failing issue lookup (#643)", () => {
     expect(executor.inputs).toEqual([]);
   });
 
+  test("a vague 404 or a DNS failure is not proof the issue is gone: the claim is released and the work stays open", async () => {
+    for (const message of ["gh issue view exited 1: HTTP 404: Not Found", "gh issue view exited 1: getaddrinfo: host not found", "gh: command not found"]) {
+      const { handler } = handlerWith(async () => { throw new Error(message); });
+      const result = await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() });
+      expect(result).toEqual({ kind: "release" });
+      expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
+    }
+  });
+
   test("a temporary failure releases the claim so the job can be claimed again, a bounded number of times", async () => {
     const { handler, executor } = handlerWith(async () => { throw new Error("gh issue view exited 1: HTTP 502 Bad Gateway"); });
     const outcomes = [];
-    for (let i = 0; i < 6; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }));
-    expect(outcomes.slice(0, 5)).toEqual(Array(5).fill({ kind: "release" }));
-    expect(outcomes[5]).toEqual({ kind: "report", report: { outcome: "failed" } });
+    for (let i = 0; i < 121; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }));
+    expect(outcomes.slice(0, 120)).toEqual(Array(120).fill({ kind: "release" }));
+    expect(outcomes[120]).toEqual({ kind: "report", report: { outcome: "failed" } });
     expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
     expect(executor.inputs).toEqual([]);
   });

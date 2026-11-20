@@ -194,10 +194,20 @@ export interface IssueDispatchDeps {
   config: PipelineConfig;
   work: MeshJobsWorkConfig;
   store: Pick<WorkStore, "listWorks"> & Partial<Pick<WorkStore, "listEvents" | "appendEvent" | "setState">>;
-  mesh: Pick<MeshJobsClient, "enqueue">;
+  mesh: Pick<MeshJobsClient, "enqueue"> & Partial<Pick<MeshJobsClient, "getJob">>;
   gh: GhRunner;
   log: ConsumerLog;
   now?: () => number;
+}
+
+/**
+ * Whether an expired job still has a live claim: a claim lease can outlast the job's expiry, and re-dispatching then
+ * would start a second writer. True or null (cannot be read) both mean do not re-dispatch.
+ */
+async function expiredJobIsClear(mesh: IssueDispatchDeps["mesh"], jobId: string): Promise<boolean> {
+  if (!mesh.getJob) return false;
+  const details = await mesh.getJob(jobId);
+  return !details.claims.some((claim) => claim.state === "active");
 }
 
 const REDISPATCH_EVENT = "start-job-redispatched";
@@ -209,12 +219,12 @@ const REDISPATCH_EVENT = "start-job-redispatched";
  */
 async function recoverQueuedWork(
   deps: IssueDispatchDeps, repo: string, issue: number, digest: string, record: WorkRecord, now: () => number,
-): Promise<void> {
+): Promise<boolean> {
   const { config, work, store, mesh, log } = deps;
   const { listEvents, appendEvent, setState } = store;
   if (!listEvents || !appendEvent || !setState) {
     log("info", "issue dispatch skipped: work already active", { repo, issue });
-    return;
+    return false;
   }
   const attempts = listEvents.call(store, record.workId).filter((event) => event.kind === REDISPATCH_EVENT).length;
   const max = config.maxStartRedispatch ?? 2;
@@ -224,18 +234,24 @@ async function recoverQueuedWork(
     const current = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts }));
     if (current.state !== "expired") {
       log("info", "issue dispatch skipped: work already active", { repo, issue });
-      return;
+      return false;
+    }
+    if (!(await expiredJobIsClear(mesh, current.id))) {
+      log("info", "issue dispatch skipped: the expired start job still has a claim or cannot be read", { repo, issue, jobId: current.id });
+      return false;
     }
     if (attempts >= max) {
       setState.call(store, record.workId, "blocked", `start job expired ${attempts + 1} times without running`);
       log("info", "work blocked: start job expired", { repo, issue, workId: record.workId, attempts: attempts + 1 });
-      return;
+      return false;
     }
     appendEvent.call(store, record.workId, REDISPATCH_EVENT, { attempt: attempts + 1, expiredJob: current.id });
     const next = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts + 1 }));
     log("info", "start job re-dispatched", { repo, issue, workId: record.workId, attempt: attempts + 1, jobId: next.id });
+    return next.state === "queued" || next.state === "reported";
   } catch (error) {
     log("error", "start job recovery failed", { repo, issue, error: errorText(error) });
+    return false;
   }
 }
 
@@ -285,8 +301,9 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       }
       if (open.length > 0) {
         const orphan = open.find((r) => r.state === "queued" && r.sessionsUsed === 0 && r.approvedDigest.toLowerCase() === digest);
-        if (orphan && open.length === 1) await recoverQueuedWork(deps, repo, issue.number, digest, orphan, now);
-        else log("info", "issue dispatch skipped: work already active", { repo, issue: issue.number });
+        if (orphan && open.length === 1) {
+          if (await recoverQueuedWork(deps, repo, issue.number, digest, orphan, now)) dispatched += 1;
+        } else log("info", "issue dispatch skipped: work already active", { repo, issue: issue.number });
         continue;
       }
       // Any terminal work for the same approval digest is final: accepted, blocked, or otherwise. An edited
@@ -302,6 +319,7 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         // key, bounded, so the approval is not stuck behind a dead job.
         const maxAttempts = config.maxStartRedispatch ?? 2;
         for (let attempt = 1; job.state === "expired" && attempt <= maxAttempts; attempt += 1) {
+          if (!(await expiredJobIsClear(mesh, job.id))) break;
           job = await mesh.enqueue(buildStartWorkJob({ ...base, attempt }));
         }
         if (job.state === "expired") {

@@ -108,10 +108,10 @@ export interface WorkHandlerDeps {
 
 const failed: WorkOutcome = { kind: "report", report: { outcome: "failed" } };
 
-/** GitHub says the issue is not there (deleted or transferred), as opposed to a failure that may pass. */
-const ISSUE_GONE = /could not resolve to an issue|\b404\b|not found|was deleted|has been transferred/i;
-/** Consecutive releases for one job after a temporary issue-lookup failure before the claim is reported failed. */
-const MAX_TRANSIENT_RELEASES = 5;
+/** GitHub's own answer for an issue number that does not exist. Anything vaguer (a 404 for a missing permission, a missing binary, DNS) may pass and is not proof. */
+const ISSUE_GONE = /could not resolve to an issue or pull request with the number/i;
+/** Consecutive releases for one job after a temporary issue-lookup failure (about an hour at the default backoff) before the claim is reported failed. */
+const MAX_TRANSIENT_RELEASES = 120;
 
 export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
@@ -181,7 +181,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
           return block(work.workId, "issue no longer exists");
         }
         // A temporary failure (network, rate limit, GitHub outage) is not a verdict on the work: hand the claim back
-        // so the same job can be claimed again after the backoff, but only a few times in a row.
+        // so the same job can be claimed again after the backoff, for about an hour of outage; after that the claim is reported failed.
         const tries = (transientReleases.get(job.id) ?? 0) + 1;
         if (tries <= MAX_TRANSIENT_RELEASES) {
           transientReleases.set(job.id, tries);

@@ -271,7 +271,7 @@ describe("dispatchApprovedIssues", () => {
       const { store, recorded } = fakeStore([queuedWork()]);
       await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => {
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
           keys.push(String(input.idempotencyKey)); refs.push(String(input.workRef));
           return (String(input.idempotencyKey).endsWith(":r1")
             ? { id: "new-job", state: "queued", createdAt: 1_000 }
@@ -291,7 +291,7 @@ describe("dispatchApprovedIssues", () => {
       const { store, recorded, states } = fakeStore([queuedWork()]);
       await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "live", state: "queued", createdAt: 0 } as never; } },
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "live", state: "queued", createdAt: 0 } as never; } },
         gh: async () => JSON.stringify([issue(7, body)]),
         log: () => {}, now: () => 1_000,
       });
@@ -305,7 +305,7 @@ describe("dispatchApprovedIssues", () => {
       const { store, states } = fakeStore([queuedWork()], [{ kind: "start-job-redispatched" }, { kind: "start-job-redispatched" }]);
       await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; } },
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; } },
         gh: async () => JSON.stringify([issue(7, body)]),
         log: () => {}, now: () => 1_000,
       });
@@ -320,7 +320,7 @@ describe("dispatchApprovedIssues", () => {
       const { store, states } = fakeStore([queuedWork({ approvedDigest: "0123456789ab" })]);
       const count = await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => { enqueued.push(input); return { id: "job-new", state: "queued", createdAt: 1_000 } as never; } },
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { enqueued.push(input); return { id: "job-new", state: "queued", createdAt: 1_000 } as never; } },
         gh: async () => JSON.stringify([issue(7, body)]),
         log: () => {}, now: () => 1_000,
       });
@@ -334,7 +334,7 @@ describe("dispatchApprovedIssues", () => {
       const { store } = fakeStore([]);
       const count = await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => {
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
           keys.push(String(input.idempotencyKey));
           return (String(input.idempotencyKey).endsWith(":r1")
             ? { id: "new-job", state: "queued", createdAt: 1_000 }
@@ -349,12 +349,62 @@ describe("dispatchApprovedIssues", () => {
       const exhausted: string[] = [];
       const none = await dispatchApprovedIssues({
         config: CONFIG, work: WORK, store,
-        mesh: { enqueue: async (input: Record<string, unknown>) => { exhausted.push(String(input.idempotencyKey)); return { id: "dead", state: "expired", createdAt: 0 } as never; } },
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => { exhausted.push(String(input.idempotencyKey)); return { id: "dead", state: "expired", createdAt: 0 } as never; } },
         gh: async () => JSON.stringify([issue(7, body)]),
         log: () => {}, now: () => 1_000,
       });
       expect(exhausted).toHaveLength(3);
       expect(none).toBe(0);
+    });
+
+    test("an expired job that still has an active claim is not re-dispatched, nor blocked (#643)", async () => {
+      const keys: string[] = [];
+      const { store, recorded, states } = fakeStore([queuedWork()], [{ kind: "start-job-redispatched" }, { kind: "start-job-redispatched" }]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [{ id: "c", state: "active" }] }) as never,
+          enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+      expect(states).toHaveLength(0);
+    });
+
+    test("when the claim cannot be read the expired job is left alone (fail closed)", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: { enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "old", state: "expired", createdAt: 0 } as never; } },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a recovery job counts toward maxPerPoll", async () => {
+      const keys: string[] = [];
+      const a = queuedWork({ issue: 7, workId: "w1111111111" });
+      const b = queuedWork({ issue: 8, workId: "w2222222222" });
+      const { store } = fakeStore([a, b]);
+      const count = await dispatchApprovedIssues({
+        config: { ...CONFIG, maxPerPoll: 1 }, work: WORK, store,
+        mesh: { getJob: async () => ({ claims: [] }) as never, enqueue: async (input: Record<string, unknown>) => {
+          keys.push(String(input.idempotencyKey));
+          return (String(input.idempotencyKey).endsWith(":r1")
+            ? { id: "new-job", state: "queued", createdAt: 1_000 }
+            : { id: "old-job", state: "expired", createdAt: 0 }) as never;
+        } },
+        gh: async () => JSON.stringify([issue(7, body), issue(8, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(count).toBe(1);
+      expect(keys.filter((k) => k.endsWith(":r1"))).toHaveLength(1);
     });
 
     test("a work that already ran is never re-dispatched by this path", async () => {
