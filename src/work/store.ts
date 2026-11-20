@@ -742,6 +742,8 @@ export class WorkStore {
           current.prNumber !== work.prNumber || current.prHead !== work.prHead) return false;
 
       const head = pr.head.toLowerCase();
+      const moved = current.prNumber === pr.number && current.prHead !== null &&
+        current.prHead.toLowerCase() !== head;
       if (current.prNumber !== pr.number || current.prHead !== head || current.prUrl !== pr.url) {
         this.recordPullRequest(work.workId, { ...pr, head });
       }
@@ -755,10 +757,26 @@ export class WorkStore {
         retired.push(entry.key);
       }
       if (retired.length) this.writeEvent(work.workId, "head-jobs-retired", { head, keys: retired });
-      this.enqueueOutbox({
-        key: `review:${work.workId}:${pr.number}@${head}`, workId: work.workId, purpose: "review",
-        payload: { repo: work.repo, number: pr.number, head },
-      });
+      const legacyKey = `review:work:${work.workId}:${pr.number}@${head}`;
+      const previous = this.listOutbox(work.workId).filter((entry) => {
+        const target = entry.payload as { number?: number; head?: string } | null;
+        return entry.purpose === "review" && target?.number === pr.number &&
+          typeof target.head === "string" && target.head.toLowerCase() === head;
+      }).at(-1);
+      if (!previous) {
+        this.enqueueOutbox({
+          key: `review:${work.workId}:${pr.number}@${head}`, workId: work.workId, purpose: "review",
+          payload: { repo: work.repo, number: pr.number, head },
+        });
+      } else if (moved || previous.status === "superseded") {
+        const payload = previous.payload as { dispatchKey?: string; previousDispatchKey?: string };
+        this.enqueueOutbox({
+          key: `review:${work.workId}:${pr.number}@${head}:return:${randomBytes(12).toString("hex")}`,
+          workId: work.workId, purpose: "review",
+          payload: { repo: work.repo, number: pr.number, head,
+            previousDispatchKey: payload.dispatchKey ?? payload.previousDispatchKey ?? legacyKey },
+        });
+      }
       return true;
     }).immediate();
   }
@@ -785,6 +803,17 @@ export class WorkStore {
 
   listOutbox(workId: string): OutboxEntry[] {
     return (this.db.query("SELECT * FROM work_outbox WHERE work_id = ? ORDER BY created_at, rowid").all(workId) as Row[]).map(toOutbox);
+  }
+
+  /** Save the effective Mesh key before an outbound review so a retry uses the same job. */
+  setPendingReviewDispatchKey(key: string, dispatchKey: string): boolean {
+    const row = this.db.query("SELECT * FROM work_outbox WHERE key = ? AND purpose = 'review' AND status = 'pending'").get(key) as Row | null;
+    if (!row) return false;
+    const payload = toOutbox(row).payload as Record<string, unknown>;
+    return this.db.run(
+      "UPDATE work_outbox SET payload_json = ? WHERE key = ? AND purpose = 'review' AND status = 'pending'",
+      [JSON.stringify(redact({ ...payload, dispatchKey })), key],
+    ).changes > 0;
   }
 
   completeOutbox(key: string, status: "done" | "superseded" = "done"): void {

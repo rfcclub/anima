@@ -8,6 +8,7 @@ import { WorkStore } from "../../src/work/store";
 import { loadWorkConfig } from "../../src/work/config";
 import { Reconciler, type MeshEnqueuer, type ReconcilerConfig } from "../../src/work/reconciler";
 import type { CheckInfo, PullRequestInfo, ReviewInfo, WorkGitHub } from "../../src/work/evidence";
+import type { MeshJobDetails } from "../../src/mesh-jobs/client";
 
 const HEAD1 = "a".repeat(40);
 const HEAD2 = "b".repeat(40);
@@ -69,14 +70,36 @@ class FakeGitHub implements WorkGitHub {
 class FakeMesh implements MeshEnqueuer {
   byKey = new Map<string, { id: string; input: Record<string, any> }>();
   failNext: "before" | "after" | null = null;
+  failNewAfter = false;
+  readError: Error | null = null;
+  onGetJob: (() => void) | null = null;
+  jobOverrides = new Map<string, Partial<MeshJobDetails>>();
+  readJobIds: string[] = [];
   confirmed: string[] = [];
   confirmFails = false;
   async enqueue(input: Record<string, any>) {
     if (this.failNext === "before") { this.failNext = null; throw new Error("gateway down"); }
     let job = this.byKey.get(input.idempotencyKey);
-    if (!job) { job = { id: `job-${this.byKey.size + 1}`, input }; this.byKey.set(input.idempotencyKey, job); }
+    if (!job) {
+      job = { id: `job-${this.byKey.size + 1}`, input };
+      this.byKey.set(input.idempotencyKey, job);
+      if (this.failNewAfter) { this.failNewAfter = false; throw new Error("new job response lost"); }
+    }
     if (this.failNext === "after") { this.failNext = null; throw new Error("response lost"); }
     return { id: job.id };
+  }
+  async getJob(id: string): Promise<MeshJobDetails> {
+    this.readJobIds.push(id);
+    this.onGetJob?.();
+    if (this.readError) throw this.readError;
+    const job = [...this.byKey.values()].find((item) => item.id === id);
+    if (!job) throw new Error("job not found");
+    return {
+      id, enqueuer: "enqueuer", type: job.input.type, target: job.input.target,
+      slots: job.input.slots, eligible: job.input.eligible, excluded: job.input.excluded,
+      state: "queued", expiresAt: job.input.expiresAt, createdAt: clock, claims: [],
+      ...this.jobOverrides.get(id),
+    };
   }
   async confirm(jobId: string) { if (this.confirmFails) throw new Error("gateway down"); this.confirmed.push(jobId); }
   jobs(type: string) { return [...this.byKey.values()].filter((j) => j.input.type === type); }
@@ -312,6 +335,260 @@ describe("current-head reconciliation", () => {
     await reconciler.tick();
     await reconciler.tick();
     expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD2, HEAD1]);
+  });
+
+  test("a dispatched review is recovered when its head returns", async () => {
+    const { github, mesh, reconciler, restart } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(earlier.id, { state: "expired", expiresAt: clock - 1 });
+
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    await restart().tick();
+    const jobs = mesh.jobs("review");
+    expect(jobs.map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1]);
+    expect(new Set(jobs.map((job) => job.input.idempotencyKey)).size).toBe(3);
+  });
+
+  test("a returned head reuses a review that can still run", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(earlier.id);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2]);
+    expect(store.listOutbox(workId).every((entry) => entry.status === "done")).toBe(true);
+  });
+
+  test.each(["active", "reported", "completed"] as const)(
+    "a returned head reuses a review with %s work",
+    async (state) => {
+      const { github, mesh, reconciler } = make();
+      github.prByBranch = pr();
+      await reconciler.collectEvidence(workId);
+      store.setState(workId, "in-review");
+      await reconciler.tick();
+      const earlier = mesh.jobs("review")[0]!;
+      mesh.jobOverrides.set(earlier.id, state === "active" ? {
+        claims: config.reviewers.map((reviewer, index) => ({
+          id: `claim-${index}`, jobId: earlier.id, worker: reviewer.meshId,
+          state: index === 0 ? "active" : "failed", leaseExpiresAt: clock + 100,
+          evidenceRef: null,
+        })),
+      } : { state });
+      if (state !== "active") github.reviewList = [review({ state: "APPROVED" })];
+      github.current = pr({ headSha: HEAD2 });
+      await reconciler.tick();
+      github.current = pr();
+      await reconciler.tick();
+      expect(mesh.readJobIds).toContain(earlier.id);
+      expect(mesh.jobs("review")).toHaveLength(2);
+    },
+  );
+
+  test("a completed review with no standing verdict is replaced on return", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(earlier.id, { state: "completed" });
+    github.reviewList = [review({ state: "DISMISSED" })];
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(earlier.id);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1]);
+  });
+
+  test("a completed review is not replaced when its GitHub verdict cannot be read", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "reported" });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    github.reviews = async () => { throw new Error("review lookup unavailable"); };
+    await reconciler.tick();
+    expect(mesh.jobs("review")).toHaveLength(2);
+    expect(store.listOutbox(workId).filter((entry) => entry.status === "pending")).toHaveLength(1);
+  });
+
+  test("a returned head replaces a queued job after all eligible reviewers failed", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(earlier.id, {
+      claims: config.reviewers.map((reviewer, index) => ({
+        id: `claim-${index}`, jobId: earlier.id, worker: reviewer.meshId,
+        state: "failed", leaseExpiresAt: clock - 1, evidenceRef: null,
+      })),
+    });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1]);
+  });
+
+  test("reviews reported during a non-atomic job lookup do not trigger a duplicate", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    // Mesh can read state=queued immediately before its separate claims read sees both reports.
+    mesh.jobOverrides.set(earlier.id, {
+      claims: config.reviewers.map((reviewer, index) => ({
+        id: `claim-${index}`, jobId: earlier.id, worker: reviewer.meshId,
+        state: "reported", leaseExpiresAt: clock, evidenceRef: `review-${index}`,
+      })),
+    });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(earlier.id);
+    expect(mesh.jobs("review")).toHaveLength(2);
+  });
+
+  test.each(["unavailable", "mismatched", "malformed"] as const)("a %s previous job defers a returned review", async (problem) => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const earlier = mesh.jobs("review")[0]!;
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    if (problem === "unavailable") mesh.readError = new Error("gateway lookup unavailable");
+    else if (problem === "mismatched") mesh.jobOverrides.set(earlier.id, { target: { repo: "other/repo", kind: "pr", number: 12, headSha: HEAD1 } });
+    else mesh.jobOverrides.set(earlier.id, { eligible: null });
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.jobs("review")).toHaveLength(2);
+    expect(store.listOutbox(workId).filter((entry) => entry.status === "pending")).toHaveLength(1);
+  });
+
+  test("a lost replacement response reuses the same job after restart", async () => {
+    const { github, mesh, reconciler, restart } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.failNewAfter = true;
+    await reconciler.tick();
+    expect(mesh.jobs("review")).toHaveLength(3);
+    expect(store.listOutbox(workId).filter((entry) => entry.status === "pending")).toHaveLength(1);
+    clock += config.retryBackoffMs;
+    await restart().tick();
+    expect(mesh.jobs("review")).toHaveLength(3);
+    expect(store.listOutbox(workId).every((entry) => entry.status === "done")).toBe(true);
+  });
+
+  test("a lost response followed by another head move resolves the attempted job on return", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.failNewAfter = true;
+    await reconciler.tick();
+    const replacement = mesh.jobs("review").at(-1)!;
+    expect(mesh.jobs("review")).toHaveLength(3);
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(replacement.id);
+    expect(mesh.jobs("review")).toHaveLength(3);
+  });
+
+  test("a head that moves during the prior-job lookup does not dispatch a stale replacement", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.onGetJob = () => { github.current = pr({ headSha: HEAD2 }); };
+    await reconciler.tick();
+    expect(mesh.readJobIds).toHaveLength(1);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2]);
+    expect(store.listOutbox(workId).at(-1)!.status).toBe("superseded");
+  });
+
+  test("a stored head that changes during the prior-job lookup prevents replacement", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.onGetJob = () => store.recordPullRequest(workId, { number: 12, head: HEAD2, url: pr().url });
+    await reconciler.tick();
+    expect(mesh.readJobIds).toHaveLength(1);
+    expect(mesh.jobs("review")).toHaveLength(2);
+    expect(store.listOutbox(workId).at(-1)!.status).toBe("superseded");
+  });
+
+  test("repeated returns inspect the latest dispatched review", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const first = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(first.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    const replacement = mesh.jobs("review").at(-1)!;
+    expect(replacement.id).not.toBe(first.id);
+    mesh.jobOverrides.set(replacement.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    expect(mesh.readJobIds).toContain(replacement.id);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1, HEAD1]);
   });
 
   test("a failing head lookup defers dispatch and records the lookup error", async () => {

@@ -4,8 +4,8 @@
  * `collectEvidence` is what the work handler calls when a session says it is done: it finds the pull request
  * on GitHub, checks it belongs to this work, records its head and queues the review. `tick` executes the
  * outbox and watches open pull requests. Every outward operation is keyed by work, pull request and head, and
- * the same key goes to Mesh as the idempotency key, so a crash or a lost response at any point leaves one
- * review job per head and one revise job per head.
+ * stable keys go to Mesh as idempotency keys, so retries do not duplicate a review or revision. A returned
+ * head may need a new review key when its earlier Mesh job can no longer run.
  */
 
 import { baseForRepo } from "./config";
@@ -232,7 +232,10 @@ export class Reconciler {
       if (leftToEnqueuer.length > 0) store.appendEvent(work.workId, "confirm-left-to-enqueuer", { jobIds: leftToEnqueuer });
       return;
     }
-    const payload = entry.payload as { repo: string; number: number; head: string; failedJobId?: string; reviewers?: string[] };
+    const payload = entry.payload as {
+      repo: string; number: number; head: string; failedJobId?: string; reviewers?: string[];
+      previousDispatchKey?: string; dispatchKey?: string;
+    };
     const retry = entry.purpose === "revise" && entry.key.startsWith("revise-retry:");
     if (!retry) {
       const pr = await this.deps.github.pullRequest(payload.repo, payload.number);
@@ -244,10 +247,50 @@ export class Reconciler {
     const target = { repo: payload.repo, kind: "pr", number: payload.number, headSha: payload.head };
     const expiresAt = this.now() + DAY_MS;
     if (entry.purpose === "review") {
-      await mesh.enqueue({
+      const input = {
         type: "review", target, slots: Math.min(2, config.reviewers.length), eligible: config.reviewers.map((r) => r.meshId),
-        excluded: config.authorMeshIds, expiresAt, idempotencyKey: `review:work:${work.workId}:${payload.number}@${payload.head}`,
-      });
+        excluded: config.authorMeshIds, expiresAt,
+      };
+      if (!payload.previousDispatchKey) {
+        await mesh.enqueue({ ...input, idempotencyKey: `review:work:${work.workId}:${payload.number}@${payload.head}` });
+        return;
+      }
+
+      // Idempotently resolve even legacy rows that did not store the gateway job ID.
+      const port = mesh.retrySession ? mesh.retrySession() : mesh;
+      if (!port.getJob) throw new Error("review return deferred: prior Mesh job cannot be read");
+      const candidateKey = payload.dispatchKey ?? payload.previousDispatchKey;
+      const candidate = await port.enqueue({ ...input, idempotencyKey: candidateKey });
+      const prior = await port.getJob(candidate.id);
+      if (prior.id !== candidate.id || prior.type !== "review" || prior.target?.kind !== "pr" ||
+          prior.target.repo?.toLowerCase() !== payload.repo.toLowerCase() || prior.target.number !== payload.number ||
+          prior.target.headSha?.toLowerCase() !== payload.head.toLowerCase()) {
+        throw new Error("review return deferred: prior Mesh job does not match the pull request");
+      }
+      let usable = usableReviewJob(prior, this.now());
+      if (prior.state === "reported" || prior.state === "completed") {
+        const reading = readReviews(await this.deps.github.reviews(payload.repo, payload.number), {
+          head: payload.head, authorActor: config.authorActor, reviewerLogins: config.reviewers.map((reviewer) => reviewer.login),
+        });
+        usable = reading.approvals.length > 0 || reading.standingChanges.length > 0;
+      }
+
+      // The head or work may have changed while the gateway answered.
+      const pr = await this.deps.github.pullRequest(payload.repo, payload.number);
+      if (pr.number !== payload.number || !validHead(pr.headSha)) throw new Error("pull request head unavailable");
+      const current = store.getWork(work.workId);
+      if (pr.state !== "open" || pr.merged || pr.headSha.toLowerCase() !== payload.head.toLowerCase() ||
+          !current || current.generation !== work.generation || current.state !== work.state ||
+          current.prNumber !== payload.number || current.prHead?.toLowerCase() !== payload.head.toLowerCase()) return "superseded";
+      if (usable) {
+        if (!store.setPendingReviewDispatchKey(entry.key, candidateKey)) return "superseded";
+        return;
+      }
+      const replacementKey = `review:work:${entry.key.slice("review:".length)}`;
+      if (candidateKey === replacementKey) throw new Error("review return deferred: replacement job is no longer usable");
+      // Persist before sending: a lost response or later head return must resolve this exact key.
+      if (!store.setPendingReviewDispatchKey(entry.key, replacementKey)) return "superseded";
+      await port.enqueue({ ...input, idempotencyKey: replacementKey });
     } else if (entry.purpose === "revise") {
       const port = retry && mesh.retrySession ? mesh.retrySession() : mesh;
       if (retry) {
@@ -303,6 +346,30 @@ export class Reconciler {
   private log(level: "info" | "error", message: string, fields?: Record<string, unknown>): void {
     this.deps.log?.(level, message, fields);
   }
+}
+
+/** A job with an active or claimable reviewer can still serve this head; unknown data fails closed. */
+function usableReviewJob(job: MeshJobDetails, now: number): boolean {
+  if (!["queued", "reported", "completed", "expired"].includes(job.state) ||
+      !Number.isFinite(job.expiresAt) || !Number.isSafeInteger(job.slots) || job.slots < 1 ||
+      !Array.isArray(job.eligible) ||
+      !job.eligible.every((worker) => typeof worker === "string") ||
+      !Array.isArray(job.excluded) || !job.excluded.every((worker) => typeof worker === "string") ||
+      !Array.isArray(job.claims) || job.claims.some((claim) =>
+        typeof claim.worker !== "string" || !["active", "reported", "failed", "lost", "released"].includes(claim.state))) {
+    throw new Error("review return deferred: prior Mesh job has unknown state");
+  }
+  if (job.state === "reported" || job.state === "completed") return true;
+  // Mesh reads the job and its claims separately; all slots may report between those reads.
+  if (job.claims.filter((claim) => claim.state === "reported").length >= job.slots) return true;
+  if (job.state === "expired" || job.expiresAt <= now) return false;
+  const excluded = new Set(job.excluded.map((worker) => worker.toLowerCase()));
+  const eligible = job.eligible.map((worker) => worker.toLowerCase()).filter((worker) => !excluded.has(worker));
+  const active = new Set(job.claims.filter((claim) => claim.state === "active").map((claim) => claim.worker.toLowerCase()));
+  if (eligible.some((worker) => active.has(worker))) return true;
+  const consumed = new Set(job.claims.filter((claim) => ["active", "reported", "failed"].includes(claim.state))
+    .map((claim) => claim.worker.toLowerCase()));
+  return eligible.some((worker) => !consumed.has(worker));
 }
 
 function errorText(error: unknown): string {
