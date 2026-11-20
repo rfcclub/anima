@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { canonicalRoster, chooseRoster, isInsidePath, validRoster } from "./deploy-roster.ts";
+import { canonicalRoster, chooseRoster, isInsidePath, isPrivateMode, validRoster } from "./deploy-roster.ts";
 
 const roster = (names: string[], extra: Record<string, unknown> = {}) =>
   JSON.stringify({ companies: { a: { members: names.map((agentId) => ({ agentId })) } }, agents: names.map((name) => ({ name })), ...extra });
@@ -77,4 +77,12 @@ test("isInsidePath detects a directory inside another and not a sibling with the
   expect(isInsidePath("/work/repo", "/work/repo")).toBe(true);
   expect(isInsidePath("/work/repo-private", "/work/repo")).toBe(false);
   expect(isInsidePath("/home/x/overlay", "/work/repo")).toBe(false);
+});
+
+test("isPrivateMode accepts owner-only modes and rejects any group or other access", () => {
+  expect(isPrivateMode(0o700)).toBe(true);
+  expect(isPrivateMode(0o600)).toBe(true);
+  expect(isPrivateMode(0o640)).toBe(false);
+  expect(isPrivateMode(0o604)).toBe(false);
+  expect(isPrivateMode(0o755)).toBe(false);
 });

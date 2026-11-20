@@ -9,7 +9,7 @@
  *   deploy-roster.ts choose <repo roster> <runtime roster> <overlay dir or ""> <project dir>   prints the chosen file
  *   deploy-roster.ts validate <roster file>                                                    exit 0 when loadable
  */
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 export type RosterChoice = { action: "overlay" } | { action: "repo" } | { action: "refuse"; reason: string };
@@ -76,6 +76,11 @@ export function chooseRoster(input: { repo: string; runtime: string | null; over
   };
 }
 
+/** True when no group or other permission bit is set. */
+export function isPrivateMode(mode: number): boolean {
+  return (mode & 0o077) === 0;
+}
+
 /** True when `child` is `parent` or inside it (a sibling that shares a prefix is not inside). */
 export function isInsidePath(child: string, parent: string): boolean {
   const c = resolve(child);
@@ -116,6 +121,9 @@ if (import.meta.main) {
     }
     overlayFile = join(real, "colony.json");
     if (!existsSync(overlayFile)) fail("the overlay directory has no colony.json");
+    if (!isPrivateMode(statSync(real).mode) || !isPrivateMode(statSync(overlayFile).mode)) {
+      fail("the overlay directory and its colony.json must not be readable by group or others (use mode 700 and 600)");
+    }
   }
   const choice = chooseRoster({
     repo: readFileSync(repoFile, "utf-8"),
