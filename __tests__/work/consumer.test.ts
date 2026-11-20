@@ -211,18 +211,23 @@ describe("a failing issue lookup (#643)", () => {
     for (const message of ["gh issue view exited 1: HTTP 404: Not Found", "gh issue view exited 1: getaddrinfo: host not found", "gh: command not found"]) {
       const { handler } = handlerWith(async () => { throw new Error(message); });
       const result = await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() });
-      expect(result).toEqual({ kind: "release" });
+      expect(result).toEqual({ kind: "release", backoffMs: 30_000 });
       expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
     }
   });
 
-  test("a temporary failure releases the claim so the job can be claimed again, a bounded number of times", async () => {
+  test("a temporary failure releases the claim with a growing backoff; after the bound the work is blocked with the cause", async () => {
     const { handler, executor } = handlerWith(async () => { throw new Error("gh issue view exited 1: HTTP 502 Bad Gateway"); });
-    const outcomes = [];
-    for (let i = 0; i < 121; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }));
-    expect(outcomes.slice(0, 120)).toEqual(Array(120).fill({ kind: "release" }));
-    expect(outcomes[120]).toEqual({ kind: "report", report: { outcome: "failed" } });
-    expect(store.getWork("wabc1234ef0")!.state).toBe("queued");
+    const outcomes: Array<{ kind: string; backoffMs?: number }> = [];
+    for (let i = 0; i < 31; i++) outcomes.push(await handler.run({ worker: "finn", claim, job: workJob(), jobs: new FakeJobs() }) as never);
+    expect(outcomes.slice(0, 30).every((o) => o.kind === "release")).toBe(true);
+    expect(outcomes[0]!.backoffMs).toBe(30_000);
+    expect(outcomes[1]!.backoffMs).toBe(60_000);
+    expect(outcomes[29]!.backoffMs).toBe(300_000);
+    expect(outcomes[30]).toEqual({ kind: "report", report: { outcome: "failed" } });
+    const work = store.getWork("wabc1234ef0")!;
+    expect(work.state).toBe("blocked");
+    expect(work.blockedReason).toBe("issue lookup kept failing");
     expect(executor.inputs).toEqual([]);
   });
 

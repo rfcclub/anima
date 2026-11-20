@@ -407,6 +407,59 @@ describe("dispatchApprovedIssues", () => {
       expect(keys.filter((k) => k.endsWith(":r1"))).toHaveLength(1);
     });
 
+    test("a queued job whose only eligible worker already holds a failed claim is dead and gets the next attempt (#643)", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [{ worker: WORK.authorMeshId, state: "failed" }], eligible: [WORK.authorMeshId] }) as never,
+          enqueue: async (input: Record<string, unknown>) => {
+            keys.push(String(input.idempotencyKey));
+            return (String(input.idempotencyKey).endsWith(":r1")
+              ? { id: "new-job", state: "queued", createdAt: 1_000 }
+              : { id: "stuck-job", state: "queued", createdAt: 0 }) as never;
+          },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toEqual([`work:rfcclub/anima#7:${digest}`, `work:rfcclub/anima#7:${digest}:r1`]);
+      expect(recorded).toHaveLength(1);
+    });
+
+    test("a queued job nobody has claimed yet is alive and left alone", async () => {
+      const keys: string[] = [];
+      const { store, recorded } = fakeStore([queuedWork()]);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => ({ claims: [], eligible: [WORK.authorMeshId] }) as never,
+          enqueue: async (input: Record<string, unknown>) => { keys.push(String(input.idempotencyKey)); return { id: "live", state: "queued", createdAt: 0 } as never; },
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(keys).toHaveLength(1);
+      expect(recorded).toHaveLength(0);
+    });
+
+    test("a work that changed while the job was being read is not touched (#643)", async () => {
+      const works = [queuedWork()];
+      const { store, recorded, states } = fakeStore(works);
+      await dispatchApprovedIssues({
+        config: CONFIG, work: WORK, store,
+        mesh: {
+          getJob: async () => { works[0] = queuedWork({ state: "running", sessionsUsed: 1 }); return { claims: [] } as never; },
+          enqueue: async () => ({ id: "old", state: "expired", createdAt: 0 }) as never,
+        },
+        gh: async () => JSON.stringify([issue(7, body)]),
+        log: () => {}, now: () => 1_000,
+      });
+      expect(recorded).toHaveLength(0);
+      expect(states).toHaveLength(0);
+    });
+
     test("a work that already ran is never re-dispatched by this path", async () => {
       const enqueued: unknown[] = [];
       const { store } = fakeStore([queuedWork({ state: "running", sessionsUsed: 1 })]);

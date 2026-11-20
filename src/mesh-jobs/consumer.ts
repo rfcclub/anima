@@ -16,7 +16,7 @@ export interface JobsPort {
 /** What a work handler decided about a claimed start-work or revise job. */
 export type WorkOutcome =
   | { kind: "report"; report: MeshJobReport }
-  | { kind: "release" }
+  | { kind: "release"; backoffMs?: number }
   | { kind: "lease-lost" };
 
 /** Runs claimed start-work and revise jobs (anima#135). Review jobs never reach it. */
@@ -162,7 +162,7 @@ export class MeshJobConsumer {
     }
     if (outcome.kind === "lease-lost") return;
     if (outcome.kind === "release") {
-      await this.handBack(worker, claim);
+      await this.handBack(worker, claim, outcome.backoffMs);
       return;
     }
     try {
@@ -174,8 +174,8 @@ export class MeshJobConsumer {
   }
 
   /** Release the claim and stay away from the queue for the backoff. A port without `release` reports failed, as before. */
-  private async handBack(worker: Worker, claim: MeshClaim): Promise<void> {
-    this.cooldownUntil.set(worker.agent, this.now() + (this.options.releaseBackoffMs ?? 30_000));
+  private async handBack(worker: Worker, claim: MeshClaim, backoffMs?: number): Promise<void> {
+    this.cooldownUntil.set(worker.agent, this.now() + (backoffMs ?? this.options.releaseBackoffMs ?? 30_000));
     try {
       if (worker.jobs.release) await worker.jobs.release(claim.id);
       else await worker.jobs.report(claim.id, { outcome: "failed" });

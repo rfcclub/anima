@@ -201,13 +201,19 @@ export interface IssueDispatchDeps {
 }
 
 /**
- * Whether an expired job still has a live claim: a claim lease can outlast the job's expiry, and re-dispatching then
- * would start a second writer. True or null (cannot be read) both mean do not re-dispatch.
+ * Whether a start job can no longer run: it expired with no live claim (a claim lease can outlast the job's expiry,
+ * and re-dispatching then would start a second writer), or every worker it is eligible for already holds a failed or
+ * reported claim on it, which the queue never lets them claim again. An unreadable job is not dead (fail closed).
  */
-async function expiredJobIsClear(mesh: IssueDispatchDeps["mesh"], jobId: string): Promise<boolean> {
+async function startJobIsDead(mesh: IssueDispatchDeps["mesh"], job: { id: string; state: string }): Promise<boolean> {
+  if (job.state !== "expired" && job.state !== "queued") return false;
   if (!mesh.getJob) return false;
-  const details = await mesh.getJob(jobId);
-  return !details.claims.some((claim) => claim.state === "active");
+  const details = await mesh.getJob(job.id);
+  if (details.claims.some((claim) => claim.state === "active")) return false;
+  if (job.state === "expired") return true;
+  const eligible = details.eligible ?? [];
+  return eligible.length > 0 && eligible.every((worker) =>
+    details.claims.some((claim) => claim.worker === worker && (claim.state === "failed" || claim.state === "reported")));
 }
 
 const REDISPATCH_EVENT = "start-job-redispatched";
@@ -232,12 +238,14 @@ async function recoverQueuedWork(
   try {
     // A replay of the current attempt's key returns the existing job, so its state tells whether it can still run.
     const current = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts }));
-    if (current.state !== "expired") {
+    if (!(await startJobIsDead(mesh, current))) {
       log("info", "issue dispatch skipped: work already active", { repo, issue });
       return false;
     }
-    if (!(await expiredJobIsClear(mesh, current.id))) {
-      log("info", "issue dispatch skipped: the expired start job still has a claim or cannot be read", { repo, issue, jobId: current.id });
+    // The remote reads above can take a while: act only if the work is still the one that was decided on.
+    const fresh = store.listWorks().find((w) => w.workId === record.workId);
+    if (!fresh || fresh.state !== "queued" || fresh.sessionsUsed !== 0 || fresh.generation !== record.generation) {
+      log("info", "start job recovery skipped: the work changed while the job was read", { repo, issue, workId: record.workId });
       return false;
     }
     if (attempts >= max) {
@@ -318,12 +326,11 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         // A replay of an approval whose job expired unclaimed (no work exists yet to recover): try the next attempt
         // key, bounded, so the approval is not stuck behind a dead job.
         const maxAttempts = config.maxStartRedispatch ?? 2;
-        for (let attempt = 1; job.state === "expired" && attempt <= maxAttempts; attempt += 1) {
-          if (!(await expiredJobIsClear(mesh, job.id))) break;
+        for (let attempt = 1; attempt <= maxAttempts && (await startJobIsDead(mesh, job)); attempt += 1) {
           job = await mesh.enqueue(buildStartWorkJob({ ...base, attempt }));
         }
-        if (job.state === "expired") {
-          log("info", "issue dispatch stopped: every start job for this approval expired", { repo, issue: issue.number, digest });
+        if (await startJobIsDead(mesh, job)) {
+          log("info", "issue dispatch stopped: every start job for this approval is dead", { repo, issue: issue.number, digest });
           continue;
         }
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;

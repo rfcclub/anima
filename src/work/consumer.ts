@@ -110,8 +110,10 @@ const failed: WorkOutcome = { kind: "report", report: { outcome: "failed" } };
 
 /** GitHub's own answer for an issue number that does not exist. Anything vaguer (a 404 for a missing permission, a missing binary, DNS) may pass and is not proof. */
 const ISSUE_GONE = /could not resolve to an issue or pull request with the number/i;
-/** Consecutive releases for one job after a temporary issue-lookup failure (about an hour at the default backoff) before the claim is reported failed. */
-const MAX_TRANSIENT_RELEASES = 120;
+/** Consecutive releases for one job after a temporary issue-lookup failure (about two hours with the escalating backoff) before the claim is reported failed. */
+const MAX_TRANSIENT_RELEASES = 30;
+const TRANSIENT_BACKOFF_START_MS = 30_000;
+const TRANSIENT_BACKOFF_CAP_MS = 300_000;
 
 export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
   const { store, executor } = deps;
@@ -181,16 +183,18 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
           return block(work.workId, "issue no longer exists");
         }
         // A temporary failure (network, rate limit, GitHub outage) is not a verdict on the work: hand the claim back
-        // so the same job can be claimed again after the backoff, for about an hour of outage; after that the claim is reported failed.
+        // so the same job can be claimed again after the backoff, for about two hours of outage; after that the work is blocked with the cause.
         const tries = (transientReleases.get(job.id) ?? 0) + 1;
         if (tries <= MAX_TRANSIENT_RELEASES) {
           transientReleases.set(job.id, tries);
           log("info", "issue lookup failed; releasing the claim", { workId: work.workId, tries, error: text.slice(0, 200) });
-          return { kind: "release" };
+          return { kind: "release", backoffMs: Math.min(TRANSIENT_BACKOFF_START_MS * 2 ** (tries - 1), TRANSIENT_BACKOFF_CAP_MS) };
         }
         transientReleases.delete(job.id);
-        log("error", "issue lookup kept failing; reporting failed", { workId: work.workId, tries, error: text.slice(0, 200) });
-        return failed;
+        log("error", "issue lookup kept failing; blocking the work", { workId: work.workId, tries, error: text.slice(0, 200) });
+        // The claim is reported failed and the queue will not offer the job to this worker again, so the work must
+        // not stay queued with no way to run: it is blocked with the cause and an edit of the issue starts a new one.
+        return block(work.workId, "issue lookup kept failing");
       }
       transientReleases.delete(job.id);
       if (store.observeApproval(work.workId, issueDigest12(issue.body)) === "blocked") {
