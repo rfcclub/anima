@@ -86,3 +86,24 @@ test("isPrivateMode accepts owner-only modes and rejects any group or other acce
   expect(isPrivateMode(0o604)).toBe(false);
   expect(isPrivateMode(0o755)).toBe(false);
 });
+
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function runValidate(staged: string, runtime: string, env: Record<string, string> = {}): number {
+  const dir = mkdtempSync(join(tmpdir(), "roster-validate-"));
+  writeFileSync(join(dir, "staged.json"), staged);
+  writeFileSync(join(dir, "runtime.json"), runtime);
+  const proc = Bun.spawnSync(["bun", join(import.meta.dir, "deploy-roster.ts"), "validate", join(dir, "staged.json"), join(dir, "runtime.json")], {
+    env: { ...process.env, ANIMA_ACCEPT_ROSTER_CHANGE: "", ...env }, stdout: "ignore", stderr: "ignore",
+  });
+  return proc.exitCode ?? -1;
+}
+
+test("validate decides again on the staged bytes: a roster that changed after the choice is refused without consent", () => {
+  expect(runValidate(repo, sameShuffled)).toBe(0);
+  expect(runValidate(other, repo)).toBe(1);
+  expect(runValidate(other, repo, { ANIMA_ACCEPT_ROSTER_CHANGE: "1" })).toBe(0);
+  expect(runValidate("oops", repo, { ANIMA_ACCEPT_ROSTER_CHANGE: "1" })).toBe(1);
+});

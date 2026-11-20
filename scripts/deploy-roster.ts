@@ -7,7 +7,7 @@
  * accepted on purpose (ANIMA_ACCEPT_ROSTER_CHANGE=1). Every candidate must be loadable by the server.
  *
  *   deploy-roster.ts choose <repo roster> <runtime roster> <overlay dir or ""> <project dir>   prints the chosen file
- *   deploy-roster.ts validate <roster file>                                                    exit 0 when loadable
+ *   deploy-roster.ts validate <staged file> [runtime roster]   exit 0 when loadable and, against the runtime roster, allowed
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -101,9 +101,15 @@ function insideGitWorkTree(dir: string): boolean {
 if (import.meta.main) {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "validate") {
-    const [file] = args;
+    // The staged bytes are what gets installed: decide again on exactly those bytes, so a source that changed after
+    // the choice cannot install a different roster without consent.
+    const [file, runtimeFile] = args;
     if (!file || !existsSync(file)) fail("no roster file to validate");
-    if (!validRoster(readFileSync(file, "utf-8"))) fail("the staged roster is not a roster the server can load");
+    const staged = readFileSync(file, "utf-8");
+    if (!validRoster(staged)) fail("the staged roster is not a roster the server can load");
+    const runtime = runtimeFile && existsSync(runtimeFile) ? readFileSync(runtimeFile, "utf-8") : null;
+    const choice = chooseRoster({ repo: staged, runtime, accept: Bun.env.ANIMA_ACCEPT_ROSTER_CHANGE === "1" });
+    if (choice.action === "refuse") fail(`the staged roster is not allowed: ${choice.reason}`);
     process.exit(0);
   }
   if (mode !== "choose") {

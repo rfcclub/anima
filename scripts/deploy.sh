@@ -24,7 +24,7 @@ ROSTER_STAGE="$(mktemp "$ANIMA_HOME/data/.colony.stage.XXXXXX")"
 trap 'rm -f "$ROSTER_STAGE"' EXIT
 cp "$ROSTER_SRC" "$ROSTER_STAGE"
 chmod 600 "$ROSTER_STAGE"
-bun "$PROJECT_DIR/scripts/deploy-roster.ts" validate "$ROSTER_STAGE"
+bun "$PROJECT_DIR/scripts/deploy-roster.ts" validate "$ROSTER_STAGE" "$ANIMA_HOME/data/colony.json"
 ROSTER_FROM="$( [ "$ROSTER_SRC" = "$PROJECT_DIR/data/colony.json" ] && echo checkout || echo overlay )"
 
 # 1. Build
