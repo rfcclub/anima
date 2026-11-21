@@ -269,4 +269,55 @@ describe("DefaultPromptAssembler budget handling", () => {
     expect(ctx.blocks.map((b) => b.scope)).toEqual(["identity_core"]);
     expect(ctx.truncated).toBe(false);
   });
+
+  test("a reservation that can never fit is released and does not starve blocks that fit", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(80) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(80) }),
+        makeResult({ id: "c", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(400) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["current_state"] },
+    );
+    expect(ctx.blocks.map((b) => b.scope)).toEqual(["identity_core", "values"]);
+  });
+
+  test("reserved scopes do not starve each other: the second keeps room even after a large sibling", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(260) }),
+        makeResult({ id: "b", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(80) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["identity_core", "current_state"] },
+    );
+    expect(ctx.blocks.map((b) => b.scope)).toContain("current_state");
+    expect(ctx.totalTokens).toBeLessThanOrEqual(300);
+  });
+
+  test("a large block of a reserved scope is skipped when a smaller block of the same scope lets a sibling fit", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["current_state"], trust: "high", weight: 1, content: big(220) }),
+        makeResult({ id: "b", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(40) }),
+        makeResult({ id: "c", scopesMatched: ["identity_core"], trust: "medium", weight: 0.4, content: big(150) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["current_state", "identity_core"] },
+    );
+    const scopes = ctx.blocks.map((b) => b.scope);
+    expect(scopes).toContain("identity_core");
+    expect(scopes).toContain("current_state");
+    expect(ctx.totalTokens).toBeLessThanOrEqual(300);
+  });
+
+  test("the result exposes the dropped scopes and block count without block contents", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(100) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(900) }),
+      ]),
+      { maxTokens: 300 },
+    );
+    expect(ctx.droppedScopes).toEqual(["values"]);
+    expect(ctx.droppedBlocks).toBe(1);
+  });
 });

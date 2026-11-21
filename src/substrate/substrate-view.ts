@@ -106,6 +106,10 @@ export interface PromptContext {
   totalTokens: number;
   tokenBudget: number;
   truncated: boolean;
+  /** Scopes that lost at least one block to the budget (names only, never contents). */
+  droppedScopes: string[];
+  /** Number of blocks dropped to fit the budget. */
+  droppedBlocks: number;
   warnings: string[];
 }
 

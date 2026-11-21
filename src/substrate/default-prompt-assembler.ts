@@ -66,34 +66,42 @@ export class DefaultPromptAssembler implements PromptAssembler {
     const kept: PromptContextBlock[] = [];
     const dropped: PromptContextBlock[] = [];
 
-    // Room held back for the best block of each reserved scope, so a large high-trust block cannot starve it.
+    // Room held back for each reserved scope that has no kept block yet: the cheapest remaining block of that scope
+    // that can fit the budget at all. A reservation that can never fit holds back nothing, and a scope's own block is
+    // never charged for its own reservation, but IS charged for every other reserved scope's.
     const reserved = new Set(reserveScopes);
-    const pendingReserve = new Map<string, number>();
-    for (const block of blocks) {
-      if (reserved.has(block.scope) && !pendingReserve.has(block.scope)) {
-        pendingReserve.set(block.scope, estimateTokens(formatBlock(block, format, includeEvidence)));
+    const costs = blocks.map((block) => estimateTokens(formatBlock(block, format, includeEvidence)));
+    const keptScopes = new Set<string>();
+    const heldBackFor = (index: number): number => {
+      let held = 0;
+      for (const scope of reserved) {
+        if (scope === blocks[index].scope || keptScopes.has(scope)) continue;
+        let cheapest = Infinity;
+        for (let j = index + 1; j < blocks.length; j++) {
+          if (blocks[j].scope === scope && costs[j] <= tokenBudget) cheapest = Math.min(cheapest, costs[j]);
+        }
+        if (cheapest !== Infinity) held += cheapest;
       }
-    }
-    const reservedTotal = () => [...pendingReserve.values()].reduce((sum, n) => sum + n, 0);
+      return held;
+    };
 
-    for (const block of blocks) {
-      const est = estimateTokens(formatBlock(block, format, includeEvidence));
-      const ownsReservation = pendingReserve.has(block.scope);
-      const heldBack = ownsReservation ? 0 : reservedTotal();
-      if (totalTokens + est + heldBack > tokenBudget) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const est = costs[i];
+      if (totalTokens + est + heldBackFor(i) > tokenBudget) {
         dropped.push(block);
         continue; // skip this block only; a later smaller block may still fit
       }
       kept.push(block);
       totalTokens += est;
-      if (ownsReservation) pendingReserve.delete(block.scope);
+      keptScopes.add(block.scope);
     }
 
     // Never hand back an empty view when there was content: keep the best block even if it is over budget.
     if (kept.length === 0 && blocks.length > 0) {
       const first = blocks[0];
       kept.push(first);
-      totalTokens = estimateTokens(formatBlock(first, format, includeEvidence));
+      totalTokens = costs[0];
       dropped.splice(dropped.indexOf(first), 1);
     }
 
@@ -108,6 +116,8 @@ export class DefaultPromptAssembler implements PromptAssembler {
       totalTokens,
       tokenBudget,
       truncated,
+      droppedScopes: [...new Set(dropped.map((b) => b.scope))],
+      droppedBlocks: dropped.length,
       warnings,
     };
   }

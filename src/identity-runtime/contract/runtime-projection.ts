@@ -20,4 +20,6 @@ export interface RuntimeProjection {
   declaredSubstrateScopes: CanonicalSubstrateScope[];
   /** Distinguishes an intentional empty policy from the Phase-1 mapping gap. */
   scopeDeclarationStatus: "implemented" | "unimplemented" | "none";
+  /** Present only when the substrate section lost blocks to its token budget: bounded metadata, never contents. */
+  substrateTruncation?: { budgetTokens: number; droppedScopes: string[]; droppedBlocks: number };
 }

@@ -121,7 +121,7 @@ export class AnimaProjectionCompiler implements ProjectionCompiler<RuntimeProjec
       });
 
     const substrateView = await this.buildSubstrateView(executionPlan);
-    const withSubstrate = this.appendSubstrateView(prompt.full, substrateView);
+    const { system: withSubstrate, truncation: substrateTruncation } = this.appendSubstrateView(prompt.full, substrateView);
     const withHostContext = appendHostContext(withSubstrate, request.hostContext);
     const withGenericRecall = await this.appendGenericRecall(withHostContext, request);
     const system = injectIdentityAnchor(withGenericRecall, agent);
@@ -139,6 +139,7 @@ export class AnimaProjectionCompiler implements ProjectionCompiler<RuntimeProjec
       proposalScopes: [] as LockedScope[],
       declaredSubstrateScopes: [],
       scopeDeclarationStatus: "unimplemented",
+      ...(substrateTruncation ? { substrateTruncation } : {}),
     };
   }
 
@@ -186,18 +187,24 @@ export class AnimaProjectionCompiler implements ProjectionCompiler<RuntimeProjec
     });
   }
 
-  private appendSubstrateView(system: string, view: SubstrateView | undefined): string {
-    if (!view) return system;
+  private appendSubstrateView(
+    system: string,
+    view: SubstrateView | undefined,
+  ): { system: string; truncation?: NonNullable<RuntimeProjection["substrateTruncation"]> } {
+    if (!view) return { system };
     const promptContext = new DefaultPromptAssembler().assemble(view, {
       maxTokens: this.options.agent.config.session.substrateViewMaxTokens ?? DEFAULT_SUBSTRATE_VIEW_TOKENS,
       reserveScopes: view.turnContext.runtimeRequiredScopes,
       format: "markdown",
     });
-    if (promptContext.blocks.length === 0) return system;
+    const truncation = promptContext.truncated
+      ? { budgetTokens: promptContext.tokenBudget, droppedScopes: promptContext.droppedScopes, droppedBlocks: promptContext.droppedBlocks }
+      : undefined;
+    if (promptContext.blocks.length === 0) return { system, truncation };
     const section = promptContext.blocks
       .map((block) => `## ${block.label}\n\n${block.content}`)
       .join("\n\n");
-    return `${system}\n\n${section}`;
+    return { system: `${system}\n\n${section}`, truncation };
   }
 
   private async appendGenericRecall(system: string, request: ProjectionCompileRequest): Promise<string> {
