@@ -274,6 +274,81 @@ describe("revise cycle", () => {
   });
 });
 
+describe("current-head reconciliation", () => {
+  test("a checkpointed revision gets exactly one review for a moved head", async () => {
+    const { github, mesh, reconciler } = make();
+    store.recordPullRequest(workId, { number: 12, head: HEAD1, url: pr().url });
+    store.setState(workId, "checkpointed");
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    await reconciler.tick();
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD2]);
+    expect(store.getWork(workId)).toMatchObject({ prHead: HEAD2, state: "in-review" });
+  });
+
+  test("a move retires both kinds of older pending operations", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "revising");
+    store.enqueueOutbox({
+      key: `revise:${workId}@${HEAD1}`, workId, purpose: "revise",
+      payload: { repo: pr().repo, number: 12, head: HEAD1 },
+    });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD2]);
+    expect(mesh.jobs("revise")).toEqual([]);
+    expect(store.listOutbox(workId).map((entry) => entry.status)).toEqual(["superseded", "superseded", "done"]);
+    expect(store.listEvents(workId).filter((event) => event.kind === "head-jobs-retired")).toHaveLength(1);
+  });
+
+  test("a retired pending review can dispatch if its head returns", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    await reconciler.tick();
+    await reconciler.tick();
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD2, HEAD1]);
+  });
+
+  test("a failing head lookup defers dispatch and records the lookup error", async () => {
+    const { github, mesh, reconciler } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "revising");
+    store.enqueueOutbox({
+      key: `revise:${workId}@${HEAD1}`, workId, purpose: "revise",
+      payload: { repo: pr().repo, number: 12, head: HEAD1 },
+    });
+    const pullRequest = github.pullRequest.bind(github);
+    github.pullRequest = async () => { throw new Error("head lookup unavailable"); };
+    await reconciler.tick();
+    expect(mesh.byKey.size).toBe(0);
+    expect(store.listOutbox(workId).map((entry) => entry.lastError)).toEqual([
+      "head lookup unavailable", "head lookup unavailable",
+    ]);
+    github.pullRequest = pullRequest;
+    clock += config.retryBackoffMs;
+    await reconciler.tick();
+    expect(mesh.jobs("review")).toHaveLength(1);
+    expect(mesh.jobs("revise")).toHaveLength(1);
+  });
+
+  test("an already recorded head with a missing review entry is repaired", async () => {
+    const { mesh, reconciler } = make();
+    store.recordPullRequest(workId, { number: 12, head: HEAD1, url: pr().url });
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    await reconciler.tick();
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1]);
+  });
+});
+
 describe("auto merge", () => {
   async function inReview() {
     const ctx = make();

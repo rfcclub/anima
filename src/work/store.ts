@@ -50,7 +50,7 @@ export interface OutboxEntry {
   workId: string;
   purpose: "review" | "revise" | "confirm";
   payload: unknown;
-  status: "pending" | "done";
+  status: "pending" | "done" | "superseded";
   attempts: number;
   retryAt: number;
   lastError: string | null;
@@ -742,14 +742,46 @@ export class WorkStore {
     this.writeEvent(workId, "pull-request", { number: pr.number, head: pr.head });
   }
 
+  /** Commit the verified head and its review intent together, retiring superseded pending dispatches. */
+  recordReviewHead(work: WorkRecord, pr: { number: number; head: string; url: string }, reopen: boolean): boolean {
+    return this.db.transaction(() => {
+      const current = this.getWork(work.workId);
+      if (!current || current.generation !== work.generation || current.state !== work.state ||
+          current.prNumber !== work.prNumber || current.prHead !== work.prHead) return false;
+
+      const head = pr.head.toLowerCase();
+      if (current.prNumber !== pr.number || current.prHead !== head || current.prUrl !== pr.url) {
+        this.recordPullRequest(work.workId, { ...pr, head });
+      }
+      if (reopen) this.setState(work.workId, "in-review");
+      const retired: string[] = [];
+      for (const entry of this.listOutbox(work.workId)) {
+        if (entry.status !== "pending" || entry.purpose === "confirm") continue;
+        const target = entry.payload as { number?: number; head?: string } | null;
+        if (target?.number !== pr.number || typeof target.head !== "string" || target.head.toLowerCase() === head) continue;
+        this.completeOutbox(entry.key, "superseded");
+        retired.push(entry.key);
+      }
+      if (retired.length) this.writeEvent(work.workId, "head-jobs-retired", { head, keys: retired });
+      this.enqueueOutbox({
+        key: `review:${work.workId}:${pr.number}@${head}`, workId: work.workId, purpose: "review",
+        payload: { repo: work.repo, number: pr.number, head },
+      });
+      return true;
+    }).immediate();
+  }
+
   setStartJob(workId: string, jobId: string): void {
     this.db.run("UPDATE works SET start_job_id = COALESCE(start_job_id, ?), updated_at = ? WHERE work_id = ?", [jobId, this.stamp(), workId]);
   }
 
-  /** Returns false when an operation with this key already exists (done or pending). */
+  /** A superseded, unsent operation may become current again if the pull request returns to its head. */
   enqueueOutbox(entry: { key: string; workId: string; purpose: OutboxEntry["purpose"]; payload: unknown }): boolean {
     const r = this.db.run(
-      "INSERT OR IGNORE INTO work_outbox (key, work_id, purpose, payload_json, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
+      `INSERT INTO work_outbox (key, work_id, purpose, payload_json, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT(key) DO UPDATE SET status = 'pending', attempts = 0, retry_at = 0, last_error = NULL, done_at = NULL,
+         payload_json = excluded.payload_json
+       WHERE work_outbox.status = 'superseded'`,
       [entry.key, entry.workId, entry.purpose, JSON.stringify(redact(entry.payload)), this.stamp()],
     );
     return r.changes > 0;
@@ -763,8 +795,8 @@ export class WorkStore {
     return (this.db.query("SELECT * FROM work_outbox WHERE work_id = ? ORDER BY created_at, rowid").all(workId) as Row[]).map(toOutbox);
   }
 
-  completeOutbox(key: string): void {
-    this.db.run("UPDATE work_outbox SET status = 'done', done_at = ?, last_error = NULL WHERE key = ?", [this.stamp(), key]);
+  completeOutbox(key: string, status: "done" | "superseded" = "done"): void {
+    this.db.run("UPDATE work_outbox SET status = ?, done_at = ?, last_error = NULL WHERE key = ? AND status = 'pending'", [status, this.stamp(), key]);
   }
 
   retryOutbox(key: string, retryAtMs: number, error: string): void {
