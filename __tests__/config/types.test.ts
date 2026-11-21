@@ -137,3 +137,28 @@ memory:
     expect(config.memory?.hindsightTopK).toBe(3);
   });
 });
+
+describe("SessionConfig substrateViewMaxTokens", () => {
+  const base = (sessionExtra: string) => `
+identity:
+  name: test-agent
+  label: Test Agent
+provider:
+  type: openai
+policy:
+  allowedRoots: ["/tmp"]
+session:
+  defaultMode: plan
+${sessionExtra}
+boot:
+  gene: /tmp/gene.md
+  sessionContext:
+    - path: /tmp/context.md
+`;
+
+  test("is parsed when present and undefined when absent", async () => {
+    const { loadRoomConfig } = await import("../../src/config/types");
+    expect(loadRoomConfig(base("  substrateViewMaxTokens: 4500")).session.substrateViewMaxTokens).toBe(4500);
+    expect(loadRoomConfig(base("")).session.substrateViewMaxTokens).toBeUndefined();
+  });
+});

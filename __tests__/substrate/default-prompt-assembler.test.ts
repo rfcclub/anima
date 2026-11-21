@@ -208,3 +208,116 @@ describe("DefaultPromptAssembler", () => {
     expect(ctx.blocks[0].id).toBeUndefined(); // blocks don't have id
   });
 });
+
+
+describe("DefaultPromptAssembler budget handling", () => {
+  const view = (results: RetrievalResult[]): SubstrateView => ({
+    turnContext: makeTurnContext(),
+    results,
+    estimatedTokens: 0,
+    scopesCovered: [...new Set(results.flatMap((r) => r.scopesMatched))],
+    scopesMissing: [],
+    scopesEmpty: [],
+    warnings: [],
+  });
+  const big = (n: number) => "x".repeat(n * 4); // about n tokens
+
+  test("a block that does not fit is skipped and a later smaller block that fits is kept", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(100) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(900) }),
+        makeResult({ id: "c", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(50) }),
+      ]),
+      { maxTokens: 300 },
+    );
+    expect(ctx.blocks.map((b) => b.scope)).toEqual(["identity_core", "current_state"]);
+    expect(ctx.truncated).toBe(true);
+  });
+
+  test("the truncation warning names the scopes that were dropped", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(100) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(900) }),
+        makeResult({ id: "c", scopesMatched: ["scars"], trust: "medium", weight: 0.5, content: big(900) }),
+      ]),
+      { maxTokens: 300 },
+    );
+    const warning = ctx.warnings.find((w) => w.includes("Truncated")) ?? "";
+    expect(warning).toContain("values");
+    expect(warning).toContain("scars");
+    expect(warning).not.toContain("identity_core");
+  });
+
+  test("a reserved scope keeps room for its block even when a high-trust block would fill the budget", () => {
+    const results = [
+      makeResult({ id: "a", scopesMatched: ["values"], trust: "high", weight: 1, content: big(260) }),
+      makeResult({ id: "b", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(80) }),
+    ];
+    const without = new DefaultPromptAssembler().assemble(view(results), { maxTokens: 300 });
+    expect(without.blocks.map((b) => b.scope)).toEqual(["values"]); // current_state starved: 260 + 80 > 300
+
+    const withReserve = new DefaultPromptAssembler().assemble(view(results), { maxTokens: 300, reserveScopes: ["current_state"] });
+    expect(withReserve.blocks.map((b) => b.scope)).toContain("current_state");
+    expect(withReserve.totalTokens).toBeLessThanOrEqual(300);
+  });
+
+  test("without reserveScopes the result is unchanged for a view that fits", () => {
+    const results = [makeResult({ id: "a", scopesMatched: ["identity_core"], content: "short" })];
+    const ctx = new DefaultPromptAssembler().assemble(view(results), { maxTokens: 300, reserveScopes: ["current_state"] });
+    expect(ctx.blocks.map((b) => b.scope)).toEqual(["identity_core"]);
+    expect(ctx.truncated).toBe(false);
+  });
+
+  test("a reservation that can never fit is released and does not starve blocks that fit", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(80) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(80) }),
+        makeResult({ id: "c", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(400) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["current_state"] },
+    );
+    expect(ctx.blocks.map((b) => b.scope)).toEqual(["identity_core", "values"]);
+  });
+
+  test("reserved scopes do not starve each other: the second keeps room even after a large sibling", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(260) }),
+        makeResult({ id: "b", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(80) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["identity_core", "current_state"] },
+    );
+    expect(ctx.blocks.map((b) => b.scope)).toContain("current_state");
+    expect(ctx.totalTokens).toBeLessThanOrEqual(300);
+  });
+
+  test("a large block of a reserved scope is skipped when a smaller block of the same scope lets a sibling fit", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["current_state"], trust: "high", weight: 1, content: big(220) }),
+        makeResult({ id: "b", scopesMatched: ["current_state"], trust: "medium", weight: 0.5, content: big(40) }),
+        makeResult({ id: "c", scopesMatched: ["identity_core"], trust: "medium", weight: 0.4, content: big(150) }),
+      ]),
+      { maxTokens: 300, reserveScopes: ["current_state", "identity_core"] },
+    );
+    const scopes = ctx.blocks.map((b) => b.scope);
+    expect(scopes).toContain("identity_core");
+    expect(scopes).toContain("current_state");
+    expect(ctx.totalTokens).toBeLessThanOrEqual(300);
+  });
+
+  test("the result exposes the dropped scopes and block count without block contents", () => {
+    const ctx = new DefaultPromptAssembler().assemble(
+      view([
+        makeResult({ id: "a", scopesMatched: ["identity_core"], trust: "high", weight: 1, content: big(100) }),
+        makeResult({ id: "b", scopesMatched: ["values"], trust: "high", weight: 0.9, content: big(900) }),
+      ]),
+      { maxTokens: 300 },
+    );
+    expect(ctx.droppedScopes).toEqual(["values"]);
+    expect(ctx.droppedBlocks).toBe(1);
+  });
+});
