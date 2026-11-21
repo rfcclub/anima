@@ -15,6 +15,7 @@ import { GeminiProvider } from "./providers/gemini";
 import { ProviderRegistry } from "./providers/registry";
 import { ModeRouter } from "./providers/router";
 import { OpenAICompatProvider } from "./providers/openai-compat";
+import { withDefaultModel } from "./providers/default-model";
 import type { Provider, ProviderType } from "./providers/interface";
 import type { ModeMap } from "./config/types";
 import { StagingManager } from "./continuity/staging";
@@ -249,6 +250,16 @@ async function resolveAgentProvider(roomDir: string): Promise<Provider> {
   const config = loadRoomConfig(readFileSync(configPath, "utf-8"));
   const type = config.provider?.type as ProviderType;
   return createProviderForType(type);
+}
+
+/** Dream jobs (the /dream route and the lucid sweep) send no model of their
+ *  own; they use the one the room is configured for. Other callers of
+ *  resolveAgentProvider (for example the session-end handler) are unchanged. */
+async function resolveDreamProvider(roomDir: string): Promise<Provider> {
+  const provider = await resolveAgentProvider(roomDir);
+  const config = loadRoomConfig(readFileSync(join(roomDir, "config.yaml"), "utf-8"));
+  const model = config.provider?.model;
+  return model ? withDefaultModel(provider, model) : provider;
 }
 
 /** Resolve an agent's AgentMemoryStore without the full AgentLoader boot
@@ -667,7 +678,7 @@ async function dispatchRequest(req: Request): Promise<Response> {
       }
 
       // Resolve provider from agent config
-      const provider = await resolveAgentProvider(roomDir);
+      const provider = await resolveDreamProvider(roomDir);
 
       const lucidDream = new LucidDream();
       const result = await lucidDream.run({
@@ -923,7 +934,7 @@ export async function startServer(gateway?: TelegramGateway, agoraClient?: Agora
       const sweep = new LucidDreamSweep();
       await sweep.run({
         roomsDir: roomsDir(),
-        resolveProvider: resolveAgentProvider,
+        resolveProvider: resolveDreamProvider,
         resolveMemoryStore: resolveAgentMemoryStore,
         prompt: LUCID_DREAM_SWEEP_PROMPT,
       });

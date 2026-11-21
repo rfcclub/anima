@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { LucidDream } from "./lucid-dream";
+import { LucidDream, MAX_DEEP_DREAM_PROMPT_CHARS, boundDeepDreamReports } from "./lucid-dream";
 import { appendBeamEntries, type BeamEntry } from "./light-nap";
 import type { AgentMemoryStore, AgentMemoryEntry } from "../memory/contract";
 import type { Provider, ProviderRequest, ProviderResponse } from "../providers/interface";
@@ -145,4 +145,133 @@ test("keeps only the 5 most recent lucid-*.md files, deleting the oldest on over
   expect(files).toHaveLength(5);
   expect(files).not.toContain("lucid-2026-09-01T0000.md");
   expect(files).toContain("lucid-2026-09-02T0000.md");
+});
+
+// A DeepDream report holds one section per agent and one entry per pulse
+// output. Real reports reached 4 MB each; three of them in one prompt is
+// ~13 MB, which no model accepts. The prompt must stay bounded no matter
+// how large the reports are, and every agent's section must keep a share.
+function makeHugeReport(date: string, agents: string[], entriesPerAgent: number): string {
+  const lines = [`# Dream — ${date}`, ""];
+  for (const agent of agents) {
+    lines.push(`## ${agent}`);
+    for (let i = 0; i < entriesPerAgent; i++) {
+      const stamp = `2026-11-20T21:09:${String(59 - (i % 60)).padStart(2, "0")}.000Z`;
+      lines.push(`- [${stamp}] ${agent}-entry-${i} ${"x".repeat(5_000)}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+test("keeps the prompt bounded when the DeepDream reports are huge", async () => {
+  const agents = ["lena", "mira", "otto", "pia"];
+  writeDeepDreamReport("2026-11-19", makeHugeReport("2026-11-19", agents, 200));
+  writeDeepDreamReport("2026-11-20", makeHugeReport("2026-11-20", agents, 200));
+  writeDeepDreamReport("2026-11-21", makeHugeReport("2026-11-21", agents, 200));
+  let capturedPrompt = "";
+  const spyProvider: Provider = {
+    name: "fake" as Provider["name"],
+    async query(req: ProviderRequest): Promise<ProviderResponse> {
+      capturedPrompt = req.messages[0].content as string;
+      return { message: { role: "assistant", content: "ok" } };
+    },
+  };
+
+  await new LucidDream().run({ roomDir, roomsDir, agentName: "lena", provider: spyProvider });
+
+  expect(capturedPrompt.length).toBeLessThanOrEqual(MAX_DEEP_DREAM_PROMPT_CHARS + 4_000);
+  // each agent still has a section, and the newest entry of each survives
+  for (const agent of agents) {
+    expect(capturedPrompt).toContain(`## ${agent}`);
+    expect(capturedPrompt).toContain(`${agent}-entry-0 `);
+  }
+  // the cut is visible, not silent
+  expect(capturedPrompt).toContain("omitted");
+});
+
+test("leaves a small DeepDream report untouched", async () => {
+  const small = "# Dream — 2026-09-13\n\n## lena\n- [2026-09-13T01:00:00.000Z] short insight\n- [2026-09-13T00:59:00.000Z] another\n";
+  writeDeepDreamReport("2026-09-13", small);
+  let capturedPrompt = "";
+  const spyProvider: Provider = {
+    name: "fake" as Provider["name"],
+    async query(req: ProviderRequest): Promise<ProviderResponse> {
+      capturedPrompt = req.messages[0].content as string;
+      return { message: { role: "assistant", content: "ok" } };
+    },
+  };
+
+  await new LucidDream().run({ roomDir, roomsDir, agentName: "lena", provider: spyProvider });
+
+  expect(capturedPrompt).toContain(small);
+  expect(capturedPrompt).not.toContain("omitted");
+});
+
+function chronologicalReport(date: string, agents: string[], entries: number): string {
+  // DeepDream appends beam entries in file order: oldest first.
+  const lines = [`# Dream — ${date}`, ""];
+  for (const agent of agents) {
+    lines.push(`## ${agent}`);
+    for (let i = 0; i < entries; i++) {
+      const stamp = new Date(Date.UTC(2026, 10, 20, 0, 0, i)).toISOString();
+      lines.push(`- [${stamp}] ${agent}-chrono-${i} ${"y".repeat(3_000)}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+test("boundDeepDreamReports: emitted size never exceeds the budget, however many sections", () => {
+  for (const agentCount of [18, 60, 200]) {
+    const agents = Array.from({ length: agentCount }, (_, i) => `agent${i}`);
+    const reports = ["2026-11-21", "2026-11-20", "2026-11-19"].map((d) => makeHugeReport(d, agents, 5));
+    const out = boundDeepDreamReports(reports);
+    const size = out.reduce((sum, r) => sum + r.length, 0);
+    expect(size).toBeLessThanOrEqual(MAX_DEEP_DREAM_PROMPT_CHARS);
+  }
+});
+
+test("boundDeepDreamReports: keeps the newest entries even when the file lists them oldest first", () => {
+  const out = boundDeepDreamReports([chronologicalReport("2026-11-20", ["lena", "mira"], 100)], 12_000);
+  expect(out[0]).toContain("lena-chrono-99 ");
+  expect(out[0]).toContain("mira-chrono-99 ");
+  expect(out[0]).not.toContain("lena-chrono-0 ");
+});
+
+test("boundDeepDreamReports: a multi-line entry stays one entry", () => {
+  const report = [
+    "# Dream — 2026-11-20", "", "## lena",
+    "- [2026-11-20T00:00:02.000Z] newest line one", "continued line two",
+    "- [2026-11-20T00:00:01.000Z] older " + "z".repeat(20_000), "",
+  ].join("\n");
+  const out = boundDeepDreamReports([report], 3_000)[0]!;
+  expect(out).toContain("newest line one\ncontinued line two");
+  expect(out).not.toContain("z".repeat(1_000)); // the long older entry is cut
+  expect(out.length).toBeLessThanOrEqual(3_000);
+});
+
+test("bounds the raw-beam fallback, newest beams first", async () => {
+  const base = Date.now() - 3_600_000;
+  const entries: BeamEntry[] = Array.from({ length: 400 }, (_, i) => ({
+    timestamp: new Date(base + i * 1000).toISOString(),
+    agent: "lena",
+    session: "pulse:test",
+    keywords: ["k"],
+    source: "pulse-anima:test",
+    content: `beam-${i} ${"b".repeat(2_000)}`,
+  }));
+  await appendBeamEntries(roomDir, entries);
+  let capturedPrompt = "";
+  const spyProvider: Provider = {
+    name: "fake" as Provider["name"],
+    async query(req: ProviderRequest): Promise<ProviderResponse> {
+      capturedPrompt = req.messages[0].content as string;
+      return { message: { role: "assistant", content: "ok" } };
+    },
+  };
+  await new LucidDream().run({ roomDir, roomsDir, agentName: "lena", provider: spyProvider });
+  expect(capturedPrompt.length).toBeLessThanOrEqual(MAX_DEEP_DREAM_PROMPT_CHARS + 4_000);
+  expect(capturedPrompt).toContain("beam-399 ");
+  expect(capturedPrompt).toContain("older beams omitted");
 });
