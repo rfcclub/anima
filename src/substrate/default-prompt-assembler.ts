@@ -12,7 +12,8 @@ import type {
  *
  * Orders blocks by trust (high → low), then weight (high → low).
  * Formats each block as a markdown section with optional evidence inline.
- * Truncates lowest-weight blocks when exceeding maxTokens.
+ * Blocks that do not fit the budget are skipped (later, smaller blocks that fit are still kept) and the dropped
+ * scopes are named in a warning. Scopes listed in `reserveScopes` keep room for their best block.
  */
 export class DefaultPromptAssembler implements PromptAssembler {
   assemble(view: SubstrateView, options: AssembleOptions = {}): PromptContext {
@@ -21,6 +22,7 @@ export class DefaultPromptAssembler implements PromptAssembler {
       prioritizeScopes = [],
       format = "markdown",
       includeEvidence = false,
+      reserveScopes = [],
     } = options;
 
     const warnings: string[] = [];
@@ -62,23 +64,51 @@ export class DefaultPromptAssembler implements PromptAssembler {
     let totalTokens = 0;
     const tokenBudget = maxTokens;
     const kept: PromptContextBlock[] = [];
-    let truncated = false;
+    const dropped: PromptContextBlock[] = [];
 
-    for (const block of blocks) {
-      const formatted = formatBlock(block, format, includeEvidence);
-      const est = estimateTokens(formatted);
-      if (totalTokens + est > tokenBudget && kept.length > 0) {
-        truncated = true;
-        break;
+    // Room held back for each reserved scope that has no kept block yet: the cheapest remaining block of that scope
+    // that can fit the budget at all. A reservation that can never fit holds back nothing, and a scope's own block is
+    // never charged for its own reservation, but IS charged for every other reserved scope's.
+    const reserved = new Set(reserveScopes);
+    const costs = blocks.map((block) => estimateTokens(formatBlock(block, format, includeEvidence)));
+    const keptScopes = new Set<string>();
+    const heldBackFor = (index: number): number => {
+      let held = 0;
+      for (const scope of reserved) {
+        if (scope === blocks[index].scope || keptScopes.has(scope)) continue;
+        let cheapest = Infinity;
+        for (let j = index + 1; j < blocks.length; j++) {
+          if (blocks[j].scope === scope && costs[j] <= tokenBudget) cheapest = Math.min(cheapest, costs[j]);
+        }
+        if (cheapest !== Infinity) held += cheapest;
+      }
+      return held;
+    };
+
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const est = costs[i];
+      if (totalTokens + est + heldBackFor(i) > tokenBudget) {
+        dropped.push(block);
+        continue; // skip this block only; a later smaller block may still fit
       }
       kept.push(block);
       totalTokens += est;
+      keptScopes.add(block.scope);
     }
 
+    // Never hand back an empty view when there was content: keep the best block even if it is over budget.
+    if (kept.length === 0 && blocks.length > 0) {
+      const first = blocks[0];
+      kept.push(first);
+      totalTokens = costs[0];
+      dropped.splice(dropped.indexOf(first), 1);
+    }
+
+    const truncated = dropped.length > 0;
     if (truncated) {
-      warnings.push(
-        `Truncated: ${blocks.length - kept.length} blocks dropped to fit ${tokenBudget} token budget`
-      );
+      const scopes = [...new Set(dropped.map((b) => b.scope))].join(", ");
+      warnings.push(`Truncated: ${dropped.length} blocks dropped to fit ${tokenBudget} token budget (dropped scopes: ${scopes})`);
     }
 
     return {
@@ -86,6 +116,8 @@ export class DefaultPromptAssembler implements PromptAssembler {
       totalTokens,
       tokenBudget,
       truncated,
+      droppedScopes: [...new Set(dropped.map((b) => b.scope))],
+      droppedBlocks: dropped.length,
       warnings,
     };
   }

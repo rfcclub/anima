@@ -90,4 +90,30 @@ describe("createAnimaProjectionCompiler", () => {
       createHash("sha256").update(`${agent.soulContent}\n${agent.geneContent}`).digest("hex"),
     );
   });
+
+  test("reports bounded substrate truncation metadata (scopes, counts, budget) in the projection", async () => {
+    const big = (n: number) => "x".repeat(n * 4);
+    const result = (id: string, scope: string, n: number) => ({
+      id, absolutePath: `/fixture/${id}.md`, relativePath: `${id}.md`, content: big(n), scopesMatched: [scope],
+      sourceIds: [`${scope}:0`], requestedBy: [], trust: "high" as const, weight: 1, status: "ok" as const,
+    });
+    const layer: SubstrateViewLayer = {
+      buildView: async () => ({
+        turnContext: { agentId: "eli", runtimeRequiredScopes: [], agentDefaults: { agentId: "eli" }, cartridgePolicies: [], unifiedScopes: [], requireEvidence: false },
+        results: [result("a", "identity_core", 100), result("b", "values", 900)],
+        estimatedTokens: 0, scopesCovered: [], scopesMissing: [], scopesEmpty: [], warnings: [],
+      }),
+    };
+    const tight = { ...agent, config: { ...config, session: { ...config.session, substrateViewMaxTokens: 300 } }, substrateAdapter, substrateViewLayer: layer };
+
+    const projection = await new AnimaProjectionCompiler({ agent: tight }).compile(request);
+
+    expect(projection.substrateTruncation).toEqual({ budgetTokens: 300, droppedScopes: ["values"], droppedBlocks: 1 });
+    expect(JSON.stringify(projection.substrateTruncation)).not.toContain("xxxx");
+  });
+
+  test("reports no truncation metadata when the substrate view fits", async () => {
+    const projection = await new AnimaProjectionCompiler({ agent: { ...agent, substrateAdapter, substrateViewLayer } }).compile(request);
+    expect(projection.substrateTruncation).toBeUndefined();
+  });
 });
