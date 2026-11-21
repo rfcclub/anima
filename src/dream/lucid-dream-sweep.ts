@@ -9,7 +9,16 @@ export interface LucidDreamSweepState {
   startedAt: string;
   completedAgents: string[];
   currentAgent: string;
+  /** Agents whose reflection failed in this run; the run moves on and they are retried by the next run. */
+  failedAgents?: string[];
+  /** Consecutive failing runs per agent as of the previous run (carried so the next streak can be computed). */
+  previousStreak?: Record<string, number>;
 }
+
+/** An unfinished run older than this is dropped instead of resumed, so one weekly run never inherits the last one's skips. */
+const STALE_RUN_MS = 7 * 24 * 3600 * 1000;
+/** Warn when an agent has failed to reflect this many runs in a row. */
+const STREAK_WARN_AT = 2;
 
 export interface LucidDreamSweepOptions {
   roomsDir: string;
@@ -41,6 +50,7 @@ export class LucidDreamSweep {
       await mkdir(stagingDir, { recursive: true });
       const statePath = join(stagingDir, ".lucid-sweep-state.json");
 
+      const previousStreak = await this.loadStreak(statePath);
       let state = await this.loadState(statePath);
       const agents = await this.listAgents(roomsDir);
 
@@ -49,10 +59,13 @@ export class LucidDreamSweep {
           startedAt: new Date().toISOString(),
           completedAgents: [],
           currentAgent: agents[0] || "",
+          failedAgents: [],
+          previousStreak,
         };
       }
+      state.failedAgents ??= [];
 
-      const completedSet = new Set(state.completedAgents);
+      const completedSet = new Set([...state.completedAgents, ...state.failedAgents]);
       const lucidDream = new LucidDream();
 
       for (const agent of agents) {
@@ -77,14 +90,36 @@ export class LucidDreamSweep {
               error: String(err),
             }),
           );
-          break; // stop processing — resume from this agent next run
+          // One failing agent must not block the rest of the colony (a single provider error used to stall the
+          // sweep for weeks): record it, move on, and let the next weekly run retry it.
+          state.failedAgents.push(agent);
+          await this.saveState(statePath, state);
         }
       }
 
-      if (agents.length > 0 && state.completedAgents.length === agents.length) {
+      if (agents.length > 0 && state.completedAgents.length + state.failedAgents.length === agents.length) {
+        const failureStreak: Record<string, number> = {};
+        for (const agent of state.failedAgents) {
+          failureStreak[agent] = (state.previousStreak?.[agent] ?? 0) + 1;
+          if (failureStreak[agent] >= STREAK_WARN_AT) {
+            console.error(
+              JSON.stringify({
+                level: "warn",
+                ts: new Date().toISOString(),
+                msg: "lucid dream sweep: agent has not reflected for consecutive runs",
+                agent,
+                runs: failureStreak[agent],
+              }),
+            );
+          }
+        }
         await writeFile(
           statePath,
-          JSON.stringify({ completed: true, completedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify(
+            { completed: true, completedAt: new Date().toISOString(), failedAgents: state.failedAgents, failureStreak },
+            null,
+            2,
+          ),
           "utf-8",
         );
       }
@@ -129,9 +164,22 @@ export class LucidDreamSweep {
       ) {
         return null;
       }
+      if (Date.now() - Date.parse(parsed.startedAt) > STALE_RUN_MS) return null; // stale unfinished run — start fresh
       return parsed as LucidDreamSweepState;
     } catch {
       return null; // corrupt or unreadable — start fresh
+    }
+  }
+
+  /** Consecutive failing runs per agent recorded by the previous run (empty when unknown or unreadable). */
+  private async loadStreak(statePath: string): Promise<Record<string, number>> {
+    try {
+      if (!existsSync(statePath)) return {};
+      const parsed = JSON.parse(await readFile(statePath, "utf-8"));
+      const raw = parsed.completed ? parsed.failureStreak : parsed.previousStreak;
+      return raw && typeof raw === "object" ? (raw as Record<string, number>) : {};
+    } catch {
+      return {};
     }
   }
 
