@@ -7,11 +7,18 @@ import type { Provider, ProviderRequest } from "./interface";
  * one the owner set for the room. A request that names its own model wins.
  */
 export function withDefaultModel(provider: Provider, model: string): Provider {
-  return {
+  const wrapped: Provider = {
     name: provider.name,
     sharedSafe: provider.sharedSafe,
     query(req: ProviderRequest) {
       return provider.query(req.model ? req : { ...req, model });
     },
   };
+  // Keep the "already metered" marker so a later meterProvider() does not
+  // meter the same calls twice.
+  const marker = Symbol.for("anima.metered");
+  if ((provider as unknown as Record<symbol, unknown>)[marker] === true) {
+    (wrapped as unknown as Record<symbol, unknown>)[marker] = true;
+  }
+  return wrapped;
 }

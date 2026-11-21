@@ -40,3 +40,10 @@ test("keeps the provider's name and sharedSafe flag", () => {
   expect(wrapped.name).toBe("fake" as Provider["name"]);
   expect(wrapped.sharedSafe).toBe(true);
 });
+
+test("keeps the metered marker so the wrapper is not metered twice", () => {
+  const { provider } = spy();
+  (provider as unknown as Record<symbol, unknown>)[Symbol.for("anima.metered")] = true;
+  const wrapped = withDefaultModel(provider, "room-model");
+  expect((wrapped as unknown as Record<symbol, unknown>)[Symbol.for("anima.metered")]).toBe(true);
+});
