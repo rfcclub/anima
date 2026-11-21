@@ -138,6 +138,16 @@ test("an unfinished state aged just under one week is still discarded: the weekl
   expect(calls).toHaveLength(2); // hana is retried, not skipped
 });
 
+test("an unfinished state with an unparseable or future startedAt is discarded, not resumed forever", async () => {
+  for (const startedAt of ["garbage", new Date(Date.now() + 3 * 3600 * 1000).toISOString()]) {
+    mkdirSync(join(roomsDir, "staging"), { recursive: true });
+    writeFileSync(statePath(), JSON.stringify({ startedAt, completedAgents: ["hana"], currentAgent: "lena" }), "utf-8");
+    const { store, calls } = makeMemoryStoreSpy();
+    await new LucidDreamSweep().run({ roomsDir, resolveProvider: async () => fakeProvider, resolveMemoryStore: async () => store, prompt: "reflect" });
+    expect(calls).toHaveLength(2); // hana is not skipped
+  }
+});
+
 test("an unfinished state from the same day is resumed", async () => {
   mkdirSync(join(roomsDir, "staging"), { recursive: true });
   writeFileSync(

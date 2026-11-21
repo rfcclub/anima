@@ -195,7 +195,9 @@ export class LucidDreamSweep {
       ) {
         return null;
       }
-      if (Date.now() - Date.parse(parsed.startedAt) > STALE_RUN_MS) return null; // stale unfinished run — start fresh
+      // An unparseable or future start time (hand-edited state, clock stepped back) is as unusable as a stale one.
+      const startedMs = Date.parse(parsed.startedAt);
+      if (!Number.isFinite(startedMs) || startedMs > Date.now() || Date.now() - startedMs > STALE_RUN_MS) return null;
       return parsed as LucidDreamSweepState;
     } catch {
       return null; // corrupt or unreadable — start fresh
