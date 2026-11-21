@@ -121,6 +121,90 @@ test("the next run starts fresh and retries the agent that failed", async () => 
   expect(state.failedAgents).toEqual([]);
 });
 
+test("an unfinished state aged just under one week is still discarded: the weekly slot always starts fresh", async () => {
+  mkdirSync(join(roomsDir, "staging"), { recursive: true });
+  writeFileSync(
+    statePath(),
+    JSON.stringify({
+      startedAt: new Date(Date.now() - (7 * 24 * 3600 * 1000 - 5 * 60 * 1000)).toISOString(),
+      completedAgents: ["hana"],
+      currentAgent: "lena",
+    }),
+    "utf-8",
+  );
+  const { store, calls } = makeMemoryStoreSpy();
+  await new LucidDreamSweep().run({ roomsDir, resolveProvider: async () => fakeProvider, resolveMemoryStore: async () => store, prompt: "reflect" });
+
+  expect(calls).toHaveLength(2); // hana is retried, not skipped
+});
+
+test("an unfinished state from the same day is resumed", async () => {
+  mkdirSync(join(roomsDir, "staging"), { recursive: true });
+  writeFileSync(
+    statePath(),
+    JSON.stringify({ startedAt: new Date(Date.now() - 3600 * 1000).toISOString(), completedAgents: ["hana"], currentAgent: "lena" }),
+    "utf-8",
+  );
+  const { store, calls } = makeMemoryStoreSpy();
+  await new LucidDreamSweep().run({ roomsDir, resolveProvider: async () => fakeProvider, resolveMemoryStore: async () => store, prompt: "reflect" });
+
+  expect(calls).toHaveLength(1); // only lena runs; hana already finished in this run
+});
+
+test("an outcome recorded for a removed agent neither blocks finalization nor appears in the failure summary", async () => {
+  mkdirSync(join(roomsDir, "staging"), { recursive: true });
+  writeFileSync(
+    statePath(),
+    JSON.stringify({
+      startedAt: new Date(Date.now() - 3600 * 1000).toISOString(),
+      completedAgents: ["hana"],
+      failedAgents: ["gone"],
+      currentAgent: "lena",
+    }),
+    "utf-8",
+  );
+  await new LucidDreamSweep().run({ roomsDir, resolveProvider: async () => fakeProvider, prompt: "reflect" });
+
+  const state = await readState();
+  expect(state.completed).toBe(true);
+  expect(state.failedAgents).toEqual([]);
+});
+
+test("a checkpoint write error does not turn a finished reflection into a failed one", async () => {
+  const { store, calls } = makeMemoryStoreSpy();
+  // While the first agent reflects, replace the state file with a directory so the checkpoint write fails.
+  const sabotage: Provider = {
+    name: "fake" as Provider["name"],
+    async query(): Promise<ProviderResponse> {
+      rmSync(statePath(), { force: true });
+      mkdirSync(statePath(), { recursive: true });
+      return { message: { role: "assistant", content: "reflection" } };
+    },
+  };
+  let first = true;
+  const logged: string[] = [];
+  const realError = console.error;
+  console.error = (line: unknown) => { logged.push(String(line)); };
+  try {
+    await new LucidDreamSweep().run({
+      roomsDir,
+      resolveProvider: async () => {
+        if (first) { first = false; return sabotage; }
+        return fakeProvider;
+      },
+      resolveMemoryStore: async () => store,
+      prompt: "reflect",
+    });
+  } finally {
+    console.error = realError;
+  }
+
+  expect(calls).toHaveLength(2); // both agents reflected
+  // the write error is reported as a checkpoint error, never as a failed reflection
+  expect(logged.some((l) => l.includes("checkpoint write failed"))).toBe(true);
+  expect(logged.some((l) => l.includes("lucid dream sweep failed for agent"))).toBe(false);
+});
+
 test("an unfinished state older than one week is discarded instead of resumed", async () => {
   mkdirSync(join(roomsDir, "staging"), { recursive: true });
   writeFileSync(

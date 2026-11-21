@@ -15,8 +15,13 @@ export interface LucidDreamSweepState {
   previousStreak?: Record<string, number>;
 }
 
-/** An unfinished run older than this is dropped instead of resumed, so one weekly run never inherits the last one's skips. */
-const STALE_RUN_MS = 7 * 24 * 3600 * 1000;
+/**
+ * An unfinished run older than this is dropped instead of resumed. It must be clearly shorter than the weekly
+ * schedule period: the next scheduled slot fires about a week after an interrupted run, and that slot must always
+ * start fresh and retry every agent, not resume or skip depending on a few minutes of timer jitter. Resuming is only
+ * meant for a prompt manual re-run on the same day.
+ */
+const STALE_RUN_MS = 2 * 24 * 3600 * 1000;
 /** Warn when an agent has failed to reflect this many runs in a row. */
 const STREAK_WARN_AT = 2;
 
@@ -71,15 +76,15 @@ export class LucidDreamSweep {
       for (const agent of agents) {
         if (completedSet.has(agent)) continue;
         state.currentAgent = agent;
-        await this.saveState(statePath, state);
+        await this.checkpoint(statePath, state, agent);
 
+        let reflected = false;
         try {
           const roomDir = join(roomsDir, agent);
           const provider = await resolveProvider(roomDir);
           const memoryStore = await resolveMemoryStore?.(roomDir);
           await lucidDream.run({ roomDir, roomsDir, agentName: agent, userPrompt: prompt, provider, memoryStore });
-          state.completedAgents.push(agent);
-          await this.saveState(statePath, state);
+          reflected = true;
         } catch (err) {
           console.error(
             JSON.stringify({
@@ -90,16 +95,22 @@ export class LucidDreamSweep {
               error: String(err),
             }),
           );
-          // One failing agent must not block the rest of the colony (a single provider error used to stall the
-          // sweep for weeks): record it, move on, and let the next weekly run retry it.
-          state.failedAgents.push(agent);
-          await this.saveState(statePath, state);
         }
+        // One failing agent must not block the rest of the colony (a single provider error used to stall the
+        // sweep for weeks): record the outcome and move on; the next weekly run retries failed agents.
+        (reflected ? state.completedAgents : state.failedAgents).push(agent);
+        // A checkpoint write error is not a reflection outcome: it is reported on its own and never turns a
+        // finished reflection into a second (failed) record for the same agent.
+        await this.checkpoint(statePath, state, agent);
       }
 
-      if (agents.length > 0 && state.completedAgents.length + state.failedAgents.length === agents.length) {
+      // Judge completion against the CURRENT roster: a persisted outcome for an agent that has since been removed must
+      // neither block finalization nor appear in the failure summary.
+      const outcomes = new Set([...state.completedAgents, ...state.failedAgents]);
+      const failedNow = state.failedAgents.filter((a) => agents.includes(a));
+      if (agents.length > 0 && agents.every((a) => outcomes.has(a))) {
         const failureStreak: Record<string, number> = {};
-        for (const agent of state.failedAgents) {
+        for (const agent of failedNow) {
           failureStreak[agent] = (state.previousStreak?.[agent] ?? 0) + 1;
           if (failureStreak[agent] >= STREAK_WARN_AT) {
             console.error(
@@ -116,7 +127,7 @@ export class LucidDreamSweep {
         await writeFile(
           statePath,
           JSON.stringify(
-            { completed: true, completedAt: new Date().toISOString(), failedAgents: state.failedAgents, failureStreak },
+            { completed: true, completedAt: new Date().toISOString(), failedAgents: failedNow, failureStreak },
             null,
             2,
           ),
@@ -129,6 +140,26 @@ export class LucidDreamSweep {
           level: "error",
           ts: new Date().toISOString(),
           msg: "lucid dream sweep run failed",
+          error: String(err),
+        }),
+      );
+    }
+  }
+
+  /**
+   * Persist progress. A write error here is a checkpoint problem, reported on its own: it must never abort the sweep
+   * or be mistaken for a reflection outcome (the in-memory state still carries the run to its end).
+   */
+  private async checkpoint(statePath: string, state: LucidDreamSweepState, agent: string): Promise<void> {
+    try {
+      await this.saveState(statePath, state);
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          ts: new Date().toISOString(),
+          msg: "lucid dream sweep checkpoint write failed",
+          agent,
           error: String(err),
         }),
       );
