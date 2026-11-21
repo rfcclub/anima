@@ -12,7 +12,8 @@ import type {
  *
  * Orders blocks by trust (high → low), then weight (high → low).
  * Formats each block as a markdown section with optional evidence inline.
- * Truncates lowest-weight blocks when exceeding maxTokens.
+ * Blocks that do not fit the budget are skipped (later, smaller blocks that fit are still kept) and the dropped
+ * scopes are named in a warning. Scopes listed in `reserveScopes` keep room for their best block.
  */
 export class DefaultPromptAssembler implements PromptAssembler {
   assemble(view: SubstrateView, options: AssembleOptions = {}): PromptContext {
@@ -21,6 +22,7 @@ export class DefaultPromptAssembler implements PromptAssembler {
       prioritizeScopes = [],
       format = "markdown",
       includeEvidence = false,
+      reserveScopes = [],
     } = options;
 
     const warnings: string[] = [];
@@ -62,23 +64,43 @@ export class DefaultPromptAssembler implements PromptAssembler {
     let totalTokens = 0;
     const tokenBudget = maxTokens;
     const kept: PromptContextBlock[] = [];
-    let truncated = false;
+    const dropped: PromptContextBlock[] = [];
+
+    // Room held back for the best block of each reserved scope, so a large high-trust block cannot starve it.
+    const reserved = new Set(reserveScopes);
+    const pendingReserve = new Map<string, number>();
+    for (const block of blocks) {
+      if (reserved.has(block.scope) && !pendingReserve.has(block.scope)) {
+        pendingReserve.set(block.scope, estimateTokens(formatBlock(block, format, includeEvidence)));
+      }
+    }
+    const reservedTotal = () => [...pendingReserve.values()].reduce((sum, n) => sum + n, 0);
 
     for (const block of blocks) {
-      const formatted = formatBlock(block, format, includeEvidence);
-      const est = estimateTokens(formatted);
-      if (totalTokens + est > tokenBudget && kept.length > 0) {
-        truncated = true;
-        break;
+      const est = estimateTokens(formatBlock(block, format, includeEvidence));
+      const ownsReservation = pendingReserve.has(block.scope);
+      const heldBack = ownsReservation ? 0 : reservedTotal();
+      if (totalTokens + est + heldBack > tokenBudget) {
+        dropped.push(block);
+        continue; // skip this block only; a later smaller block may still fit
       }
       kept.push(block);
       totalTokens += est;
+      if (ownsReservation) pendingReserve.delete(block.scope);
     }
 
+    // Never hand back an empty view when there was content: keep the best block even if it is over budget.
+    if (kept.length === 0 && blocks.length > 0) {
+      const first = blocks[0];
+      kept.push(first);
+      totalTokens = estimateTokens(formatBlock(first, format, includeEvidence));
+      dropped.splice(dropped.indexOf(first), 1);
+    }
+
+    const truncated = dropped.length > 0;
     if (truncated) {
-      warnings.push(
-        `Truncated: ${blocks.length - kept.length} blocks dropped to fit ${tokenBudget} token budget`
-      );
+      const scopes = [...new Set(dropped.map((b) => b.scope))].join(", ");
+      warnings.push(`Truncated: ${dropped.length} blocks dropped to fit ${tokenBudget} token budget (dropped scopes: ${scopes})`);
     }
 
     return {

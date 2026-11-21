@@ -75,6 +75,8 @@ export interface SessionConfig {
   compactThreshold: number;
   idleTimeoutMs?: number;
   maxTokens?: number;
+  /** Token budget for the substrate section of the compiled prompt (default 2000). */
+  substrateViewMaxTokens?: number;
 }
 
 export interface BootConfig {
@@ -232,6 +234,7 @@ export function loadRoomConfig(yamlText: string): RoomConfig {
       compactThreshold: readNumber(session, "session.compactThreshold") ?? 60000,
       idleTimeoutMs: readNumber(session, "session.idleTimeoutMs"),
       maxTokens: readNumber(session, "session.maxTokens"),
+      substrateViewMaxTokens: readNumber(session, "session.substrateViewMaxTokens"),
     },
     boot: {
       gene,

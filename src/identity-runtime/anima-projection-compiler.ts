@@ -24,6 +24,9 @@ import { DefaultPromptAssembler } from "../substrate/default-prompt-assembler";
 import type { SubstrateView } from "../substrate/substrate-view";
 import { buildCurrentIdentitySummary } from "./current-identity-summary";
 
+/** Token budget for the substrate section of the compiled prompt when an agent does not set its own. */
+const DEFAULT_SUBSTRATE_VIEW_TOKENS = 2_000;
+
 type CartridgeRegistryReader = Pick<CartridgeRegistry, "list" | "expand">;
 
 export interface AnimaProjectionCompilerOptions {
@@ -185,7 +188,11 @@ export class AnimaProjectionCompiler implements ProjectionCompiler<RuntimeProjec
 
   private appendSubstrateView(system: string, view: SubstrateView | undefined): string {
     if (!view) return system;
-    const promptContext = new DefaultPromptAssembler().assemble(view, { maxTokens: 2_000, format: "markdown" });
+    const promptContext = new DefaultPromptAssembler().assemble(view, {
+      maxTokens: this.options.agent.config.session.substrateViewMaxTokens ?? DEFAULT_SUBSTRATE_VIEW_TOKENS,
+      reserveScopes: view.turnContext.runtimeRequiredScopes,
+      format: "markdown",
+    });
     if (promptContext.blocks.length === 0) return system;
     const section = promptContext.blocks
       .map((block) => `## ${block.label}\n\n${block.content}`)

@@ -118,6 +118,8 @@ export interface AssembleOptions {
   format?: "markdown" | "yaml";
   /** Whether to inline evidence metadata into the block content. */
   includeEvidence?: boolean;
+  /** Scopes that keep room for their best block even when larger higher-priority blocks would fill the budget. */
+  reserveScopes?: string[];
 }
 
 /** Turns a SubstrateView into a PromptContext for model injection. */
