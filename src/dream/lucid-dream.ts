@@ -11,6 +11,74 @@ import type {
 } from "../providers/interface";
 import type { AgentMemoryStore } from "../memory/contract";
 
+/** Upper bound on the characters of DeepDream reports that go into one
+ *  reflection prompt. A report holds one entry per pulse output and grew to
+ *  ~4 MB a day; three of them made a ~13 MB prompt that no model accepts. */
+export const MAX_DEEP_DREAM_PROMPT_CHARS = 80_000;
+/** One entry (a "- [timestamp] text" line) is cut to this many characters. */
+export const MAX_DEEP_DREAM_ENTRY_CHARS = 800;
+
+/**
+ * Bound the DeepDream reports to `budget` characters in total. Reports that
+ * already fit are returned untouched. Otherwise each report gets an equal
+ * share (reports arrive newest first), each "## agent" section inside it an
+ * equal share of that, and a section keeps its leading entries (DeepDream
+ * writes newest first) cut to MAX_DEEP_DREAM_ENTRY_CHARS. The cut is marked
+ * with an "omitted" line so a reader can tell it happened.
+ */
+export function boundDeepDreamReports(
+  reports: string[],
+  budget: number = MAX_DEEP_DREAM_PROMPT_CHARS,
+): string[] {
+  const total = reports.reduce((sum, report) => sum + report.length, 0);
+  if (total <= budget || reports.length === 0) return reports;
+  const perReport = Math.floor(budget / reports.length);
+  return reports.map((report) => boundOneReport(report, perReport));
+}
+
+function boundOneReport(report: string, budget: number): string {
+  if (report.length <= budget) return report;
+  const lines = report.split("\n");
+  const header: string[] = [];
+  const sections: { heading: string; entries: string[] }[] = [];
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      sections.push({ heading: line, entries: [] });
+    } else if (sections.length === 0) {
+      header.push(line);
+    } else {
+      sections[sections.length - 1]!.entries.push(line);
+    }
+  }
+  const out = [...header];
+  const headerChars = header.join("\n").length;
+  const perSection = Math.max(
+    MAX_DEEP_DREAM_ENTRY_CHARS,
+    Math.floor((budget - headerChars) / Math.max(sections.length, 1)),
+  );
+  for (const section of sections) {
+    out.push(section.heading);
+    let used = 0;
+    let kept = 0;
+    const entries = section.entries.filter((line) => line.trim() !== "");
+    for (const entry of entries) {
+      const clipped =
+        entry.length > MAX_DEEP_DREAM_ENTRY_CHARS
+          ? entry.slice(0, MAX_DEEP_DREAM_ENTRY_CHARS) + " …"
+          : entry;
+      if (kept > 0 && used + clipped.length > perSection) break;
+      out.push(clipped);
+      used += clipped.length;
+      kept += 1;
+    }
+    if (kept < entries.length) {
+      out.push(`- […${entries.length - kept} more entries omitted]`);
+    }
+    out.push("");
+  }
+  return out.join("\n");
+}
+
 export interface LucidDreamOptions {
   roomDir: string;
   /** Shared rooms root — used to look up DeepDream's staging/dreams/<date>.md
@@ -56,7 +124,9 @@ export class LucidDream {
     // from raw beams; only fall back to raw beams when no DeepDream report
     // exists anywhere in the last 3 days. (LucidDream would otherwise
     // ignore the cross-agent linking DeepDream already did.)
-    const dreamReports = await this.readRecentDeepDreamReports(roomsDir, 3);
+    const dreamReports = boundDeepDreamReports(
+      await this.readRecentDeepDreamReports(roomsDir, 3),
+    );
     const beams = dreamReports.length === 0 ? await this.readRecentBeams(roomDir, 3) : [];
 
     // 2. Read crossing context

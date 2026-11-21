@@ -15,6 +15,7 @@ import { GeminiProvider } from "./providers/gemini";
 import { ProviderRegistry } from "./providers/registry";
 import { ModeRouter } from "./providers/router";
 import { OpenAICompatProvider } from "./providers/openai-compat";
+import { withDefaultModel } from "./providers/default-model";
 import type { Provider, ProviderType } from "./providers/interface";
 import type { ModeMap } from "./config/types";
 import { StagingManager } from "./continuity/staging";
@@ -248,7 +249,10 @@ async function resolveAgentProvider(roomDir: string): Promise<Provider> {
   }
   const config = loadRoomConfig(readFileSync(configPath, "utf-8"));
   const type = config.provider?.type as ProviderType;
-  return createProviderForType(type);
+  const provider = await createProviderForType(type);
+  // Dream jobs send no model of their own; use the one the room is set to.
+  const model = config.provider?.model;
+  return model ? withDefaultModel(provider, model) : provider;
 }
 
 /** Resolve an agent's AgentMemoryStore without the full AgentLoader boot
