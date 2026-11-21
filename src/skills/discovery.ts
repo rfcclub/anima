@@ -3,6 +3,7 @@
  * frontmatter and optional `scripts/`, `references/` and `assets/` bundles. Skill content is untrusted
  * input: it never widens permissions, project roots load only when trusted, and nothing is fetched at runtime.
  */
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -239,7 +240,7 @@ export async function discoverSkills(roots: SkillRoot[]): Promise<DiscoveryResul
     }
     if (!existsSync(root.root)) continue;
 
-    let entries: Awaited<ReturnType<typeof readdir>>;
+    let entries: Dirent[];
     try {
       entries = await readdir(root.root, { withFileTypes: true });
     } catch (error) {
