@@ -134,8 +134,14 @@ async function walk(absDir: string, relDir: string, out: string[]): Promise<void
   }
 }
 
-/** Validate one skill directory. Returns the skill, or a skip reason. */
-async function readSkill(dir: string, source: SkillSource): Promise<{ skill: Skill } | { reason: string; path: string }> {
+/**
+ * Load one skill directory (`SKILL.md` + bundled resources). Returns the skill, or a skip reason.
+ * Exported so a cartridge that declares a skill by name can load exactly that directory.
+ */
+export async function loadSkillDirectory(
+  dir: string,
+  source: SkillSource,
+): Promise<{ skill: Skill } | { reason: string; path: string }> {
   const path = join(dir, "SKILL.md");
   if (!existsSync(path)) return { reason: "no SKILL.md", path };
 
@@ -251,7 +257,7 @@ export async function discoverSkills(roots: SkillRoot[]): Promise<DiscoveryResul
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = join(root.root, entry.name);
-      const outcome = await readSkill(dir, root.source);
+      const outcome = await loadSkillDirectory(dir, root.source);
       if ("reason" in outcome) {
         skipped.push({ path: outcome.path, reason: outcome.reason });
         console.warn(`[skill] ${outcome.path}: ${outcome.reason} — skipped`);

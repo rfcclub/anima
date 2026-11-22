@@ -1,6 +1,7 @@
 /** Agent Skills (agentskills.io) — discover, catalog and activate portable procedural knowledge. */
 export {
   discoverSkills,
+  loadSkillDirectory,
   type DiscoveryResult,
   type Skill,
   type SkillCollision,
