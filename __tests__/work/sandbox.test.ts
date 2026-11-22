@@ -4,10 +4,11 @@
  */
 
 import { test, expect, describe, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildProfile, probeSandbox, sandboxCommand, sanitizedEnv, SANDBOX_BINARY } from "../../src/work/sandbox";
+import { buildProfile, probeSandbox, sandboxCommand, sanitizedEnv, SANDBOX_BINARY, WORK_COMMIT_IDENTITY } from "../../src/work/sandbox";
 
 const available = existsSync(SANDBOX_BINARY);
 if (!available) console.warn(`sandbox tests skipped: ${SANDBOX_BINARY} is not present on this platform`);
@@ -149,6 +150,43 @@ describe("environment", () => {
     expect(env.TMPDIR).toBe("/w/tmp");
     expect(env.PATH).toBe("/usr/bin");
     for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "ANIMA_MESH_TOKEN", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK"]) expect(k in env).toBe(false);
+  });
+});
+
+describe("commit identity", () => {
+  test("a session's git identity is a neutral noreply one, never derived from the host account", () => {
+    const env = sanitizedEnv({ PATH: "/usr/bin" }, { home: "/w/home", tmp: "/w/tmp" });
+    expect(env.GIT_AUTHOR_EMAIL).toBe(WORK_COMMIT_IDENTITY.email);
+    expect(env.GIT_COMMITTER_EMAIL).toBe(WORK_COMMIT_IDENTITY.email);
+    expect(env.GIT_AUTHOR_NAME).toBe(WORK_COMMIT_IDENTITY.name);
+    expect(env.GIT_COMMITTER_NAME).toBe(WORK_COMMIT_IDENTITY.name);
+    expect(WORK_COMMIT_IDENTITY.email).toMatch(/@users\.noreply\.github\.com$/);
+  });
+
+  test("the parent's git identity variables never override it", () => {
+    const env = sanitizedEnv(
+      { PATH: "/usr/bin", GIT_AUTHOR_EMAIL: "real@example.com", GIT_COMMITTER_NAME: "Real Name" },
+      { home: "/w/home", tmp: "/w/tmp" },
+    );
+    expect(env.GIT_AUTHOR_EMAIL).toBe(WORK_COMMIT_IDENTITY.email);
+    expect(env.GIT_COMMITTER_NAME).toBe(WORK_COMMIT_IDENTITY.name);
+  });
+
+  test("a commit made with the session environment carries that identity", () => {
+    const repo = mkdtempSync(join(tmpdir(), "work-identity-"));
+    try {
+      const env = { ...sanitizedEnv({ PATH: process.env.PATH ?? "" }, { home: join(repo, "home"), tmp: repo }), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+      const git = (args: string[]) => spawnSync("git", ["-C", repo, ...args], { env, encoding: "utf8" });
+      git(["init", "-q"]);
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      git(["add", "a.txt"]);
+      expect(git(["commit", "-q", "-m", "x"]).status).toBe(0);
+      expect(git(["log", "-1", "--format=%an <%ae> | %cn <%ce>"]).stdout.trim()).toBe(
+        `${WORK_COMMIT_IDENTITY.name} <${WORK_COMMIT_IDENTITY.email}> | ${WORK_COMMIT_IDENTITY.name} <${WORK_COMMIT_IDENTITY.email}>`,
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
