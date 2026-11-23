@@ -6,7 +6,7 @@ Issue: rfcclub/anima#371
 
 Supply read-only, bounded process and listening-port observations to the watchdog without inventing ownership.
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Collect configured observations
 
