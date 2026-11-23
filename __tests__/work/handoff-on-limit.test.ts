@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkConfig } from "../../src/work/config";
-import * as production from "../../src/work/production";
+import { captureLimitHandoff, markLowHandoffAbort, readLimitHandoff, shouldContinueAfterLimit } from "../../src/work/production";
 import { createStopRecorder } from "../../src/work/stops";
 import { WorkStore, type SessionRecord, type StopRecord, type WorkRecord } from "../../src/work/store";
 import { buildWorkOrder, HANDOFF_MAX_CHARS } from "../../src/work/work-order";
@@ -31,12 +31,12 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function stop(trusted = true): StopRecord {
+function stop(trusted = true, adapter = "low"): StopRecord {
   store.closeSession(session.sessionId, { stopCause: "max_reached", iterations: 3, execMs: 42 });
   const stop = createStopRecorder({ store, read: (_tree, argv) => argv[0] === "rev-parse" ? "a".repeat(40) : "" })({
-    work, session, adapter: "low", stopCause: "max_reached", cessation: "proven", leaseHeld: trusted, generationCurrent: true,
+    work, session, adapter, stopCause: "max_reached", cessation: "proven", leaseHeld: trusted, generationCurrent: true,
   });
-  Reflect.get(production, "captureLimitHandoff")?.(store, work, stop);
+  captureLimitHandoff(store, work, stop);
   return stop;
 }
 
@@ -45,7 +45,7 @@ const bareOrder = () => ({
   budget: { maxIterations: 3, deadlineMs: 1000 },
   adapter: { adapter: "low", tools: [], network: [], skills: false, writable: [] },
 });
-const resumedOrder = () => buildWorkOrder({ ...bareOrder(), handoff: Reflect.get(production, "readLimitHandoff")?.(store, work) });
+const resumedOrder = () => buildWorkOrder({ ...bareOrder(), handoff: readLimitHandoff(store, work) });
 const fallback = () => ({ work, kind: "start-work" as const, stopCause: "max_reached" as const, limitTerminal: false });
 
 test("wh-1 covered handoff accompanies the next order and yields to continuation", () => {
@@ -53,7 +53,7 @@ test("wh-1 covered handoff accompanies the next order and yields to continuation
   stop();
   store.close();
   store = WorkStore.open(join(root, "work.db"), { rootBase: root });
-  expect(Reflect.get(production, "shouldContinueAfterLimit")?.(store, fallback()) ?? false).toBe(true);
+  expect(shouldContinueAfterLimit(store, fallback())).toBe(true);
   const reserved = store.reserveSession(work.workId, { jobId: "job-1", claimId: "claim-2" }, "low");
   expect(reserved.ok).toBe(true);
   expect(resumedOrder().handoff).toEqual({ text, trust: "untrusted" });
@@ -90,13 +90,13 @@ test("wh-2 symlinks are omitted", () => {
 test("wh-3 absent note preserves the ordinary order and fallback", () => {
   stop();
   expect(resumedOrder()).toEqual(buildWorkOrder(bareOrder()));
-  expect(Reflect.get(production, "shouldContinueAfterLimit")?.(store, fallback()) ?? false).toBe(false);
+  expect(shouldContinueAfterLimit(store, fallback())).toBe(false);
 });
 
 test("wh-4 exhausted allowance still takes the terminal fallback", () => {
   writeFileSync(note, text);
   stop();
-  expect(Reflect.get(production, "shouldContinueAfterLimit")?.(store, { ...fallback(), limitTerminal: true }) ?? false).toBe(false);
+  expect(shouldContinueAfterLimit(store, { ...fallback(), limitTerminal: true })).toBe(false);
 });
 
 test("wh-1 a host deadline abort with a saved note carries abort provenance", async () => {
@@ -105,8 +105,50 @@ test("wh-1 a host deadline abort with a saved note carries abort provenance", as
   controller.abort();
   const input = { work, session, signal: controller.signal } as Parameters<import("../../src/work/adapter").WorkerAdapter["run"]>[0];
   const stopped = { stopCause: "interrupted", iterations: 1, cessation: "proven" } as const;
-  const classify = Reflect.get(production, "markLowHandoffAbort");
-  expect((classify?.(input, stopped) ?? stopped).interruptionSource).toBe("abort");
+  expect(markLowHandoffAbort(input, stopped).interruptionSource).toBe("abort");
   rmSync(note);
-  expect(classify?.(input, stopped) ?? stopped).toEqual(stopped);
+  expect(markLowHandoffAbort(input, stopped)).toEqual(stopped);
+});
+
+
+test.each(["deadline", "max_reached"] as const)("loop handoff survives a trusted %s stop", (cause) => {
+  writeFileSync(note, text);
+  store.closeSession(session.sessionId, { stopCause: cause, iterations: 3, execMs: 42 });
+  const recorded = createStopRecorder({ store, read: (_tree, argv) => argv[0] === "rev-parse" ? "a".repeat(40) : "" })({
+    work, session, adapter: "loop", stopCause: cause, cessation: "proven", leaseHeld: true, generationCurrent: true,
+  });
+  captureLimitHandoff(store, work, recorded);
+  expect(readLimitHandoff(store, work)).toEqual({ text, covered: true });
+  expect(resumedOrder().handoff).toEqual({ text, trust: "untrusted" });
+  writeFileSync(note, text.replace("parser", "writer"));
+  expect(readLimitHandoff(store, work)).toBeUndefined();
+});
+
+test("loop handoff refuses an unsafe or untrusted note", () => {
+  const other = join(root, "external-note");
+  writeFileSync(other, text);
+  symlinkSync(other, note);
+  store.closeSession(session.sessionId, { stopCause: "deadline", iterations: 3, execMs: 42 });
+  const recorded = createStopRecorder({ store, read: (_tree, argv) => argv[0] === "rev-parse" ? "a".repeat(40) : "" })({
+    work, session, adapter: "loop", stopCause: "deadline", cessation: "proven", leaseHeld: true, generationCurrent: true,
+  });
+  captureLimitHandoff(store, work, recorded);
+  expect(readLimitHandoff(store, work)).toBeUndefined();
+  rmSync(note);
+  writeFileSync(note, text);
+  captureLimitHandoff(store, work, { ...recorded, trusted: false });
+  expect(readLimitHandoff(store, work)).toBeUndefined();
+});
+
+
+test("loop handoff rejects an oversized note", () => {
+  writeFileSync(note, "a".repeat(HANDOFF_MAX_CHARS + 1));
+  stop(true, "loop");
+  expect(readLimitHandoff(store, work)).toBeUndefined();
+});
+
+test("loop handoff appearing only after its trusted stop is not covered", () => {
+  stop(true, "loop");
+  writeFileSync(note, text);
+  expect(readLimitHandoff(store, work)).toBeUndefined();
 });

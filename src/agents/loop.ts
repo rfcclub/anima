@@ -203,6 +203,8 @@ export async function runLoopMode(
     }
   }
   const last = first + max - 1;
+  const initialHint = options.windDown?.(first - 1, last);
+  if (initialHint) currentMessage += `\n\n${initialHint}`;
   let remaining = resumedRemaining;
 
   const sigintHandler = () => { interrupted = true; interruptionSource ??= "sigint"; };

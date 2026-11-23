@@ -102,6 +102,7 @@ export function gitInRecoveryTree(cwd: string, args: string[]): string {
 
 const HANDOFF_EVENT = "limit-handoff-covered";
 const isLimit = (cause: string) => cause === "deadline" || cause === "max_reached";
+const supportsHandoff = (adapter: string) => adapter === "low" || adapter === "loop";
 const handoffFile = (sessionId: string) => `AGENT_HANDOFF_${sessionId}.md`;
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -132,7 +133,7 @@ function readHandoffNote(work: WorkRecord, sessionId: string): string | undefine
 /** Attach only a fingerprint to the trusted stop. Progress text remains in local scratch. */
 export function captureLimitHandoff(store: WorkStore, work: WorkRecord, stop: StopRecord): void {
   if (stop.workId !== work.workId || !stop.trusted || stop.cessation !== "proven" ||
-    stop.adapter !== "low" || !isLimit(stop.stopCause)) return;
+    !supportsHandoff(stop.adapter) || !isLimit(stop.stopCause)) return;
   const session = store.latestEndedSession(work.workId);
   if (session?.sessionId !== stop.sessionId || store.getWork(work.workId)?.generation !== session.generation) return;
   const text = readHandoffNote(work, stop.sessionId);
@@ -147,7 +148,7 @@ export function captureLimitHandoff(store: WorkStore, work: WorkRecord, stop: St
 export function readLimitHandoff(store: WorkStore, work: WorkRecord): { text: string; covered: true } | undefined {
   const session = store.latestEndedSession(work.workId);
   const stop = session && store.getStop(session.sessionId);
-  if (!stop?.trusted || stop.cessation !== "proven" || stop.adapter !== "low" || !isLimit(stop.stopCause)) return;
+  if (!stop?.trusted || stop.cessation !== "proven" || !supportsHandoff(stop.adapter) || !isLimit(stop.stopCause)) return;
   const text = readHandoffNote(work, stop.sessionId);
   if (text === undefined) return;
   const sha256 = digest(text);
@@ -231,6 +232,7 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
     loadIdentity: (name) => loader.loadIdentity(name),
     issue: (work) => github.issue(work.repo, work.issue),
     reviewFeedback: reviewFeedback(workGithub, config, store),
+    readHandoff: (work) => readLimitHandoff(store, work),
     cloneSource: (work) => config.cloneUrl.replace("{repo}", work.repo),
     base: config.base,
     ...(config.repoBases ? { repoBases: config.repoBases } : {}),
