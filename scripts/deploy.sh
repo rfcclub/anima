@@ -17,6 +17,16 @@ echo ""
 echo "[0/9] Checking working tree..."
 (cd "$PROJECT_DIR" && bun scripts/deploy-guard.ts)
 
+# 0b. Choose and stage the roster before anything is built or copied. The staged bytes are what is installed later.
+mkdir -p "$ANIMA_HOME/data"
+ROSTER_SRC="$(bun "$PROJECT_DIR/scripts/deploy-roster.ts" choose "$PROJECT_DIR/data/colony.json" "$ANIMA_HOME/data/colony.json" "${ANIMA_OVERLAY_DIR:-}" "$PROJECT_DIR")"
+ROSTER_STAGE="$(mktemp "$ANIMA_HOME/data/.colony.stage.XXXXXX")"
+trap 'rm -f "$ROSTER_STAGE"' EXIT
+cp "$ROSTER_SRC" "$ROSTER_STAGE"
+chmod 600 "$ROSTER_STAGE"
+bun "$PROJECT_DIR/scripts/deploy-roster.ts" validate "$ROSTER_STAGE" "$ANIMA_HOME/data/colony.json"
+ROSTER_FROM="$( [ "$ROSTER_SRC" = "$PROJECT_DIR/data/colony.json" ] && echo checkout || echo overlay )"
+
 # 1. Build
 echo ""
 echo "[1/4] Building server..."
@@ -135,8 +145,13 @@ echo "[build] building client bundle..."
 
 # data/ — sync static colony metadata used by server startup
 mkdir -p "$ANIMA_HOME/data"
-cp "$PROJECT_DIR/data/colony.json" "$ANIMA_HOME/data/colony.json"
-echo "  ✓ data/colony.json synced"
+# Install the staged, validated roster; every previous runtime roster is kept under its own timestamped name.
+if [ -f "$ANIMA_HOME/data/colony.json" ]; then
+  ROSTER_BACKUP="$(mktemp "$ANIMA_HOME/data/colony.json.pre-deploy-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+  cp -p "$ANIMA_HOME/data/colony.json" "$ROSTER_BACKUP"
+fi
+mv "$ROSTER_STAGE" "$ANIMA_HOME/data/colony.json"
+echo "  ✓ data/colony.json installed from $ROSTER_FROM"
 
 # openspec/ — when present, sync the change tree so the /projects dashboard
 # (reads openspec/changes + openspec/archive) has data. Without it the
@@ -254,6 +269,13 @@ else
   exit 1
 fi
 
+DEPLOYED_COMMIT="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+ORIGIN_HEAD="$(git -C "$PROJECT_DIR" ls-remote origin HEAD 2>/dev/null | cut -c1-7 || true)"
+echo "  deployed commit: $DEPLOYED_COMMIT; origin head: ${ORIGIN_HEAD:-unknown}"
+# Optional work log (ANIMA_WORKLOG): one line per deploy with the commit, the build and the roster source.
+if [ -n "${ANIMA_WORKLOG:-}" ]; then
+  echo "- $(date -u +%Y-%m-%dT%H:%M:%SZ) deploy commit=$DEPLOYED_COMMIT origin=${ORIGIN_HEAD:-unknown} build=$BUILD_VERSION roster=$ROSTER_FROM" >> "$ANIMA_WORKLOG"
+fi
 echo "[10/10] Done."
 echo ""
 echo "=== ~/.anima/ structure ==="
