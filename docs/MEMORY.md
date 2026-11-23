@@ -144,3 +144,32 @@ boot:
 ```
 
 The agent can update it via the Write tool during sessions. This is the primary mechanism for durable, human-readable long-term memory.
+
+## Continuity ledger (Phase B)
+
+`src/memory/continuity-ledger.ts` is the canonical, durable record of continuity
+signals, backed by `continuity-envelope.ts` for versioned shape validation. It is
+deliberately separate from the memory store hierarchy: `AnimaEntityStore` stays
+the durable local memory and Hindsight stays a supplementary recall backend, so
+neither can silently become the authority for identity.
+
+Current, already-implemented guarantees (all covered by
+`__tests__/memory/continuity-ledger.test.ts`):
+
+- A canonical record and its outbound delivery work commit in one transaction.
+- A retried event returns the existing record; a changed source version is a new
+  record; a reused idempotency key with different content is kept as a second
+  event under a derived record key and gets its own backend document id.
+- Hindsight imports are stored with `origin = "hindsight-import"` and get no
+  delivery work, so an import cannot echo back out.
+- Delivery has `pending` / `delivered` / `failed` states, retries reuse the same
+  stable document id, and the backend id and version are recorded.
+- `supersede()` is explicit and replay-safe; its audit row carries both parents
+  and no subject, so it never surfaces as current advice.
+- `currentForSubject()` excludes superseded and expired records;
+  `history()` still returns them for authorized historical queries, and
+  `conflicts()` reports unresolved disagreement instead of picking a winner.
+
+Not yet wired: runtime capture hooks, delivery workers, wake/expand context and
+background consolidation. Those are separate phases; this ledger only provides
+the storage and transaction boundary they will use.
