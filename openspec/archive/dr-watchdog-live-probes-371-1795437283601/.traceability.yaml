@@ -17,6 +17,9 @@ scenarios:
   - scenario: fail-closed-missing-and-ambiguous-job-pids
     test: scripts/dr/live-probes.test.ts
     assertion: 'SC-002: unknown evidence is never a valid port probe > missing and ambiguous owner PIDs remain unknown'
+  - scenario: fail-closed-unmatched-listener-pid
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-002: unknown evidence is never a valid port probe > an unmatched listener PID remains unknown even alongside the owner'
   - scenario: fail-closed-incomplete-port-results
     test: scripts/dr/live-probes.test.ts
     assertion: 'SC-002: unknown evidence is never a valid port probe > rejects incomplete lsof fields and the invalid-host regression'

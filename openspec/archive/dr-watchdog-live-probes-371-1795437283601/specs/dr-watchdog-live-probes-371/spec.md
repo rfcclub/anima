@@ -41,7 +41,11 @@ The module SHALL attribute a listener only through an exact, uniquely known PID 
 The module SHALL keep missing, malformed, failed or ambiguous observations unknown, without exposing command diagnostics in reasons.
 
 #### Scenario: Missing and ambiguous job PIDs
-- **WHEN** the expected PID is missing, duplicated, ambiguous or unavailable, or a listener PID cannot be matched uniquely
+- **WHEN** the expected PID is missing, duplicated, ambiguous or unavailable
+- **THEN** the affected port is unknown.
+
+#### Scenario: Unmatched listener PID
+- **WHEN** a listener PID cannot be matched uniquely, alone or alongside the expected owner
 - **THEN** the affected port is unknown.
 
 #### Scenario: Incomplete port results
