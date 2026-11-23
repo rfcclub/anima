@@ -1,0 +1,5 @@
+.harness/
+.orca-verify.json
+.orca-red.json
+.archive-meta.json
+self-check.md

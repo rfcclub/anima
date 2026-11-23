@@ -1,0 +1,28 @@
+scenarios:
+  - scenario: collect-configured-observations-configured-command-arguments
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-003: bounded read-only commands > uses only configured labels and ports, argument arrays, no shell, and finite bounds'
+  - scenario: collect-configured-observations-invalid-input
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-003: bounded read-only commands > rejects invalid input and the excessive-probe regression before starting commands'
+  - scenario: collect-configured-observations-deadline
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-003: bounded read-only commands > bounds the wait even when an injected executor hangs'
+  - scenario: attribute-listeners-complete-listener-cases
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-001: complete listener observations > recognizes owner, foreign, mixed, dual-stack and confirmed no listeners'
+  - scenario: attribute-listeners-nested-launchd-state
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-001: complete listener observations > accepts nested launchd state without misattribution'
+  - scenario: fail-closed-missing-and-ambiguous-job-pids
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-002: unknown evidence is never a valid port probe > missing and ambiguous owner PIDs remain unknown'
+  - scenario: fail-closed-incomplete-port-results
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-002: unknown evidence is never a valid port probe > rejects incomplete lsof fields and the invalid-host regression'
+  - scenario: fail-closed-nested-job-pid
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-002: unknown evidence is never a valid port probe > a nested launchd PID cannot masquerade as a job PID'
+  - scenario: fail-closed-unrelated-failed-job
+    test: scripts/dr/live-probes.test.ts
+    assertion: 'SC-002: unknown evidence is never a valid port probe > failed launchd output is null and cannot turn another port healthy'
