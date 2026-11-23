@@ -22,6 +22,8 @@ export interface MeshEnqueuer {
   getJob?(jobId: string): Promise<MeshJobDetails>;
   /** Pin one capability for the read and enqueue, even if the live presence rejoins. */
   retrySession?(): {
+    /** The identity bound to that same capability. Missing identity makes retry validation fail closed. */
+    enqueuer?: string;
     getJob(jobId: string): Promise<MeshJobDetails>;
     enqueue(input: Record<string, unknown>): Promise<{ id: string }>;
   };
@@ -251,7 +253,14 @@ export class Reconciler {
       if (config.authorMeshIdByAgent && !pinned) throw new Error("revise refused: the work's author has no mesh ID");
       const reviseEligible = pinned ? [pinned] : config.authorMeshIds;
       const retry = entry.key.startsWith("revise-retry:");
-      const port = retry && mesh.retrySession ? mesh.retrySession() : mesh;
+      const session = retry ? mesh.retrySession?.() : undefined;
+      if (retry && config.authorMeshIdByAgent && !session) {
+        throw new Error("retry refused: the producer identity cannot be pinned");
+      }
+      if (session && (typeof session.enqueuer !== "string" || !session.enqueuer || session.enqueuer.trim() !== session.enqueuer)) {
+        throw new Error("retry refused: the producer identity is missing");
+      }
+      const port = session ?? mesh;
       if (retry) {
         if (work.state !== "checkpointed" || work.repo !== payload.repo || work.prNumber !== payload.number ||
             !work.prHead || work.prHead.toLowerCase() !== payload.head.toLowerCase()) {
@@ -275,8 +284,9 @@ export class Reconciler {
         const old = await port.getJob(payload.failedJobId);
         const author = reviseEligible[0];
         const matchesAuthor = (value: string) => value.toLowerCase() === author?.toLowerCase();
+        const enqueuer = session?.enqueuer ?? author;
         if (reviseEligible.length !== 1 || !author || old.id !== payload.failedJobId || old.type !== "revise" ||
-            !matchesAuthor(old.enqueuer) ||
+            !enqueuer || old.enqueuer.toLowerCase() !== enqueuer.toLowerCase() ||
             !["queued", "expired"].includes(old.state) || old.slots !== 1 ||
             old.target.repo.toLowerCase() !== work.repo.toLowerCase() || old.target.kind !== "pr" ||
             old.target.number !== payload.number || old.target.headSha?.toLowerCase() !== payload.head.toLowerCase() ||
