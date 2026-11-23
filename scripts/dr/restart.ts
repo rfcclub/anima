@@ -79,6 +79,9 @@ export function decideRestarts(
     const restarts = (next.restarts[label] ?? []).filter((time) => time >= now - windowMs);
     next.restarts[label] = restarts;
     if (restarts.length < config.thresholds.restartCap) {
+      // The cap alert belongs to one spendable window: as soon as a restart slot reopens (the whole
+      // window aged out, or only the oldest timestamps did), the next cap has to alert again.
+      for (const key of restartableIncidentKeys(label)) next.incidents[key]!.capAlertSent = false;
       restarts.push(now);
       actions.push({ kind: "kickstart", label });
       continue;
