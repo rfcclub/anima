@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LeaseLostError, type MeshClaim, type MeshJob, type MeshJobReport } from "../../src/mesh-jobs/client";
-import { findReview, MeshJobConsumer, type GitHubReader, type IssueState, type JobsPort, type PullRequestReview, type TurnRunner } from "../../src/mesh-jobs/consumer";
+import { findReview, isTransientError, MeshJobConsumer, type GitHubReader, type IssueState, type JobsPort, type PullRequestReview, type TurnRunner, type WorkJobHandler } from "../../src/mesh-jobs/consumer";
 
 const CLAIM_AT = Date.parse("2026-10-14T01:00:00.000Z");
 const HEAD = "abc1234def5678abc1234def5678abc1234def56";
@@ -33,6 +33,12 @@ class FakeJobs implements JobsPort {
     return CLAIM;
   }
   async report(id: string, report: MeshJobReport) { this.calls.push(`report:${id}`); this.reports.push(report); return CLAIM; }
+}
+
+/** A port that can release a claim, as the real one can. */
+class ReleasableJobs extends FakeJobs {
+  released: string[] = [];
+  async release(id: string) { this.calls.push(`release:${id}`); this.released.push(id); return { ...CLAIM, state: "released" as const }; }
 }
 
 function github(reviews: PullRequestReview[] = [], headSha = HEAD): GitHubReader & { reviewReads: number } {
@@ -403,5 +409,76 @@ describe("MeshJobConsumer: intent review budget", () => {
     const t = turn();
     await consumer(jobs, github([review()]), t).c.tick();
     expect(t.calls[0]!.intent).toBeUndefined();
+  });
+});
+
+describe("MeshJobConsumer: work jobs and transient errors", () => {
+  const workJob = () => job({ type: "start-work", target: { repo: "rfcclub/anima", kind: "issue", number: 7 } });
+
+  function workConsumer(jobs: ReleasableJobs, run: WorkJobHandler["run"]) {
+    const lines: string[] = [];
+    const c = new MeshJobConsumer({
+      workers: [{ agent: "jade", jobs }],
+      github: github(),
+      runTurn: turn().run,
+      heartbeatMs: 60_000,
+      turnTimeoutMs: 600_000,
+      work: { run },
+      releaseBackoffMs: 30_000,
+      now: () => CLAIM_AT,
+      log: (level, message, fields) => lines.push(`${level} ${message} ${JSON.stringify(fields ?? {})}`),
+    });
+    return { c, lines };
+  }
+
+  test("an unreachable GitHub API releases the claim instead of failing it", async () => {
+    const jobs = new ReleasableJobs(); jobs.jobResult = workJob();
+    const { c, lines } = workConsumer(jobs, async () => { throw new Error("error connecting to api.github.com"); });
+    await c.tick();
+    expect(jobs.released).toEqual(["claim-1"]);
+    expect(jobs.reports).toEqual([]);
+    expect(lines.some((line) => line.includes("error connecting to api.github.com"))).toBe(true);
+  });
+
+  test("after a release the worker stays away for the backoff", async () => {
+    const jobs = new ReleasableJobs(); jobs.jobResult = workJob();
+    const { c } = workConsumer(jobs, async () => { throw new Error("error connecting to api.github.com"); });
+    await c.tick();
+    const callsAfterFirstTick = jobs.calls.length;
+    await c.tick();
+    expect(jobs.calls.length).toBe(callsAfterFirstTick);
+  });
+
+  test("any other error is reported failed, exactly as before", async () => {
+    const jobs = new ReleasableJobs(); jobs.jobResult = workJob();
+    const { c } = workConsumer(jobs, async () => { throw new Error("the tests did not pass"); });
+    await c.tick();
+    expect(jobs.released).toEqual([]);
+    expect(jobs.reports).toEqual([{ outcome: "failed" }]);
+  });
+
+  test("the classifier names connection-level failures only", () => {
+    for (const text of [
+      "error connecting to api.github.com",
+      "gh issue view exited 1: dial tcp: lookup api.github.com: no such host",
+      "gh pr view exited 1: connect: connection refused",
+      "gh issue list exited 1: Post \"https://api.github.com/graphql\": dial tcp 1.2.3.4:443: i/o timeout",
+      "fetch failed",
+      "socket hang up",
+      "getaddrinfo ENOTFOUND gateway.mesh",
+      "connect ECONNREFUSED 127.0.0.1:8080",
+    ]) {
+      expect(isTransientError(new Error(text))).toBe(true);
+    }
+    for (const text of [
+      "the tests did not pass",
+      "gh issue view exited 1: GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)",
+      "lease-lost",
+      "",
+    ]) {
+      expect(isTransientError(new Error(text))).toBe(false);
+    }
+    expect(isTransientError("error connecting to api.github.com")).toBe(true);
+    expect(isTransientError(undefined)).toBe(false);
   });
 });

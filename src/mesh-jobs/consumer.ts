@@ -157,6 +157,15 @@ export class MeshJobConsumer {
         this.log("info", "mesh work lease lost", { agent: worker.agent, claimId: claim.id });
         return;
       }
+      if (isTransientError(error)) {
+        // A short outage of a remote service is not a failure of the work: release the claim and retry after the
+        // backoff. A `failed` report would be final for this worker, and the author is the only eligible one (#426).
+        this.log("info", "mesh work job released: a remote service is unreachable", {
+          agent: worker.agent, claimId: claim.id, error: errorText(error),
+        });
+        await this.handBack(worker, claim);
+        return;
+      }
       this.log("error", "mesh work job failed", { agent: worker.agent, claimId: claim.id, error: errorText(error) });
       outcome = { kind: "report", report: { outcome: "failed" } };
     }
@@ -353,4 +362,33 @@ export function findReview(reviews: PullRequestReview[], agent: string, headSha:
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Connection-level failures of the GitHub client or the queue service: the remote host was unreachable, the
+ * connection was refused or reset, DNS failed, or the request timed out. These are outages, not a failure of the
+ * work, so the claim is released and retried after the backoff (anima#426). Matched positively and case-insensitively;
+ * an unrecognised error is a failure.
+ */
+const TRANSIENT_ERROR_TEXTS = [
+  "error connecting to", // gh: "error connecting to api.github.com"
+  "connection refused",
+  "connection reset",
+  "no such host", // gh/Go: "lookup api.github.com: no such host"
+  "network is unreachable",
+  "i/o timeout",
+  "tls handshake timeout",
+  "timeout awaiting response",
+  "socket hang up",
+  "fetch failed", // Bun's fetch when the connection fails outright
+  "econnrefused",
+  "econnreset",
+  "etimedout",
+  "enotfound",
+  "eai_again",
+];
+
+export function isTransientError(error: unknown): boolean {
+  const text = errorText(error).toLowerCase();
+  return TRANSIENT_ERROR_TEXTS.some((pattern) => text.includes(pattern));
 }
