@@ -12,4 +12,4 @@ A complete lsof no-match is exit 1 with both output streams empty, the lsof conv
 
 Synthetic sanitized launchd/lsof fixtures and an injected fake cover the three approved success criteria, including nested job blocks. Tests call the existing pure checks for complete results and assert that unknown results never supply a `PortProbe`. A hanging fake exercises the collection deadline; oversized fake output exercises the output cap. Automated tests use no real host commands or network access.
 
-`orca/config.yaml` selects Bun, matching the repository's documented test runner, so Orca can execute the linked tests using its Bun reporter.
+Orca verification uses a local, untracked Bun runner selection, matching the repository's documented test runner. This change does not add repository-wide configuration.
