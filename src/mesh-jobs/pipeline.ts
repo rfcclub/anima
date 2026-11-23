@@ -363,6 +363,8 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
   const startedAt = now();
   const reviewerMeshIds = work.reviewers.map((reviewer) => reviewer.meshId);
   let dispatched = 0;
+  let eligible = 0;
+  const logged = new Set<string>();
 
   for (const repo of config.repos) {
     let raw: string;
@@ -390,6 +392,7 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
       log("error", "intent dispatch poll returned invalid JSON", { repo });
       continue;
     }
+    eligible += issues.length;
 
     for (const issue of issues) {
       if (dispatched >= config.maxIntentPerPoll) break;
@@ -406,13 +409,24 @@ export async function dispatchIntentReviews(deps: IssueDispatchDeps): Promise<nu
           authorMeshId: work.authorMeshId, excludedMeshIds: excluded, now: now(),
         }));
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
-        log("info", "intent review dispatched", { repo, issue: issue.number, jobId: job.id, revision });
+        // A replay returns the job from its first poll with that poll's original createdAt, which is always before
+        // this poll started, so a restarted dispatcher cannot report an old job as a new dispatch. The in-poll set
+        // also stops a gateway that hands back the same job twice from producing two lines. A job created while the
+        // gateway clock lags silently loses its line: no line is better than a line that claims nothing happened.
+        if ((job.state === "queued" || job.state === "reported") && createdInThisPoll(job, startedAt) && !logged.has(job.id)) {
+          logged.add(job.id);
+          log("info", "intent review dispatched", {
+            repo, issue: issue.number, jobId: job.id, revision, createdAt: job.createdAt,
+          });
+        }
       } catch (error) {
         log("error", "intent review enqueue failed", { repo, issue: issue.number, error: errorText(error) });
       }
     }
     if (dispatched >= config.maxIntentPerPoll) break;
   }
+  // One heartbeat per poll so an operator can see that the poll ran and which intents are waiting for review.
+  log("info", "intent review poll", { repos: config.repos, eligible, dispatched });
   return dispatched;
 }
 
@@ -550,4 +564,12 @@ function errorText(error: unknown): string {
 /** A replayed enqueue returns the existing job with its original createdAt; only a fresh job spends the cap. */
 export function freshJob(job: { createdAt?: number }, startedAt: number): boolean {
   return typeof job.createdAt === "number" && job.createdAt >= startedAt - 5_000;
+}
+
+/**
+ * True when the job cannot predate this poll, so this poll is the call that created it. A replay always carries the
+ * createdAt of the poll that first enqueued it, which is earlier than every later poll start.
+ */
+function createdInThisPoll(job: { createdAt?: number }, startedAt: number): boolean {
+  return typeof job.createdAt === "number" && job.createdAt >= startedAt;
 }
