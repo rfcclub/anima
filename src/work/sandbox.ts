@@ -95,21 +95,30 @@ export function sandboxCommand(profile: SandboxProfile, argv: string[], binary: 
 
 const ENV_ALLOW = ["PATH", "LANG", "LC_ALL", "TERM"];
 
-/** The only environment a session's tools get: no tokens, no `ANIMA_*`, HOME and TMPDIR inside the work root. */
 /**
- * The identity every commit made inside a work session carries. Without it git derives one from the host
- * account (the account's full name and `user@host.local`), which would put a real name and machine name
- * into the history of every work branch. It is neutral and a GitHub noreply address.
+ * The identity every commit made inside a work session defaults to. Without it git derives one from the host
+ * account (the account's full name and `user@host.local`), which would put a real name and machine name into
+ * the history of every work branch. It is neutral and a GitHub noreply address.
  */
 export const WORK_COMMIT_IDENTITY = { name: "ANIMA work", email: "anima-work@users.noreply.github.com" } as const;
 
+/**
+ * The only environment a session's tools get: no tokens, no `ANIMA_*`, HOME and TMPDIR inside the work root.
+ *
+ * The default commit identity is passed as `GIT_CONFIG_COUNT` config (`user.name`, `user.email`), not as
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*`: those variables outrank every `-c` and config identity, so an explicit
+ * identity (a test fixture, the host publisher) could never win. As config it is only a default.
+ */
 export function sanitizedEnv(parent: Record<string, string | undefined>, paths: { home: string; tmp: string }): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of ENV_ALLOW) if (parent[key] !== undefined) env[key] = parent[key]!;
   env.HOME = paths.home;
   env.TMPDIR = paths.tmp;
-  env.GIT_AUTHOR_NAME = env.GIT_COMMITTER_NAME = WORK_COMMIT_IDENTITY.name;
-  env.GIT_AUTHOR_EMAIL = env.GIT_COMMITTER_EMAIL = WORK_COMMIT_IDENTITY.email;
+  env.GIT_CONFIG_COUNT = "2";
+  env.GIT_CONFIG_KEY_0 = "user.name";
+  env.GIT_CONFIG_VALUE_0 = WORK_COMMIT_IDENTITY.name;
+  env.GIT_CONFIG_KEY_1 = "user.email";
+  env.GIT_CONFIG_VALUE_1 = WORK_COMMIT_IDENTITY.email;
   return env;
 }
 
