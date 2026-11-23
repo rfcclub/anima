@@ -13,6 +13,8 @@ Issue: rfcclub/anima#371
 
 - [x] RED: add fake command cases for missing/duplicate expected PID, duplicate PID across labels, malformed or truncated lsof fields, permission failure, timed-out executor, over-limit output, and a failed unrelated launchd probe. Assert unknown cannot be passed as a complete port probe.
 - [x] GREEN: return fixed sanitized reasons for each unknown class, preserve `LaunchdProbe` with null for failed or malformed output, and reject attribution whenever any configured job PID needed to establish uniqueness is unavailable.
+- [x] RED: assert that an unmatched listener PID remains unknown both alone and alongside the expected owner.
+- [x] GREEN: classify an unmatched PID as unknown, and classify a known foreign listener only when it matches another configured job.
 
 ## SC-003: Read-only and bounded execution
 

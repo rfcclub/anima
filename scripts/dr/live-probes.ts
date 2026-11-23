@@ -153,7 +153,8 @@ export async function collectLiveProbes(options: {
     for (const pid of pids) {
       const matches = jobs.filter((job) => job.pid === pid);
       if (matches.length > 1) return unknown("listener ownership ambiguous");
-      listeners.push(`${matches[0]?.label ?? "?"} ${pid}`);
+      if (matches.length === 0) return unknown("listener ownership unknown");
+      listeners.push(`${matches[0]!.label} ${pid}`);
     }
     return { kind: "complete", probe: { port, listeners } };
   }));

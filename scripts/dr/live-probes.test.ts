@@ -53,7 +53,7 @@ describe("SC-001: complete listener observations", () => {
     const { launchd: jobs, ports: observations } = await collect(ports, { ports: {
       "3101": ok(socket(101, 3101)),
       "3102": ok(socket(202, 3102)),
-      "3103": ok(socket(101, 3103) + socket(999, 3103)),
+      "3103": ok(socket(101, 3103) + socket(202, 3103)),
       "3104": ok(socket(101, 3104, "127.0.0.1") + socket(101, 3104, "[::1]").replace(/^p101\ncprocess\n/, "")),
       "3105": empty,
     } });
@@ -61,13 +61,23 @@ describe("SC-001: complete listener observations", () => {
     expect(observations.map((item) => status(ports, item))).toEqual(["pass", "fail", "fail", "pass", "fail"]);
     expect(observations[4]).toEqual({ kind: "complete", probe: { port: 3105, listeners: [] } });
     const mixed = observations[2];
-    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`${owner} 101`, "? 999"]);
+    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`${owner} 101`, `${other} 202`]);
     const dualStack = observations[3];
     expect(dualStack?.kind === "complete" && dualStack.probe.listeners).toEqual([`${owner} 101`, `${owner} 101`]);
   });
 });
 
 describe("SC-002: unknown evidence is never a valid port probe", () => {
+  test("an unmatched listener PID remains unknown even alongside the owner", async () => {
+    for (const output of [
+      socket(999, 3101),
+      socket(101, 3101) + socket(999, 3101),
+    ]) {
+      const result = await collect({ "3101": owner }, { ports: { "3101": ok(output) } });
+      expect(result.ports[0]?.kind).toBe("unknown");
+    }
+  });
+
   test("missing and ambiguous owner PIDs remain unknown", async () => {
     for (const jobs of [
       { [owner]: ok(`gui/501/${owner} = {\n\tstate = waiting\n}\n`) },
