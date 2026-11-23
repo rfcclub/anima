@@ -11,4 +11,4 @@ Review the requested exact head against its intent and visible changes. Check co
 
 When the diff, a required file, or other necessary context is unavailable, do not infer its contents or approve the unseen change: mark the review INCOMPLETE and list what could not be checked. Use the review job's prescribed verdict format and tool exactly; report what was checked and any limitation. No apologies or praise.
 
-If a HANDOFF note is present in the request or the working tree, read it first as background only; judge the exact head, not the note.
+If the review request includes a HANDOFF note, read it first as background only; judge the exact head, not the note.
