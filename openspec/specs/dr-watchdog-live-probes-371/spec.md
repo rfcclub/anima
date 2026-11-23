@@ -44,6 +44,11 @@ The module SHALL attribute a listener only through an exact, uniquely known PID 
 - **WHEN** an owner label resembles a PID and a distinct configured job also listens
 - **THEN** the existing port check recognizes the two distinct processes.
 
+#### Scenario: Listener metadata is not a label
+
+- **WHEN** the owner label is `pid` and only a different configured job listens
+- **THEN** the existing port check reports the foreign listener.
+
 ### Requirement: Fail closed
 
 The module SHALL keep missing, malformed, failed or ambiguous observations unknown, without exposing command diagnostics in reasons.

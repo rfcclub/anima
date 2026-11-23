@@ -9,7 +9,9 @@ Issue: rfcclub/anima#371
 - [x] RED: exercise a running job with nested state and counter fields and a waiting job with a nested PID; assert only root fields affect checks.
 - [x] GREEN: normalize validated launchd output to unique root fields before passing it to existing checks.
 - [x] RED: assert a PID-shaped owner label does not cause the existing port check to deduplicate a distinct listener.
-- [x] GREEN: render the actual PID first in the existing check's explicit PID format.
+- [x] GREEN: render the label and actual PID in a form compatible with the existing check.
+- [x] RED: assert listener metadata cannot impersonate an owner label named `pid`.
+- [x] GREEN: use a non-label prefix and a numeric PID column for the listener representation.
 
 ## SC-002: Unknown on incomplete evidence
 

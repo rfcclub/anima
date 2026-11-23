@@ -158,7 +158,8 @@ export async function collectLiveProbes(options: {
       const matches = jobs.filter((job) => job.pid === pid);
       if (matches.length > 1) return unknown("listener ownership ambiguous");
       if (matches.length === 0) return unknown("listener ownership unknown");
-      listeners.push(`pid=${pid} ${matches[0]!.label}`);
+      // The prefix keeps PID-shaped labels out of checkPorts' explicit PID pattern.
+      listeners.push(`@${matches[0]!.label} ${pid}`);
     }
     return { kind: "complete", probe: { port, listeners } };
   }));

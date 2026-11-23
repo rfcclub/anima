@@ -61,9 +61,9 @@ describe("SC-001: complete listener observations", () => {
     expect(observations.map((item) => status(ports, item))).toEqual(["pass", "fail", "fail", "pass", "fail"]);
     expect(observations[4]).toEqual({ kind: "complete", probe: { port: 3105, listeners: [] } });
     const mixed = observations[2];
-    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`pid=101 ${owner}`, `pid=202 ${other}`]);
+    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`@${owner} 101`, `@${other} 202`]);
     const dualStack = observations[3];
-    expect(dualStack?.kind === "complete" && dualStack.probe.listeners).toEqual([`pid=101 ${owner}`, `pid=101 ${owner}`]);
+    expect(dualStack?.kind === "complete" && dualStack.probe.listeners).toEqual([`@${owner} 101`, `@${owner} 101`]);
   });
 
   test("does not collapse a distinct listener when the owner's label looks like a PID", async () => {
@@ -72,6 +72,16 @@ describe("SC-001: complete listener observations", () => {
     const result = await collect(ports, {
       jobs: { [label]: ok(launchd(`gui/501/${label}`, "101")) },
       ports: { "3101": ok(socket(101, 3101) + socket(202, 3101)) },
+    }, [label, other]);
+    expect(status(ports, result.ports[0]!)).toBe("fail");
+  });
+
+  test("does not mistake a PID marker for an owner label", async () => {
+    const label = "pid";
+    const ports = { "3101": label };
+    const result = await collect(ports, {
+      jobs: { [label]: ok(launchd(`gui/501/${label}`, "101")) },
+      ports: { "3101": ok(socket(202, 3101)) },
     }, [label, other]);
     expect(status(ports, result.ports[0]!)).toBe("fail");
   });
