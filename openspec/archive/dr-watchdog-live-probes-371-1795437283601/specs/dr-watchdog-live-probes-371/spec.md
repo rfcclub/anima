@@ -36,6 +36,10 @@ The module SHALL attribute a listener only through an exact, uniquely known PID 
 - **WHEN** a running job contains nested state or counter fields
 - **THEN** the checks use only the job's root fields and can still identify its listener.
 
+#### Scenario: PID-shaped label
+- **WHEN** an owner label resembles a PID and a distinct configured job also listens
+- **THEN** the existing port check recognizes the two distinct processes.
+
 ### Requirement: Fail closed
 
 The module SHALL keep missing, malformed, failed or ambiguous observations unknown, without exposing command diagnostics in reasons.
@@ -47,6 +51,10 @@ The module SHALL keep missing, malformed, failed or ambiguous observations unkno
 #### Scenario: Unmatched listener PID
 - **WHEN** a listener PID cannot be matched uniquely, alone or alongside the expected owner
 - **THEN** the affected port is unknown.
+
+#### Scenario: Incomplete job record
+- **WHEN** a launchd record contains a PID but is incomplete
+- **THEN** the PID is discarded and the affected port is unknown.
 
 #### Scenario: Incomplete port results
 - **WHEN** lsof fails, returns malformed fields, exceeds the output cap or cannot verify a numeric listener address

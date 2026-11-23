@@ -61,13 +61,33 @@ describe("SC-001: complete listener observations", () => {
     expect(observations.map((item) => status(ports, item))).toEqual(["pass", "fail", "fail", "pass", "fail"]);
     expect(observations[4]).toEqual({ kind: "complete", probe: { port: 3105, listeners: [] } });
     const mixed = observations[2];
-    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`${owner} 101`, `${other} 202`]);
+    expect(mixed?.kind === "complete" && mixed.probe.listeners).toEqual([`pid=101 ${owner}`, `pid=202 ${other}`]);
     const dualStack = observations[3];
-    expect(dualStack?.kind === "complete" && dualStack.probe.listeners).toEqual([`${owner} 101`, `${owner} 101`]);
+    expect(dualStack?.kind === "complete" && dualStack.probe.listeners).toEqual([`pid=101 ${owner}`, `pid=101 ${owner}`]);
+  });
+
+  test("does not collapse a distinct listener when the owner's label looks like a PID", async () => {
+    const label = "pid202";
+    const ports = { "3101": label };
+    const result = await collect(ports, {
+      jobs: { [label]: ok(launchd(`gui/501/${label}`, "101")) },
+      ports: { "3101": ok(socket(101, 3101) + socket(202, 3101)) },
+    }, [label, other]);
+    expect(status(ports, result.ports[0]!)).toBe("fail");
   });
 });
 
 describe("SC-002: unknown evidence is never a valid port probe", () => {
+  test("a truncated job record cannot supply a PID for port ownership", async () => {
+    const truncated = `gui/501/${owner} = {\n\tstate = running\n\tpid = 101\n`;
+    const result = await collect({ "3101": owner }, {
+      jobs: { [owner]: ok(truncated) },
+      ports: { "3101": ok(socket(101, 3101)) },
+    });
+    expect(result.launchd[0]?.output).toBeNull();
+    expect(result.ports[0]?.kind).toBe("unknown");
+  });
+
   test("an unmatched listener PID remains unknown even alongside the owner", async () => {
     for (const output of [
       socket(999, 3101),

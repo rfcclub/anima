@@ -8,6 +8,8 @@ Issue: rfcclub/anima#371
 - [x] GREEN: create `scripts/dr/live-probes.ts`; define `collectLiveProbes`, the discriminated port result and an injected executor. Validate all labels/ports before calls. Parse the top-level launchd PID and complete `p/f/P/n/T` lsof fields; map only exact unique PIDs, retaining PID in every listener description. Treat exit 1 with empty stdout and stderr as no match.
 - [x] RED: exercise a running job with nested state and counter fields and a waiting job with a nested PID; assert only root fields affect checks.
 - [x] GREEN: normalize validated launchd output to unique root fields before passing it to existing checks.
+- [x] RED: assert a PID-shaped owner label does not cause the existing port check to deduplicate a distinct listener.
+- [x] GREEN: render the actual PID first in the existing check's explicit PID format.
 
 ## SC-002: Unknown on incomplete evidence
 
@@ -15,6 +17,8 @@ Issue: rfcclub/anima#371
 - [x] GREEN: return fixed sanitized reasons for each unknown class, preserve `LaunchdProbe` with null for failed or malformed output, and reject attribution whenever any configured job PID needed to establish uniqueness is unavailable.
 - [x] RED: assert that an unmatched listener PID remains unknown both alone and alongside the expected owner.
 - [x] GREEN: classify an unmatched PID as unknown, and classify a known foreign listener only when it matches another configured job.
+- [x] RED: assert a truncated launchd record containing a PID cannot supply port ownership.
+- [x] GREEN: make invalid parse results carry no PID and discard them before attribution.
 
 ## SC-003: Read-only and bounded execution
 

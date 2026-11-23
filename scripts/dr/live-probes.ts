@@ -49,7 +49,8 @@ async function bounded(run: CommandRunner, program: string, args: string[], time
 }
 
 /** Keep only root-level job fields so nested launchd details cannot affect the checks. */
-function jobPid(output: string, target: string): { valid: boolean; pid?: number; output?: string } {
+function jobPid(output: string, target: string):
+  { valid: false } | { valid: true; pid?: number; output: string } {
   const lines = output.split("\n");
   if (lines.pop() !== "" || lines.shift()?.trim() !== `${target} = {`) return { valid: false };
   let depth = 1, pid: number | undefined, sawState = false, closed = false;
@@ -77,7 +78,8 @@ function jobPid(output: string, target: string): { valid: boolean; pid?: number;
       pid = Number(match[1]);
     }
   }
-  return { valid: closed && depth === 0 && (sawState || pid !== undefined), pid, output: `${fields.join("\n")}\n` };
+  if (!closed || depth !== 0 || (!sawState && pid === undefined)) return { valid: false };
+  return { valid: true, pid, output: `${fields.join("\n")}\n` };
 }
 
 /** Parse lsof's process/file field format, requiring complete TCP LISTEN records. */
@@ -133,8 +135,10 @@ export async function collectLiveProbes(options: {
   const jobs = await Promise.all(owned.map(async (label) => {
     const target = `gui/${uid}/${label}`;
     const result = await bounded(run, "/bin/launchctl", ["print", target], timeoutMs);
-    const parsed = result?.code === 0 && !result.stderr ? jobPid(result.stdout, target) : { valid: false };
-    return { label, output: parsed.valid ? parsed.output! : null, pid: parsed.pid };
+    const parsed = result?.code === 0 && !result.stderr ? jobPid(result.stdout, target) : { valid: false as const };
+    return parsed.valid
+      ? { label, output: parsed.output, pid: parsed.pid }
+      : { label, output: null, pid: undefined };
   }));
   const observations = await Promise.all(Object.entries(ports).map(async ([portText, owner]): Promise<PortObservation> => {
     const port = Number(portText);
@@ -154,7 +158,7 @@ export async function collectLiveProbes(options: {
       const matches = jobs.filter((job) => job.pid === pid);
       if (matches.length > 1) return unknown("listener ownership ambiguous");
       if (matches.length === 0) return unknown("listener ownership unknown");
-      listeners.push(`${matches[0]!.label} ${pid}`);
+      listeners.push(`pid=${pid} ${matches[0]!.label}`);
     }
     return { kind: "complete", probe: { port, listeners } };
   }));
