@@ -15,6 +15,9 @@ import type { Evidence } from "./consumer";
 import type { PullRequestInfo, ReviewInfo } from "./evidence";
 import type { OutboxEntry, WorkRecord, WorkStore } from "./store";
 
+/** Above start-work jobs (-10): a pull request that is waiting for its author is finished before new work starts. */
+export const REVISE_PRIORITY = 0;
+
 export interface MeshEnqueuer {
   enqueue(input: Record<string, unknown>): Promise<{ id: string }>;
   confirm(jobId: string): Promise<void>;
@@ -305,7 +308,7 @@ export class Reconciler {
         }
       }
       await port.enqueue({
-        type: "revise", target, slots: 1, eligible: reviseEligible, priority: -10, expiresAt,
+        type: "revise", target, slots: 1, eligible: reviseEligible, priority: REVISE_PRIORITY, expiresAt,
         workRef: `${work.workId}.${work.approvedDigest.slice(0, 12)}`,
         idempotencyKey: retry ? entry.key : `revise:work:${work.workId}@${payload.head}`,
       });

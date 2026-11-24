@@ -11,6 +11,130 @@ import type {
 } from "../providers/interface";
 import type { AgentMemoryStore } from "../memory/contract";
 
+/** Upper bound on the characters of DeepDream reports that go into one
+ *  reflection prompt. A report holds one entry per pulse output and grew to
+ *  ~4 MB a day; three of them made a ~13 MB prompt that no model accepts. */
+export const MAX_DEEP_DREAM_PROMPT_CHARS = 80_000;
+/** One entry (a "- [timestamp] text" block) is cut to this many characters. */
+export const MAX_DEEP_DREAM_ENTRY_CHARS = 800;
+/** The crossing injection is cut to this many characters. */
+const MAX_CROSSING_CHARS = 8_000;
+/** A section with less room than this for its entries is dropped. */
+const MIN_SECTION_ENTRY_CHARS = 60;
+
+const ENTRY_STAMP = /^- \[([^\]]+)\]/;
+
+function clip(text: string, max: number): string {
+  return text.length > max ? text.slice(0, Math.max(0, max - 2)) + " …" : text;
+}
+
+/** Group lines into entries: a "- [" line starts one, other non-blank lines
+ *  continue the previous entry. Newest timestamp first; entries without a
+ *  readable timestamp go last, in their original order. */
+function newestFirst(lines: string[]): string[] {
+  const entries: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    if (ENTRY_STAMP.test(line) || entries.length === 0) entries.push(line);
+    else entries[entries.length - 1] += "\n" + line;
+  }
+  const stamped = entries.map((text, index) => {
+    const raw = ENTRY_STAMP.exec(text)?.[1];
+    const time = raw === undefined ? NaN : Date.parse(raw);
+    return { text, index, time };
+  });
+  return stamped
+    .sort((a, b) => {
+      const ta = Number.isNaN(a.time) ? -Infinity : a.time;
+      const tb = Number.isNaN(b.time) ? -Infinity : b.time;
+      return tb - ta || a.index - b.index;
+    })
+    .map((entry) => entry.text);
+}
+
+/**
+ * Bound the DeepDream reports to `budget` characters in total, headings and
+ * markers included. Reports that already fit are returned untouched.
+ * Otherwise each report gets an equal share (reports arrive newest first),
+ * each "## agent" section an equal share of that, and a section keeps its
+ * NEWEST entries (by timestamp, not file order), each cut to
+ * MAX_DEEP_DREAM_ENTRY_CHARS. When even that does not fit, trailing sections
+ * are dropped. Every cut is marked with an "omitted" line, and a final hard
+ * cut guarantees the report never exceeds its share.
+ */
+export function boundDeepDreamReports(
+  reports: string[],
+  budget: number = MAX_DEEP_DREAM_PROMPT_CHARS,
+): string[] {
+  const total = reports.reduce((sum, report) => sum + report.length, 0);
+  if (total <= budget || reports.length === 0) return reports;
+  const perReport = Math.floor(budget / reports.length);
+  return reports.map((report) => boundOneReport(report, perReport));
+}
+
+function boundOneReport(report: string, budget: number): string {
+  if (report.length <= budget) return report;
+  const header: string[] = [];
+  const sections: { heading: string; lines: string[] }[] = [];
+  for (const line of report.split("\n")) {
+    if (line.startsWith("## ")) {
+      sections.push({ heading: line, lines: [] });
+    } else if (sections.length === 0) {
+      header.push(line);
+    } else {
+      sections[sections.length - 1]!.lines.push(line);
+    }
+  }
+  const sectionsMarker = (n: number) => `- […${n} more sections omitted]`;
+  const entriesMarker = (n: number) => `- […${n} more entries omitted]`;
+  const headerText = header.join("\n");
+  const reserve = sectionsMarker(sections.length).length + 2;
+  const available = Math.max(0, budget - headerText.length - reserve);
+  const out: string[] = [headerText];
+  let used = 0;
+  let written = 0;
+  const perSection = Math.floor(available / Math.max(sections.length, 1));
+  for (const section of sections) {
+    const entries = newestFirst(section.lines);
+    // room for entries once the heading and an omitted marker are paid for
+    const room = perSection - section.heading.length - entriesMarker(entries.length).length - 3;
+    if (room < MIN_SECTION_ENTRY_CHARS || used + perSection > available) break;
+    const kept: string[] = [];
+    let spent = 0;
+    for (const entry of entries) {
+      const text = clip(entry, Math.min(MAX_DEEP_DREAM_ENTRY_CHARS, room));
+      if (kept.length > 0 && spent + text.length + 1 > room) break;
+      kept.push(text);
+      spent += text.length + 1;
+    }
+    out.push(section.heading, ...kept);
+    if (kept.length < entries.length) out.push(entriesMarker(entries.length - kept.length));
+    out.push("");
+    used += perSection;
+    written += 1;
+  }
+  if (written < sections.length) out.push(sectionsMarker(sections.length - written));
+  const result = out.join("\n");
+  if (result.length <= budget) return result;
+  const tail = "\n- […report cut to fit]";
+  return result.slice(0, Math.max(0, budget - tail.length)) + tail;
+}
+
+/** Newest beams first, kept while they fit in `budget` characters. */
+function boundBeams(lines: { timestamp: string; line: string }[], budget: number): string[] {
+  const sorted = [...lines].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp) || 0);
+  const kept: string[] = [];
+  let spent = 0;
+  for (const { line } of sorted) {
+    const text = clip(line, MAX_DEEP_DREAM_ENTRY_CHARS);
+    if (kept.length > 0 && spent + text.length + 1 > budget) break;
+    kept.push(text);
+    spent += text.length + 1;
+  }
+  if (kept.length < sorted.length) kept.push(`- […${sorted.length - kept.length} older beams omitted]`);
+  return kept;
+}
+
 export interface LucidDreamOptions {
   roomDir: string;
   /** Shared rooms root — used to look up DeepDream's staging/dreams/<date>.md
@@ -56,7 +180,9 @@ export class LucidDream {
     // from raw beams; only fall back to raw beams when no DeepDream report
     // exists anywhere in the last 3 days. (LucidDream would otherwise
     // ignore the cross-agent linking DeepDream already did.)
-    const dreamReports = await this.readRecentDeepDreamReports(roomsDir, 3);
+    const dreamReports = boundDeepDreamReports(
+      await this.readRecentDeepDreamReports(roomsDir, 3),
+    );
     const beams = dreamReports.length === 0 ? await this.readRecentBeams(roomDir, 3) : [];
 
     // 2. Read crossing context
@@ -249,15 +375,18 @@ export class LucidDream {
           dreamReports.join("\n\n---\n\n"),
       );
     } else if (beams.length > 0) {
-      const beamLines = beams.map(
-        (b) =>
-          `- [${b.timestamp}] (${b.keywords.join(", ")}) ${b.content}`,
+      const beamLines = boundBeams(
+        beams.map((b) => ({
+          timestamp: b.timestamp,
+          line: `- [${b.timestamp}] (${b.keywords.join(", ")}) ${b.content}`,
+        })),
+        MAX_DEEP_DREAM_PROMPT_CHARS,
       );
       sections.push("[Recent Beams]\n" + beamLines.join("\n"));
     }
 
     if (crossingInjection) {
-      sections.push(crossingInjection);
+      sections.push(clip(crossingInjection, MAX_CROSSING_CHARS));
     }
 
     sections.push(

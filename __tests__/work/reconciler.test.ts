@@ -236,7 +236,9 @@ describe("revise cycle", () => {
       const { github, mesh, reconciler } = await poolInReview();
       github.reviewList = [review()];
       await reconciler.tick();
-      expect(mesh.jobs("revise")[0]!.input.eligible).toEqual(["jade@anima"]);
+      const revise = mesh.jobs("revise")[0]!.input;
+      expect(revise.eligible).toEqual(["jade@anima"]);
+      expect(revise.priority).toBeGreaterThan(-10);
     });
   });
 
@@ -247,6 +249,8 @@ describe("revise cycle", () => {
     const revise = mesh.jobs("revise");
     expect(revise.length).toBe(1);
     expect(revise[0]!.input.eligible).toEqual(["finn@anima"]);
+    // a pull request that is waiting for its author outranks new work (start-work jobs use -10), so a begun change is finished first
+    expect(revise[0]!.input.priority).toBeGreaterThan(-10);
     expect(revise[0]!.input.workRef).toBe(`${workId}.d1d1d1d1d1d1`);
     expect(revise[0]!.input.target).toEqual({ repo: "rfcclub/anima", kind: "pr", number: 12, headSha: HEAD1 });
     expect(store.getWork(workId)!.state).toBe("revising");

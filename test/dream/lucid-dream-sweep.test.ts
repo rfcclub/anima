@@ -118,7 +118,7 @@ test("lucid dream sweep starts fresh when previous run completed", async () => {
   expect(capture.requests[0].agent).toBe("cleo");
 });
 
-test("lucid dream sweep logs and stops on a failing agent, without throwing", async () => {
+test("lucid dream sweep logs a failing agent and moves on to the next one, without throwing", async () => {
   const roomsDir = join(tempDir, "rooms");
   seedAgent(roomsDir, "cleo");
   seedAgent(roomsDir, "milo");
@@ -130,15 +130,16 @@ test("lucid dream sweep logs and stops on a failing agent, without throwing", as
     roomsDir,
     resolveProvider: async (roomDir: string) => {
       if (roomDir.endsWith("cleo")) throw new Error("provider unavailable");
-      return makeProvider("should not reach milo", capture);
+      return makeProvider("milo reflects despite cleo failing", capture);
     },
     prompt: "review",
   });
   expect(result).toBeUndefined();
 
-  expect(capture.requests.length).toBe(0);
+  expect(capture.requests.map((r) => r.agent)).toEqual(["milo"]);
 
   const statePath = join(roomsDir, "staging", ".lucid-sweep-state.json");
   const state = JSON.parse(readFileSync(statePath, "utf-8"));
-  expect(state.completedAgents).toEqual([]);
+  expect(state.completed).toBe(true);
+  expect(state.failedAgents).toEqual(["cleo"]);
 });

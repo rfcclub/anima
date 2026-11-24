@@ -17,7 +17,7 @@ import { spawnGh, type GhRunner } from "./github";
 import type { ConsumerLog } from "./consumer";
 import type { MeshJobsPresence } from "./start";
 import type { MeshJobsWorkConfig } from "./config";
-import { WorkStore, type WorkState } from "../work/store";
+import { WorkStore, type WorkRecord, type WorkState } from "../work/store";
 
 const DAY_MS = 24 * 3_600_000;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -40,6 +40,8 @@ export interface PipelineConfig {
   maxIntentPerPoll: number;
   /** Maximum number of pull-request review jobs enqueued in one poll. */
   maxReviewPerPoll: number;
+  /** How many times a start job that expired unclaimed is enqueued again for the same work (default 2). */
+  maxStartRedispatch?: number;
 }
 
 /** `ANIMA_PIPELINE_CONFIG` wins; otherwise the file beside the other secrets. */
@@ -60,7 +62,7 @@ export function loadPipelineConfig(path: string): PipelineConfig | null {
     throw new Error("pipeline config must contain valid JSON");
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("pipeline config must be an object");
-  const known = new Set(["repos", "reviewRepos", "intervalMs", "issueLabel", "intentLabel", "notBefore", "maxPerPoll", "maxIntentPerPoll", "maxReviewPerPoll"]);
+  const known = new Set(["repos", "reviewRepos", "intervalMs", "issueLabel", "intentLabel", "notBefore", "maxPerPoll", "maxIntentPerPoll", "maxReviewPerPoll", "maxStartRedispatch"]);
   for (const key of Object.keys(raw)) if (!known.has(key)) throw new Error(`pipeline config: unknown field ${key}`);
 
   if (!Array.isArray(raw.repos) || raw.repos.length === 0) throw new Error("pipeline config: repos must be a non-empty array");
@@ -107,9 +109,14 @@ export function loadPipelineConfig(path: string): PipelineConfig | null {
     throw new Error("pipeline config: maxReviewPerPoll must be an integer between 1 and 10");
   }
 
+  const maxStartRedispatch = raw.maxStartRedispatch === undefined ? 2 : raw.maxStartRedispatch;
+  if (typeof maxStartRedispatch !== "number" || !Number.isInteger(maxStartRedispatch) || maxStartRedispatch < 0 || maxStartRedispatch > 10) {
+    throw new Error("pipeline config: maxStartRedispatch must be an integer between 0 and 10");
+  }
+
   return {
     repos, reviewRepos, intervalMs, issueLabel, intentLabel, notBefore,
-    maxPerPoll, maxIntentPerPoll, maxReviewPerPoll,
+    maxPerPoll, maxIntentPerPoll, maxReviewPerPoll, maxStartRedispatch,
   };
 }
 
@@ -131,6 +138,10 @@ export interface StartWorkJobInput {
   /** Mesh IDs of the other authors that may carry the work (`work.extraAuthors`). */
   extraAuthorMeshIds?: string[];
   now: number;
+  /** Re-dispatch of a work that already exists: the job carries that work's id so the claim finds it. */
+  workId?: string;
+  /** 0 (default) is the first job for the approval; each later attempt gets its own idempotency key. */
+  attempt?: number;
 }
 
 /** Same shape `mesh work` posts to the gateway, including the work reference the work runtime parses. */
@@ -141,9 +152,9 @@ export function buildStartWorkJob(input: StartWorkJobInput): Record<string, unkn
     slots: 1,
     eligible: [input.authorMeshId, ...(input.extraAuthorMeshIds ?? [])],
     priority: -10,
-    workRef: `w${randomBytes(5).toString("hex")}.${input.digest}`,
+    workRef: `${input.workId ?? `w${randomBytes(5).toString("hex")}`}.${input.digest}`,
     expiresAt: input.now + DAY_MS,
-    idempotencyKey: `work:${input.repo}#${input.issue}:${input.digest}`,
+    idempotencyKey: `work:${input.repo}#${input.issue}:${input.digest}${input.attempt ? `:r${input.attempt}` : ""}`,
   };
 }
 
@@ -184,11 +195,95 @@ interface GitHubIssue {
 export interface IssueDispatchDeps {
   config: PipelineConfig;
   work: MeshJobsWorkConfig;
-  store: Pick<WorkStore, "listWorks">;
-  mesh: Pick<MeshJobsClient, "enqueue">;
+  store: Pick<WorkStore, "listWorks"> & Partial<Pick<WorkStore, "listEvents" | "appendEvent" | "setState">>;
+  mesh: Pick<MeshJobsClient, "enqueue"> & Partial<Pick<MeshJobsClient, "getJob">>;
   gh: GhRunner;
   log: ConsumerLog;
   now?: () => number;
+}
+
+/**
+ * Whether a start job can no longer run: it expired with no live claim (a claim lease can outlast the job's expiry,
+ * and re-dispatching then would start a second writer), or every worker it is eligible for already holds a failed or
+ * reported claim on it, which the queue never lets them claim again. An unreadable job is not dead (fail closed).
+ */
+async function startJobIsDead(
+  mesh: IssueDispatchDeps["mesh"], job: { id: string; state: string }, pinnedAuthor?: string,
+): Promise<boolean> {
+  if (job.state !== "expired" && job.state !== "queued") return false;
+  if (!mesh.getJob) return false;
+  let details: Awaited<ReturnType<NonNullable<typeof mesh.getJob>>>;
+  try {
+    details = await mesh.getJob(job.id);
+  } catch {
+    return false;
+  }
+  if (details.claims.some((claim) => claim.state === "active")) return false;
+  if (job.state === "expired") return true;
+  const eligible = details.eligible ?? [];
+  if (pinnedAuthor) {
+    const pinned = pinnedAuthor.toLowerCase();
+    if (details.eligible && !eligible.some((worker) => worker.toLowerCase() === pinned)) return true;
+    return details.claims.some((claim) => claim.worker.toLowerCase() === pinned &&
+      (claim.state === "failed" || claim.state === "reported"));
+  }
+  return eligible.length > 0 && eligible.every((worker) =>
+    details.claims.some((claim) => claim.worker === worker && (claim.state === "failed" || claim.state === "reported")));
+}
+
+const REDISPATCH_EVENT = "start-job-redispatched";
+
+/**
+ * A work that was created for a start job but never ran (`queued`, no session) is orphaned when that job expires
+ * unclaimed: the work stays queued and every later poll skips the issue. Returns true when the issue is handled here
+ * (an orphan was re-dispatched, blocked or is still waiting on a live job) and must not be dispatched again.
+ */
+async function recoverQueuedWork(
+  deps: IssueDispatchDeps, repo: string, issue: number, digest: string, record: WorkRecord, now: () => number,
+): Promise<boolean> {
+  const { config, work, store, mesh, log } = deps;
+  const { listEvents, appendEvent, setState } = store;
+  if (!listEvents || !appendEvent || !setState) {
+    log("info", "issue dispatch skipped: work already active", { repo, issue });
+    return false;
+  }
+  const attempts = listEvents.call(store, record.workId).filter((event) => event.kind === REDISPATCH_EVENT).length;
+  const max = config.maxStartRedispatch ?? 2;
+  const authorMeshId = record.author === work.author
+    ? work.authorMeshId
+    : work.extraAuthors?.find((author) => author.agent === record.author)?.meshId;
+  if (!authorMeshId) {
+    log("error", "start job recovery skipped: work author has no mesh ID", { repo, issue, workId: record.workId });
+    return false;
+  }
+  const input = { repo, issue, digest, authorMeshId, now: now(), workId: record.workId };
+  try {
+    // A replay of the current attempt's key returns the existing job, so its state tells whether it can still run.
+    const current = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts }));
+    if (!(await startJobIsDead(mesh, current, authorMeshId))) {
+      log("info", "issue dispatch skipped: work already active", { repo, issue });
+      return false;
+    }
+    // The remote reads above can take a while: act only if the work is still the one that was decided on.
+    const fresh = store.listWorks().find((w) => w.workId === record.workId);
+    if (!fresh || fresh.state !== "queued" || fresh.sessionsUsed !== 0 || fresh.generation !== record.generation) {
+      log("info", "start job recovery skipped: the work changed while the job was read", { repo, issue, workId: record.workId });
+      return false;
+    }
+    if (attempts >= max) {
+      setState.call(store, record.workId, "blocked", `start job expired ${attempts + 1} times without running`);
+      log("info", "work blocked: start job expired", { repo, issue, workId: record.workId, attempts: attempts + 1 });
+      return false;
+    }
+    const next = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts + 1 }));
+    // Charged only once the replacement job was accepted, so a failing gateway does not use the attempts up.
+    appendEvent.call(store, record.workId, REDISPATCH_EVENT, { attempt: attempts + 1, expiredJob: current.id, jobId: next.id });
+    log("info", "start job re-dispatched", { repo, issue, workId: record.workId, attempt: attempts + 1, jobId: next.id });
+    return next.state === "queued" || next.state === "reported";
+  } catch (error) {
+    log("error", "start job recovery failed", { repo, issue, error: errorText(error) });
+    return false;
+  }
 }
 
 /** One poll. Returns the number of jobs the gateway accepted (a replay counts as zero for logging). */
@@ -227,8 +322,19 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       const digest = issueDigest(issue.body);
       const records = store.listWorks().filter((record) =>
         record.repo.toLowerCase() === repo.toLowerCase() && record.issue === issue.number);
-      if (records.some((record) => ACTIVE_STATES.has(record.state))) {
-        log("info", "issue dispatch skipped: work already active", { repo, issue: issue.number });
+      let open = records.filter((record) => ACTIVE_STATES.has(record.state));
+      // A work that never started and was approved for older text is superseded by the edited issue.
+      for (const stale of open.filter((r) => r.state === "queued" && r.sessionsUsed === 0 && r.approvedDigest.toLowerCase() !== digest)) {
+        if (!store.setState) continue;
+        store.setState(stale.workId, "blocked", "superseded: the approved issue text changed before the work started");
+        log("info", "queued work superseded by a new approval", { repo, issue: issue.number, workId: stale.workId });
+        open = open.filter((r) => r.workId !== stale.workId);
+      }
+      if (open.length > 0) {
+        const orphan = open.find((r) => r.state === "queued" && r.sessionsUsed === 0 && r.approvedDigest.toLowerCase() === digest);
+        if (orphan && open.length === 1) {
+          if (await recoverQueuedWork(deps, repo, issue.number, digest, orphan, now)) dispatched += 1;
+        } else log("info", "issue dispatch skipped: work already active", { repo, issue: issue.number });
         continue;
       }
       // Any terminal work for the same approval digest is final: accepted, blocked, or otherwise. An edited
@@ -238,10 +344,23 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         continue;
       }
       try {
-        const job = await mesh.enqueue(buildStartWorkJob({
+        const base = {
           repo, issue: issue.number, digest, authorMeshId: work.authorMeshId,
           extraAuthorMeshIds: (work.extraAuthors ?? []).map((extra) => extra.meshId), now: now(),
-        }));
+        };
+        let job = await mesh.enqueue(buildStartWorkJob(base));
+        // A replay of an approval whose job expired unclaimed (no work exists yet to recover): try the next attempt
+        // key, bounded, so the approval is not stuck behind a dead job.
+        const maxAttempts = config.maxStartRedispatch ?? 2;
+        let dead = await startJobIsDead(mesh, job);
+        for (let attempt = 1; dead && attempt <= maxAttempts; attempt += 1) {
+          job = await mesh.enqueue(buildStartWorkJob({ ...base, attempt }));
+          dead = await startJobIsDead(mesh, job);
+        }
+        if (dead) {
+          log("info", "issue dispatch stopped: every start job for this approval is dead", { repo, issue: issue.number, digest });
+          continue;
+        }
         if ((job.state === "queued" || job.state === "reported") && freshJob(job, startedAt)) dispatched += 1;
         log("info", "issue dispatched", { repo, issue: issue.number, jobId: job.id, digest });
       } catch (error) {

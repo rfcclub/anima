@@ -9,7 +9,21 @@ export interface LucidDreamSweepState {
   startedAt: string;
   completedAgents: string[];
   currentAgent: string;
+  /** Agents whose reflection failed in this run; the run moves on and they are retried by the next run. */
+  failedAgents?: string[];
+  /** Consecutive failing runs per agent as of the previous run (carried so the next streak can be computed). */
+  previousStreak?: Record<string, number>;
 }
+
+/**
+ * An unfinished run older than this is dropped instead of resumed. It must be clearly shorter than the weekly
+ * schedule period: the next scheduled slot fires about a week after an interrupted run, and that slot must always
+ * start fresh and retry every agent, not resume or skip depending on a few minutes of timer jitter. Resuming is only
+ * meant for a prompt manual re-run on the same day.
+ */
+const STALE_RUN_MS = 2 * 24 * 3600 * 1000;
+/** Warn when an agent has failed to reflect this many runs in a row. */
+const STREAK_WARN_AT = 2;
 
 export interface LucidDreamSweepOptions {
   roomsDir: string;
@@ -41,6 +55,7 @@ export class LucidDreamSweep {
       await mkdir(stagingDir, { recursive: true });
       const statePath = join(stagingDir, ".lucid-sweep-state.json");
 
+      const previousStreak = await this.loadStreak(statePath);
       let state = await this.loadState(statePath);
       const agents = await this.listAgents(roomsDir);
 
@@ -49,24 +64,27 @@ export class LucidDreamSweep {
           startedAt: new Date().toISOString(),
           completedAgents: [],
           currentAgent: agents[0] || "",
+          failedAgents: [],
+          previousStreak,
         };
       }
+      state.failedAgents ??= [];
 
-      const completedSet = new Set(state.completedAgents);
+      const completedSet = new Set([...state.completedAgents, ...state.failedAgents]);
       const lucidDream = new LucidDream();
 
       for (const agent of agents) {
         if (completedSet.has(agent)) continue;
         state.currentAgent = agent;
-        await this.saveState(statePath, state);
+        await this.checkpoint(statePath, state, agent);
 
+        let reflected = false;
         try {
           const roomDir = join(roomsDir, agent);
           const provider = await resolveProvider(roomDir);
           const memoryStore = await resolveMemoryStore?.(roomDir);
           await lucidDream.run({ roomDir, roomsDir, agentName: agent, userPrompt: prompt, provider, memoryStore });
-          state.completedAgents.push(agent);
-          await this.saveState(statePath, state);
+          reflected = true;
         } catch (err) {
           console.error(
             JSON.stringify({
@@ -77,14 +95,42 @@ export class LucidDreamSweep {
               error: String(err),
             }),
           );
-          break; // stop processing — resume from this agent next run
         }
+        // One failing agent must not block the rest of the colony (a single provider error used to stall the
+        // sweep for weeks): record the outcome and move on; the next weekly run retries failed agents.
+        (reflected ? state.completedAgents : state.failedAgents).push(agent);
+        // A checkpoint write error is not a reflection outcome: it is reported on its own and never turns a
+        // finished reflection into a second (failed) record for the same agent.
+        await this.checkpoint(statePath, state, agent);
       }
 
-      if (agents.length > 0 && state.completedAgents.length === agents.length) {
+      // Judge completion against the CURRENT roster: a persisted outcome for an agent that has since been removed must
+      // neither block finalization nor appear in the failure summary.
+      const outcomes = new Set([...state.completedAgents, ...state.failedAgents]);
+      const failedNow = state.failedAgents.filter((a) => agents.includes(a));
+      if (agents.length > 0 && agents.every((a) => outcomes.has(a))) {
+        const failureStreak: Record<string, number> = {};
+        for (const agent of failedNow) {
+          failureStreak[agent] = (state.previousStreak?.[agent] ?? 0) + 1;
+          if (failureStreak[agent] >= STREAK_WARN_AT) {
+            console.error(
+              JSON.stringify({
+                level: "warn",
+                ts: new Date().toISOString(),
+                msg: "lucid dream sweep: agent has not reflected for consecutive runs",
+                agent,
+                runs: failureStreak[agent],
+              }),
+            );
+          }
+        }
         await writeFile(
           statePath,
-          JSON.stringify({ completed: true, completedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify(
+            { completed: true, completedAt: new Date().toISOString(), failedAgents: failedNow, failureStreak },
+            null,
+            2,
+          ),
           "utf-8",
         );
       }
@@ -94,6 +140,26 @@ export class LucidDreamSweep {
           level: "error",
           ts: new Date().toISOString(),
           msg: "lucid dream sweep run failed",
+          error: String(err),
+        }),
+      );
+    }
+  }
+
+  /**
+   * Persist progress. A write error here is a checkpoint problem, reported on its own: it must never abort the sweep
+   * or be mistaken for a reflection outcome (the in-memory state still carries the run to its end).
+   */
+  private async checkpoint(statePath: string, state: LucidDreamSweepState, agent: string): Promise<void> {
+    try {
+      await this.saveState(statePath, state);
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          ts: new Date().toISOString(),
+          msg: "lucid dream sweep checkpoint write failed",
+          agent,
           error: String(err),
         }),
       );
@@ -129,9 +195,24 @@ export class LucidDreamSweep {
       ) {
         return null;
       }
+      // An unparseable or future start time (hand-edited state, clock stepped back) is as unusable as a stale one.
+      const startedMs = Date.parse(parsed.startedAt);
+      if (!Number.isFinite(startedMs) || startedMs > Date.now() || Date.now() - startedMs > STALE_RUN_MS) return null;
       return parsed as LucidDreamSweepState;
     } catch {
       return null; // corrupt or unreadable — start fresh
+    }
+  }
+
+  /** Consecutive failing runs per agent recorded by the previous run (empty when unknown or unreadable). */
+  private async loadStreak(statePath: string): Promise<Record<string, number>> {
+    try {
+      if (!existsSync(statePath)) return {};
+      const parsed = JSON.parse(await readFile(statePath, "utf-8"));
+      const raw = parsed.completed ? parsed.failureStreak : parsed.previousStreak;
+      return raw && typeof raw === "object" ? (raw as Record<string, number>) : {};
+    } catch {
+      return {};
     }
   }
 
