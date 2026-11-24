@@ -94,6 +94,61 @@ test("AJ-9 a timed-out turn's late result does not finish the conversation; the 
   expect(t.finished[0]!.content).toContain("timed out");
 });
 
+test("SC-1 a mesh timeout reaches the running turn and fences its late result", async () => {
+  const controller = new AbortController();
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let received: AbortSignal | undefined;
+  let finished = 0;
+  const handlers = createMeshSessionHandlers({
+    runTurn: async (...args: unknown[]) => {
+      received = args[3] as AbortSignal | undefined;
+      started();
+      await gate;
+      return "late answer";
+    },
+    conversation: () => ({
+      answered: async () => false,
+      finish: async () => { finished += 1; return "replied"; },
+    }),
+    markReplied: () => {},
+  });
+  const pending = handlers.executeSession({ candidate, grant, source: source(), signal: controller.signal });
+  await running;
+  controller.abort();
+  release();
+  const effect = await pending;
+  expect(received).toBe(controller.signal);
+  expect(received?.aborted).toBe(true);
+  expect(effect).toBe("mesh-session:a2a:conv-9:late");
+  expect(finished).toBe(0);
+});
+
+test("SC-2 aborting during conversation lookup never starts the turn", async () => {
+  const controller = new AbortController();
+  let release: (answered: boolean) => void = () => {};
+  let entered: () => void = () => {};
+  const lookupStarted = new Promise<void>((resolve) => { entered = resolve; });
+  let turns = 0;
+  const handlers = createMeshSessionHandlers({
+    runTurn: async () => { turns += 1; return "late answer"; },
+    conversation: () => ({
+      answered: () => { entered(); return new Promise<boolean>((resolve) => { release = resolve; }); },
+      finish: async () => "replied",
+    }),
+    markReplied: () => {},
+  });
+  const pending = handlers.executeSession({ candidate, grant, source: source(), signal: controller.signal });
+  await lookupStarted;
+  controller.abort();
+  release(false);
+  const effect = await pending;
+  expect(effect).toBe("mesh-session:a2a:conv-9:late");
+  expect(turns).toBe(0);
+});
+
 test("AJ-9 the failure notice waits for an in-flight answer, and is not sent when that answer committed", async () => {
   const order: string[] = [];
   let commit: () => void = () => {};

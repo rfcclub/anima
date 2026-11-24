@@ -300,6 +300,44 @@ describe("TurnRunner", () => {
     });
   });
 
+  test("abort during dispatch after the tool event starts no tool", async () => {
+    const controller = new AbortController();
+    await fixture(() => response("tool", [call("a")]), async (ctx, requests) => {
+      ctx.signal = controller.signal;
+      let executions = 0;
+      ctx.execute = async () => { executions += 1; return "unexpected"; };
+      const runner = new TurnRunner().run(ctx);
+      let event = await runner.next();
+      while (!event.done && event.value.type !== "tool-call") event = await runner.next();
+      expect(event.done).toBe(false);
+      controller.abort();
+      for await (const _event of runner) { /* drain the aborted turn */ }
+      expect(executions).toBe(0);
+      expect(requests).toHaveLength(1);
+    });
+  });
+
+  test("abort during dispatch while permission is pending starts no tool", async () => {
+    const controller = new AbortController();
+    await fixture(() => response("tool", [call("a")]), async (ctx, requests) => {
+      ctx.signal = controller.signal;
+      let entered: () => void = () => {};
+      let release: () => void = () => {};
+      const checking = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let executions = 0;
+      ctx.guard = async () => { entered(); await gate; return { allow: true }; };
+      ctx.execute = async () => { executions += 1; return "unexpected"; };
+      const pending = collect(ctx);
+      await checking;
+      controller.abort();
+      release();
+      await pending;
+      expect(executions).toBe(0);
+      expect(requests).toHaveLength(1);
+    });
+  });
+
   test("response runner refuses a streaming provider as runToolLoop did", async () => {
     await fixture(() => response("unused"), async (ctx) => {
       ctx.provider = { name: "fixture", query: async function* () { yield { type: "text", content: "unexpected" }; } };

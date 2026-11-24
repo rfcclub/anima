@@ -1,6 +1,7 @@
 // Gate-mode mesh sessions: run the whole request and answer its sender.
 import type { MeshSource } from "./activation-store";
 import type { MeshFailureInput, MeshSessionInput } from "./mesh-activation-runtime";
+import type { ChannelHandler } from "../channels/types";
 
 export const NO_ANSWER = "(the agent finished without an answer)";
 
@@ -16,10 +17,19 @@ export interface MeshConversationPort {
 }
 
 export interface MeshSessionHandlerDeps {
-  runTurn(agentId: string, message: string, channelId: string): Promise<string>;
+  runTurn(agentId: string, message: string, channelId: string, signal: AbortSignal): Promise<string>;
   /** The agent's own conversations: each agent answers with its own registration credential. */
   conversation(agentId: string): MeshConversationPort;
   markReplied(agentId: string, sourceRef: string): void;
+}
+
+/** The shared adapter used by the server and the cancellation integration test. */
+export function createMeshChannelTurn(channels: ReadonlyMap<string, ChannelHandler>): MeshSessionHandlerDeps["runTurn"] {
+  return async (agentId, message, channelId, signal) => {
+    const channel = channels.get(agentId);
+    if (!channel) throw new Error(`no mesh session channel for ${agentId}`);
+    return (await channel.handleMessage({ agentName: agentId, message, channelId, signal })).text;
+  };
 }
 
 /** Only requests that came through the A2A inbox have a conversation to answer; legacy `mesh:` rows have none. */
@@ -55,7 +65,8 @@ export function createMeshSessionHandlers(deps: MeshSessionHandlerDeps) {
         deps.markReplied(agentId, sourceRef);
         return `mesh-session:${sourceRef}:replayed`;
       }
-      const text = await deps.runTurn(agentId, source ? formatMeshRequest(source) : candidate.summary, `mesh:${grant.leaseId}`);
+      if (signal.aborted) return `mesh-session:${sourceRef}:late`;
+      const text = await deps.runTurn(agentId, source ? formatMeshRequest(source) : candidate.summary, `mesh:${grant.leaseId}`, signal);
       if (signal.aborted) return `mesh-session:${sourceRef}:late`;
       if (conversationId) {
         const outcome = await serialized(sourceRef, () => deps.conversation(agentId).finish(conversationId, text.length > 0 ? text : NO_ANSWER, signal));

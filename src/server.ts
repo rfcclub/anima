@@ -58,7 +58,7 @@ import { closeOpenSessions, resolveSessionStore } from "./session/close-open-ses
 import { parseActivationMode } from "./continuity/activation-config";
 import { MeshActivationRuntime } from "./continuity/mesh-activation-runtime";
 import { getOrCreateActivationLayer } from "./continuity/activation-layer";
-import { createMeshSessionHandlers } from "./continuity/mesh-session-handlers";
+import { createMeshChannelTurn, createMeshSessionHandlers } from "./continuity/mesh-session-handlers";
 import { JsonlGardenEventStore } from "./garden/event-store";
 import { createGardenEvent } from "./garden/events";
 import { createEliContinuityService } from "./identity-runtime/eli-continuity-service";
@@ -1193,11 +1193,7 @@ if (import.meta.main) {
                     await handlers.onFailed(input);
                   },
                 }))(createMeshSessionHandlers({
-                  runTurn: async (agentId, message, channelId) => {
-                    const channel = meshChannels.get(agentId);
-                    if (!channel) throw new Error(`no mesh session channel for ${agentId}`);
-                    return (await channel.handleMessage({ agentName: agentId, message, channelId })).text;
-                  },
+                  runTurn: createMeshChannelTurn(meshChannels),
                   conversation: conversationFor,
                   markReplied: (agentId, sourceRef) => activationStore.markMeshReplied(agentId, sourceRef, Date.now()),
                 })),

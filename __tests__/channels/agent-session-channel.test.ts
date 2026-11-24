@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderError, type Provider, type ProviderResponse, type ProviderRequest } from "../../src/providers/interface";
@@ -9,6 +9,11 @@ import { CartridgeLoader } from "../../src/cartridge/loader";
 import { CartridgeRegistry } from "../../src/cartridge/registry";
 import { SessionStore } from "../../src/memory/session-store";
 import type { Store, JsonlEvent } from "../../src/memory/jsonl-store";
+import { NullMemoryAdapter } from "../../src/memory/null-adapter";
+import type { LoadedAgent } from "../../src/agents/loader";
+import { createMeshChannelTurn, createMeshSessionHandlers } from "../../src/continuity/mesh-session-handlers";
+import type { ActivationCandidate } from "../../src/continuity/activation-candidate";
+import type { BudgetGrant } from "../../src/continuity/activation-budget";
 
 function makeTempDirs() {
   const base = mkdtempSync(join(tmpdir(), "agent-session-channel-"));
@@ -114,6 +119,74 @@ test("handleMessage wires cartridges into AgentSession and emits activation even
   rmSync(agentRoot, { recursive: true, force: true });
   rmSync(roomsDir, { recursive: true, force: true });
   rmSync(stateDir, { recursive: true, force: true });
+});
+
+test("SC-3 aborting a mesh channel turn prevents a delayed tool and another provider call", async () => {
+  const { base, roomsDir } = makeTempDirs();
+  const agentName = "mesh-abort-test";
+  const marker = join(base, "after-abort.txt");
+  const controller = new AbortController();
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const providerStarted = new Promise<void>((resolve) => { started = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requests: ProviderRequest[] = [];
+  const provider: Provider = {
+    name: "synthetic",
+    async query(req) {
+      requests.push(req);
+      if (requests.length > 1) return { message: { role: "assistant", content: "finished" } };
+      started();
+      await gate;
+      return {
+        message: { role: "assistant", content: "" },
+        tool_calls: [{ id: "write-late", name: "write", arguments: JSON.stringify({ path: marker, content: "late" }) }],
+      };
+    },
+  };
+  const channel = new AgentSessionChannel({ roomsDir, provider });
+  (channel as any).store = fakeStore().store;
+  (channel as any).cartridgeRegistry = new CartridgeRegistry({
+    projectRoot: base, globalRoot: base, colonyRoot: base,
+  });
+  const agent: LoadedAgent = {
+    name: agentName, label: "Test Agent", roomDir: base, geneContent: "Test instructions.",
+    sessionContextFiles: [], additionalContent: [], memoryAdapter: new NullMemoryAdapter(),
+    config: {
+      identity: { name: agentName, label: "Test Agent" },
+      provider: { type: "synthetic" },
+      policy: { allowedRoots: [base], readOnlyRoots: [], allowedTools: ["write"] },
+      session: { defaultMode: "edit", autoModeOptIn: false, compactThreshold: 60000 },
+      boot: { gene: "gene.md", sessionContext: [] },
+    },
+  };
+  (channel as any).agentCache.set(agentName, agent);
+  const handlers = createMeshSessionHandlers({
+    runTurn: createMeshChannelTurn(new Map([[agentName, channel]])),
+    conversation: () => ({
+      answered: async () => false,
+      finish: async () => "replied",
+    }),
+    markReplied: () => {},
+  });
+  try {
+    const pending = handlers.executeSession({
+      candidate: { agentId: agentName, sourceRef: "mesh:test", summary: "test cancellation" } as ActivationCandidate,
+      grant: { leaseId: "test" } as BudgetGrant,
+      signal: controller.signal,
+    });
+    await providerStarted;
+    controller.abort();
+    release();
+    const effect = await pending;
+    expect(existsSync(marker)).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.signal).toBe(controller.signal);
+    expect(effect).toBe("mesh-session:mesh:test:late");
+  } finally {
+    release();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 describe("AgentSessionChannel provider fallback", () => {
