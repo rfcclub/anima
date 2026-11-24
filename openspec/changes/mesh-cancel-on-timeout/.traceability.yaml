@@ -31,3 +31,15 @@ scenarios:
     test: __tests__/providers/router-cancellation.test.ts
     assertion: 'SC-8 abort does not retry or mark a provider failed in the mode map'
     status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-9-cancellation-during-success-bookkeeping
+    test: __tests__/providers/router-cancellation-bookkeeping.test.ts
+    assertion: 'SC-9 abort during success bookkeeping neither resets the breaker nor returns a response'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-10-cancellation-during-session-recall
+    test: __tests__/agents/session-preparation-cancellation.test.ts
+    assertion: 'SC-10 abort during recall prevents MCP startup and clears the active session'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-11-cancellation-during-mcp-startup
+    test: test/mcp-manager-cancellation.test.ts
+    assertion: 'SC-11 abort during discovery stops the first MCP client and starts no later client'
+    status: passing

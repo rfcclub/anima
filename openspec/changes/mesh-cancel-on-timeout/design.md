@@ -6,6 +6,10 @@ The mesh runtime already creates an AbortSignal and uses it to fence late replie
 
 The model router must treat request cancellation as cancellation, not a provider failure. Check before every backend attempt and after it settles, and give an aborted request precedence over retryable provider errors. Do not retry or change breaker state because of an abort.
 
+The fallback chain also checks cancellation across asynchronous success bookkeeping. Breaker success bookkeeping checks the signal after reading state and before resetting it; the router checks again before returning. An unrelated bookkeeping failure remains best-effort.
+
+Session preparation checks cancellation before it starts and again before launching MCP clients. MCP startup receives the same signal, checks it between asynchronous startup and discovery steps, and initiates cleanup of already-started clients as soon as the signal fires. A startup operation that ignores both the signal and client shutdown can still delay settlement. The normal turn cleanup remains responsible for managers returned by successful preparation.
+
 ## Test Strategy
 - SC-1: A mesh handler passes the exact signal to a pending cooperative turn; abort fences its late result.
 - SC-2: Aborting during the asynchronous conversation lookup prevents a new turn.
@@ -15,6 +19,9 @@ The model router must treat request cancellation as cancellation, not a provider
 - SC-6: Aborting during an asynchronous permission check does not start that tool.
 - SC-7: A cancelled fallback-chain request does not retry, use a fallback, or mark a provider failed.
 - SC-8: A cancelled mode-map request does not use a fallback or mark a provider failed.
+- SC-9: Aborting during a breaker state read neither resets the breaker nor returns the late response.
+- SC-10: An abort during session memory recall prevents MCP startup and leaves no active session.
+- SC-11: An abort during MCP startup or discovery prevents later clients from starting and stops clients already started.
 - Router regressions: a cancelled request does not fall through on an authorization error; non-cancelled HTTP 401 and 403 responses retain the existing fallback behavior in both routing modes.
 
 ## Rollback

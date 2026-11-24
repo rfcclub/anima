@@ -123,8 +123,9 @@ export class ModeRouter {
             this.breaker.recordSuccess(provider.id);
             console.log(`[breaker] ${provider.id} half-open → closed`);
           } else {
-            await this.breaker.recordModelSuccess(provider.id);
+            await this.breaker.recordModelSuccess(provider.id, req.signal);
           }
+          req.signal?.throwIfAborted();
           return result;
         } catch (error) {
           req.signal?.throwIfAborted();

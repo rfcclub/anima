@@ -34,3 +34,15 @@ A mesh request MUST propagate its abort signal to the agent session. An abort MU
 #### Scenario: SC-8 Cancellation in a mode map
 - **WHEN** a backend reports an error caused by request cancellation in mode-map routing
 - **THEN** subsequent backend calls = 0 and failure records caused by cancellation = 0.
+
+#### Scenario: SC-9 Cancellation during success bookkeeping
+- **WHEN** cancellation occurs during the breaker state read after a provider response
+- **THEN** breaker resets = 0 and the router rejects the cancelled request.
+
+#### Scenario: SC-10 Cancellation during session recall
+- **WHEN** cancellation occurs while session preparation awaits memory recall
+- **THEN** MCP starts = 0 and the session is not active.
+
+#### Scenario: SC-11 Cancellation during MCP startup
+- **WHEN** cancellation occurs while a client starts or discovers tools
+- **THEN** later clients started = 0 and already-started clients are stopped.

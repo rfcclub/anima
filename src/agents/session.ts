@@ -81,7 +81,7 @@ function trimPriorHistory(prior: ProviderMessage[], budget = PRIOR_HISTORY_TOKEN
 }
 
 type McpManagerLike = {
-  start(): Promise<void>;
+  start(signal?: AbortSignal): Promise<void>;
   stop(): Promise<void>;
   getTools(): ProviderTool[];
   callTool(name: string, input: Record<string, unknown>): Promise<unknown>;
@@ -510,6 +510,19 @@ export class AgentSession {
   }
 
   private async prepareTurn(options: RunAgentSessionOptions): Promise<PreparedTurnContext> {
+    options.signal?.throwIfAborted();
+    try {
+      return await this.prepareTurnInner(options);
+    } catch (error) {
+      if (options.signal?.aborted) {
+        AgentSession.activeSet.delete(options.agent.name);
+        AgentSession.notifySessionEnd(options.agent.name);
+      }
+      throw error;
+    }
+  }
+
+  private async prepareTurnInner(options: RunAgentSessionOptions): Promise<PreparedTurnContext> {
     if (currentToolBoundary() && (this.provider.sharedSafe !== true || (!options.disableTools && options.agent.config.mcp?.servers.length))) {
       throw Error("web chat isolation requires an explicitly safe API carrier without MCP/native tools");
     }
@@ -876,10 +889,18 @@ export class AgentSession {
       body: options.message,
     });
 
+    options.signal?.throwIfAborted();
     const mcpManager = !options.disableTools && options.agent.config.mcp?.servers.length
       ? this.mcpManagerFactory(options.agent.config.mcp.servers)
       : undefined;
-    await mcpManager?.start();
+    try {
+      options.signal?.throwIfAborted();
+      await mcpManager?.start(options.signal);
+      options.signal?.throwIfAborted();
+    } catch (error) {
+      await mcpManager?.stop();
+      throw error;
+    }
 
     const tools = options.disableTools ? [] : buildToolDefinitions(options.agent.config.policy.allowedTools ?? []);
     const mcpTools = mcpManager?.getTools() ?? [];

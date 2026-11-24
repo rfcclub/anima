@@ -7,6 +7,10 @@
 - [x] Pass the signal through `src/continuity/mesh-session-handlers.ts`, the gate-mode `runTurn` adapter in `src/server.ts`, `src/channels/types.ts`, and `src/channels/agent-session-channel.ts`. Check abort before starting the turn and retain the reply fence.
 - [x] Run the relevant handler, channel, and turn-runner tests, typecheck and build; record the RED and GREEN results.
 - [x] Run graphify update, Orca verify, gate-plan and gate-code, and preserve their warnings and receipts.
+- [x] Add failing tests for abort during asynchronous success bookkeeping; check the signal before a breaker reset and before the router returns.
+- [x] Add a failing isolated session test for abort during memory recall; stop before MCP startup and clear the active-session state.
+- [x] Add failing MCP manager tests for abort during startup and discovery; do not start later clients and stop those already started.
+- [x] Run the focused tests, typecheck, build, graphify update, Orca verify, gate-plan and gate-code; preserve warnings and receipts.
 - [ ] Obtain independent review of the exact head before any merge or live rollout.
 
 ## Acceptance criteria mapping
@@ -18,3 +22,6 @@
 - SC-6: cancellation during an asynchronous permission check prevents execution.
 - SC-7: cancellation stops retries and breaker changes in the fallback chain.
 - SC-8: cancellation stops fallbacks and breaker changes in the mode map.
+- SC-9: cancellation during success bookkeeping prevents the breaker reset and discards the response.
+- SC-10: cancellation during recall prevents MCP startup and releases the active session.
+- SC-11: cancellation during MCP startup or discovery prevents later starts and stops already-started clients.
