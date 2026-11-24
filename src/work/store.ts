@@ -805,14 +805,15 @@ export class WorkStore {
     return (this.db.query("SELECT * FROM work_outbox WHERE work_id = ? ORDER BY created_at, rowid").all(workId) as Row[]).map(toOutbox);
   }
 
-  /** Save the effective Mesh key before an outbound review so a retry uses the same job. */
-  setPendingReviewDispatchKey(key: string, dispatchKey: string): boolean {
+  /** Save the effective Mesh key only if no competing sender has advanced this pending row. */
+  setPendingReviewDispatchKey(key: string, dispatchKey: string, expectedDispatchKey: string | undefined): boolean {
     const row = this.db.query("SELECT * FROM work_outbox WHERE key = ? AND purpose = 'review' AND status = 'pending'").get(key) as Row | null;
     if (!row) return false;
     const payload = toOutbox(row).payload as Record<string, unknown>;
+    if (payload.dispatchKey !== expectedDispatchKey) return false;
     return this.db.run(
-      "UPDATE work_outbox SET payload_json = ? WHERE key = ? AND purpose = 'review' AND status = 'pending'",
-      [JSON.stringify(redact({ ...payload, dispatchKey })), key],
+      "UPDATE work_outbox SET payload_json = ? WHERE key = ? AND purpose = 'review' AND status = 'pending' AND payload_json = ?",
+      [JSON.stringify(redact({ ...payload, dispatchKey })), key, row.payload_json as string],
     ).changes > 0;
   }
 

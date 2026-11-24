@@ -8,6 +8,7 @@
  * head may need a new review key when its earlier Mesh job can no longer run.
  */
 
+import { createHash } from "node:crypto";
 import { baseForRepo } from "./config";
 import { anyCurrentChangeRequest, checksGreen, decideAcceptance, readReviews, verifyPullRequest, type WorkGitHub } from "./evidence";
 import type { MeshJobDetails } from "../mesh-jobs/client";
@@ -80,8 +81,17 @@ export class Reconciler {
     if (options.revise && work.prHead && pr.headSha.toLowerCase() === work.prHead.toLowerCase()) {
       return { ok: false, reason: "no new commit since the review that asked for changes" };
     }
-    if (!store.recordReviewHead(work, { number: pr.number, head: pr.headSha, url: pr.url }, false)) {
-      return { ok: false, reason: "work changed while reading the pull request" };
+    const verified = { number: pr.number, head: pr.headSha, url: pr.url };
+    if (!store.recordReviewHead(work, verified, false)) {
+      // A concurrent observer may already have recorded this exact verified head and reopened review.
+      const current = store.getWork(workId);
+      const observedSameHead = work.state === "checkpointed" && work.prNumber === pr.number && work.prHead !== null &&
+        work.prHead.toLowerCase() !== pr.headSha.toLowerCase() && current?.generation === work.generation &&
+        current.state === "in-review" && current.prNumber === pr.number &&
+        current.prHead?.toLowerCase() === pr.headSha.toLowerCase();
+      if (!observedSameHead || !store.recordReviewHead(current, verified, false)) {
+        return { ok: false, reason: "work changed while reading the pull request" };
+      }
     }
     return { ok: true, url: pr.url };
   }
@@ -203,6 +213,7 @@ export class Reconciler {
     for (const entry of store.dueOutbox(this.now())) {
       try {
         const status = await this.execute(entry);
+        if (status === "deferred") continue;
         store.completeOutbox(entry.key, status ?? "done");
       } catch (error) {
         store.retryOutbox(entry.key, this.now() + this.deps.config.retryBackoffMs, errorText(error));
@@ -211,7 +222,7 @@ export class Reconciler {
     }
   }
 
-  private async execute(entry: OutboxEntry): Promise<"superseded" | undefined> {
+  private async execute(entry: OutboxEntry): Promise<"superseded" | "deferred" | undefined> {
     const { mesh, config, store } = this.deps;
     const work = store.getWork(entry.workId);
     if (!work) return;
@@ -284,13 +295,14 @@ export class Reconciler {
           !current || current.generation !== work.generation || current.state !== work.state ||
           current.prNumber !== payload.number || current.prHead?.toLowerCase() !== payload.head.toLowerCase()) return "superseded";
       if (usable) {
-        if (!store.setPendingReviewDispatchKey(entry.key, candidateKey)) return "superseded";
+        if (!store.setPendingReviewDispatchKey(entry.key, candidateKey, payload.dispatchKey)) return "deferred";
         return;
       }
-      const replacementKey = `review:work:${entry.key.slice("review:".length)}`;
-      if (candidateKey === replacementKey) throw new Error("review return deferred: replacement job is no longer usable");
-      // Persist before sending: a lost response or later head return must resolve this exact key.
-      if (!store.setPendingReviewDispatchKey(entry.key, replacementKey)) return "superseded";
+      const firstReplacement = `review:work:${entry.key.slice("review:".length)}`;
+      const replacementKey = payload.dispatchKey === undefined ? firstReplacement
+        : `${firstReplacement}:after:${createHash("sha256").update(candidateKey).digest("hex").slice(0, 24)}`;
+      // Persist before sending; a competing stale snapshot must not overwrite the winner's key.
+      if (!store.setPendingReviewDispatchKey(entry.key, replacementKey, payload.dispatchKey)) return "deferred";
       await port.enqueue({ ...input, idempotencyKey: replacementKey });
     } else if (entry.purpose === "revise") {
       const port = retry && mesh.retrySession ? mesh.retrySession() : mesh;

@@ -151,6 +151,67 @@ describe("pull request evidence", () => {
     expect(store.getWork(workId)!.prNumber).toBeNull();
   });
 
+  test("concurrent observation of the same PR head does not block evidence", async () => {
+    const { github, reconciler, mesh } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "checkpointed");
+    github.current = pr({ headSha: HEAD2 });
+    github.prByBranch = github.current;
+    github.findPullRequest = async () => {
+      await reconciler.tick();
+      return github.prByBranch;
+    };
+
+    const evidence = await reconciler.collectEvidence(workId);
+    expect(evidence.ok).toBe(true);
+    expect(store.getWork(workId)!.state).toBe("in-review");
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD2]);
+  });
+
+  test("unrelated concurrent state change keeps evidence fenced", async () => {
+    const { github, reconciler, mesh } = make();
+    store.setState(workId, "checkpointed");
+    github.prByBranch = pr();
+    github.findPullRequest = async () => {
+      store.setState(workId, "blocked");
+      return github.prByBranch;
+    };
+
+    const evidence = await reconciler.collectEvidence(workId);
+    expect(evidence.ok).toBe(false);
+    expect(store.getWork(workId)!.state).toBe("blocked");
+    expect(mesh.jobs("review")).toHaveLength(0);
+  });
+
+  test.each(["generation", "state", "number", "head"] as const)(
+    "a concurrent %s change cannot be accepted as the same observed PR head",
+    async (changed) => {
+      const { github, reconciler, mesh } = make();
+      store.recordPullRequest(workId, { number: 12, head: HEAD1, url: pr().url });
+      store.setState(workId, "checkpointed");
+      github.prByBranch = pr({ headSha: HEAD2 });
+      github.findPullRequest = async () => {
+        if (changed === "generation") {
+          const reserved = store.reserveSession(workId, { jobId: "job", claimId: "claim" });
+          if (!reserved.ok) throw new Error(`reserve failed: ${reserved.reason}`);
+          store.closeSession(reserved.session.sessionId, { iterations: 1, execMs: 1, stopCause: "done" });
+        }
+        store.recordPullRequest(workId, {
+          number: changed === "number" ? 13 : 12,
+          head: changed === "head" ? HEAD1 : HEAD2,
+          url: pr().url,
+        });
+        store.setState(workId, changed === "state" ? "blocked" : "in-review");
+        return github.prByBranch;
+      };
+
+      expect((await reconciler.collectEvidence(workId)).ok).toBe(false);
+      expect(mesh.jobs("review")).toHaveLength(0);
+      expect(store.listOutbox(workId)).toHaveLength(0);
+    },
+  );
+
   test("no pull request from the work branch is not evidence", async () => {
     const { reconciler } = make();
     const r = await reconciler.collectEvidence(workId);
@@ -554,6 +615,82 @@ describe("current-head reconciliation", () => {
     clock += config.retryBackoffMs;
     await restart().tick();
     expect(mesh.jobs("review")).toHaveLength(3);
+    expect(store.listOutbox(workId).every((entry) => entry.status === "done")).toBe(true);
+  });
+
+  test("an unusable persisted replacement advances and survives another lost response", async () => {
+    const { github, mesh, reconciler, restart } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    mesh.jobOverrides.set(mesh.jobs("review")[0]!.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.failNewAfter = true;
+    await reconciler.tick();
+    const firstReplacement = mesh.jobs("review").at(-1)!;
+    expect(mesh.jobs("review")).toHaveLength(3);
+    mesh.jobOverrides.set(firstReplacement.id, { state: "expired", expiresAt: clock - 1 });
+
+    clock += config.retryBackoffMs;
+    mesh.failNewAfter = true;
+    await restart().tick();
+    expect(mesh.jobs("review")).toHaveLength(4);
+    const secondReplacement = mesh.jobs("review").at(-1)!;
+    expect(secondReplacement.input.idempotencyKey).not.toBe(firstReplacement.input.idempotencyKey);
+    expect(store.listOutbox(workId).filter((entry) => entry.status === "pending")).toHaveLength(1);
+
+    clock += config.retryBackoffMs;
+    await restart().tick();
+    expect(mesh.jobs("review")).toHaveLength(4);
+    expect(store.listOutbox(workId).every((entry) => entry.status === "done")).toBe(true);
+  });
+
+  test("stale dispatch-key updates cannot overwrite a newer key", () => {
+    const key = `review:${workId}:12@${HEAD1}:return:test`;
+    store.enqueueOutbox({
+      key, workId, purpose: "review",
+      payload: { repo: "rfcclub/anima", number: 12, head: HEAD1, previousDispatchKey: "old" },
+    });
+    expect(store.setPendingReviewDispatchKey(key, "new", undefined)).toBe(true);
+    expect(store.setPendingReviewDispatchKey(key, "stale", undefined)).toBe(false);
+    expect((store.listOutbox(workId)[0]!.payload as { dispatchKey?: string }).dispatchKey).toBe("new");
+  });
+
+  test("overlapping returned-head reconciles enqueue one replacement", async () => {
+    const { github, mesh, reconciler, restart } = make();
+    github.prByBranch = pr();
+    await reconciler.collectEvidence(workId);
+    store.setState(workId, "in-review");
+    await reconciler.tick();
+    const original = mesh.jobs("review")[0]!;
+    mesh.jobOverrides.set(original.id, { state: "expired", expiresAt: clock - 1 });
+    github.current = pr({ headSha: HEAD2 });
+    await reconciler.tick();
+    github.current = pr();
+    mesh.readError = new Error("temporarily unavailable");
+    await reconciler.tick();
+    mesh.readError = null;
+    clock += config.retryBackoffMs;
+
+    const readJob = mesh.getJob.bind(mesh);
+    let waiting = 0;
+    let release!: () => void;
+    const bothReading = new Promise<void>((resolve) => { release = resolve; });
+    mesh.getJob = async (id) => {
+      const job = await readJob(id);
+      if (id === original.id) {
+        waiting += 1;
+        if (waiting === 2) release();
+        await bothReading;
+      }
+      return job;
+    };
+    await Promise.all([reconciler.tick(), restart().tick()]);
+    expect(waiting).toBe(2);
+    expect(mesh.jobs("review").map((job) => job.input.target.headSha)).toEqual([HEAD1, HEAD2, HEAD1]);
     expect(store.listOutbox(workId).every((entry) => entry.status === "done")).toBe(true);
   });
 
