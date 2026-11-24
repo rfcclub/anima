@@ -202,32 +202,60 @@ async function talk(args: ParsedArgs): Promise<void> {
 
   const session = headlessReview ? sessionStore.createSession(agent.name, "review") : sessionManager.openSession(agent.name, "talk");
   const sessionId = session.id;
-  if (headlessReview) sessionStore.ensureMainBranch(sessionId);
-  const turns = headlessReview ? [] : sessionManager.getTurns(sessionId);
+  let reviewClosed = false;
+  const closeReviewSession = () => {
+    if (!headlessReview || reviewClosed) return;
+    sessionStore.endSession(sessionId);
+    reviewClosed = true;
+  };
+  const onReviewTerm = () => {
+    try {
+      closeReviewSession();
+    } catch {
+      process.stderr.write("Headless review session could not be closed after SIGTERM.\n");
+    }
+    process.exit(143);
+  };
+  const finishReview = () => {
+    if (!headlessReview) return;
+    process.removeListener("SIGTERM", onReviewTerm);
+    closeReviewSession();
+  };
+  if (headlessReview) process.once("SIGTERM", onReviewTerm);
+  const { turns, mailContext, effectiveMode, autoGuard } = await (async () => {
+    try {
+      if (headlessReview) sessionStore.ensureMainBranch(sessionId);
+      const turns = headlessReview ? [] : sessionManager.getTurns(sessionId);
 
-  let mailContext: string | undefined;
-  if (!headlessReview) {
-    const mailChecker = new MailChecker();
-    const lastActivity = turns.length > 0 ? turns[turns.length - 1].ts : "1970-01-01T00:00:00Z";
-    const unreadMail = await mailChecker.check(agent.name, lastActivity);
-    mailContext = unreadMail.length > 0 ? mailChecker.formatMailContext(unreadMail) : undefined;
-    eventStore.append(agent.name, {
-      timestamp: new Date().toISOString(), type: "mail_check", sessionId, unread: unreadMail.length,
-    });
-  }
+      let mailContext: string | undefined;
+      if (!headlessReview) {
+        const mailChecker = new MailChecker();
+        const lastActivity = turns.length > 0 ? turns[turns.length - 1].ts : "1970-01-01T00:00:00Z";
+        const unreadMail = await mailChecker.check(agent.name, lastActivity);
+        mailContext = unreadMail.length > 0 ? mailChecker.formatMailContext(unreadMail) : undefined;
+        eventStore.append(agent.name, {
+          timestamp: new Date().toISOString(), type: "mail_check", sessionId, unread: unreadMail.length,
+        });
+      }
 
-  const effectiveMode = permissionMode ?? agent.config.session.defaultMode;
-  if (effectiveMode === "auto" && !agent.config.session.autoModeOptIn) {
-    throw new AutoModeNotEnabledError(agent.name);
-  }
+      const effectiveMode = permissionMode ?? agent.config.session.defaultMode;
+      if (effectiveMode === "auto" && !agent.config.session.autoModeOptIn) {
+        throw new AutoModeNotEnabledError(agent.name);
+      }
 
-  const autoGuard = effectiveMode === "auto" ? createAutoGuard(
-    (event) => eventStore.append(agent.name, { timestamp: new Date().toISOString(), ...event, sessionId }),
-    agent.config.policy.allowedTools,
-    (stats) => structuredLog("info", "auto execution complete", {
-      type: "auto_execution_complete", agent: agent.name, sessionId, ...stats,
-    }),
-  ) : undefined;
+      const autoGuard = effectiveMode === "auto" ? createAutoGuard(
+        (event) => eventStore.append(agent.name, { timestamp: new Date().toISOString(), ...event, sessionId }),
+        agent.config.policy.allowedTools,
+        (stats) => structuredLog("info", "auto execution complete", {
+          type: "auto_execution_complete", agent: agent.name, sessionId, ...stats,
+        }),
+      ) : undefined;
+      return { turns, mailContext, effectiveMode, autoGuard };
+    } catch (error) {
+      finishReview();
+      throw error;
+    }
+  })();
 
   if (loopMode) {
     const result = await runLoopMode(agent, message, provider, sessionManager, sessionStore, {
@@ -350,8 +378,11 @@ async function talk(args: ParsedArgs): Promise<void> {
       }
     }
   } finally {
-    autoGuard?.complete();
-    if (headlessReview) sessionStore.endSession(sessionId);
+    try {
+      autoGuard?.complete();
+    } finally {
+      finishReview();
+    }
   }
 }
 

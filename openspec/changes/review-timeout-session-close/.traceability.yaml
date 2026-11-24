@@ -1,0 +1,17 @@
+scenarios:
+  - scenario: close-the-owned-headless-review-session-sigterm-while-the-provider-is-pending
+    test: __tests__/mesh-jobs/headless-review.test.ts
+    assertion: 'headless PR review talk > regression: SIGTERM closes the review session while the provider is pending'
+    status: passing
+  - scenario: close-the-owned-headless-review-session-concurrent-reviews
+    test: __tests__/mesh-jobs/headless-review.test.ts
+    assertion: 'headless PR review talk > regression: terminating one pending review does not end another review'
+    status: passing
+  - scenario: close-the-owned-headless-review-session-setup-failure
+    test: __tests__/mesh-jobs/headless-review.test.ts
+    assertion: 'headless PR review talk > regression: a setup failure after creating a review session closes it'
+    status: passing
+  - scenario: close-the-owned-headless-review-session-normal-completion
+    test: __tests__/mesh-jobs/headless-review.test.ts
+    assertion: 'headless PR review talk > uses only the review role and authorized review tools with a fresh conversation'
+    status: passing
