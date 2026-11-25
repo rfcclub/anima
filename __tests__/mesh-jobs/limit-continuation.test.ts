@@ -78,6 +78,27 @@ describe("Slice 1 checkpointed work dispatch", () => {
     expect(enqueued).toHaveLength(1);
   });
 
+  test("Slice 1 the blocked backlog waits while two works are already in flight", async () => {
+    const blocked = stopped(7, true);
+    for (const issue of [20, 21]) {
+      const other = store.createWork({ repo: "example/repo", issue, approvedDigest: digest, config: loadWorkConfig({}) }).work;
+      expect(other.state).toBe("queued");
+    }
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh)).toBe(0);
+    expect(store.getWork(blocked.workId)?.state).toBe("blocked");
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("Slice 1 the blocked backlog continues while fewer than two works are in flight", async () => {
+    const blocked = stopped(7, true);
+    store.createWork({ repo: "example/repo", issue: 20, approvedDigest: digest, config: loadWorkConfig({}) });
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh)).toBe(1);
+    expect(store.getWork(blocked.workId)?.state).toBe("checkpointed");
+    expect(enqueued).toHaveLength(1);
+  });
+
   test("Slice 1 a failed claim on a queued start job is recovered", async () => {
     const work = stopped(7, true);
     const { mesh, enqueued } = gateway("queued");

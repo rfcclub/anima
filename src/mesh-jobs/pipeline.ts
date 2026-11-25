@@ -21,6 +21,9 @@ import { WorkStore, type WorkRecord, type WorkState } from "../work/store";
 import { acquireWorkLock } from "../work/supervisor";
 
 const DAY_MS = 24 * 3_600_000;
+/** Works that hold or wait for an author session; a blocked work is continued only while fewer are in flight. */
+const IN_FLIGHT_STATES: ReadonlySet<WorkState> = new Set(["queued", "running", "checkpointed", "revising"]);
+const BACKLOG_IN_FLIGHT_LIMIT = 2;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
 const ACTIVE_STATES: ReadonlySet<WorkState> = new Set(["queued", "running", "checkpointed", "in-review", "revising"]);
@@ -414,6 +417,13 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       const matching = records.filter((record) => record.approvedDigest.toLowerCase() === digest);
       const latest = matching.at(-1);
       if (latest?.state === "blocked" && latest.sessionsUsed > 0 && latest.prNumber === null) {
+        // Drain the blocked backlog slowly: a start job expires a day after it is queued, so flooding the queue
+        // behind one author would only expire the jobs and block the works again.
+        const inFlight = store.listWorks().filter((record) => IN_FLIGHT_STATES.has(record.state)).length;
+        if (inFlight >= BACKLOG_IN_FLIGHT_LIMIT) {
+          log("info", "blocked work continuation deferred: other works are in flight", { repo, issue: issue.number, inFlight });
+          continue;
+        }
         if (await recoverCheckpointedWork(deps, repo, issue.number, digest, latest, now)) dispatched += 1;
         continue;
       }
