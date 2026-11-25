@@ -13,6 +13,7 @@ import { WorkStore } from "../../src/work/store";
 import { createWorkHandler, type SessionExecutor, type SessionResult } from "../../src/work/consumer";
 import { issueDigest12 } from "../../src/work/approval";
 import { loadWorkConfig } from "../../src/work/config";
+import { captureLimitHandoff, shouldContinueAfterLimit } from "../../src/work/production";
 import { publishCommittedWork } from "../../src/work/publish-fallback";
 import { createSessionExecutor } from "../../src/work/executor";
 import { createStopRecorder } from "../../src/work/stops";
@@ -829,6 +830,49 @@ describe("host publish fallback", () => {
       await consumer.tick();
     }
     expect(fallbackCalls).toBe(0);
+  });
+
+  test.each([
+    { maxSessions: 3, expectedPushes: 0, expectedOutcome: { kind: "release" } },
+    { maxSessions: 1, expectedPushes: 1, expectedOutcome: { kind: "report", report: { outcome: "done", evidenceRef: "https://github.com/example/repo/pull/12" } } },
+  ])("a covered Low revision respects its session allowance ($maxSessions)", async ({ maxSessions, expectedPushes, expectedOutcome }) => {
+    const config = loadWorkConfig({ externalAdapter: "low", caps: { maxSessions, workWallMs: 60_000, sessionWallMs: 60_000 } });
+    const { work } = store.createWork({ repo: "example/repo", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0", config });
+    const head = "a".repeat(40);
+    const url = "https://github.com/example/repo/pull/12";
+    store.recordPullRequest(work.workId, { number: 12, head, url });
+    store.setState(work.workId, "revising");
+    const recordStop = createStopRecorder({ store, read: (_tree, args) => args[0] === "rev-parse" ? head : "" });
+    let pushes = 0;
+    const handler = createWorkHandler({
+      store, config, github, heartbeatMs: 10,
+      executor: {
+        adapterKind: "low",
+        ready: () => ({ ok: true }),
+        async runSession({ session }) {
+          const scratch = join(work.root, "tmp");
+          mkdirSync(scratch, { recursive: true });
+          writeFileSync(join(scratch, `AGENT_HANDOFF_${session.sessionId}.md`), "Next: verify the revision.");
+          return { stopCause: "max_reached", iterations: 1, execMs: 60_000, cessation: "proven" };
+        },
+      },
+      continuation: () => ({ ok: true }),
+      recordStop: (input) => captureLimitHandoff(store, input.work, recordStop(input)),
+      collectEvidence: async () => ({ ok: true, url }),
+      publishFallback: async (input) => {
+        if (shouldContinueAfterLimit(store, input)) return { published: false };
+        pushes++;
+        return { published: true };
+      },
+    });
+    const jobs = new FakeJobs();
+    const job = workJob({ type: "revise", target: { repo: work.repo, kind: "pr", number: 12, headSha: head } });
+    jobs.queued.push(job);
+    const claim = (await jobs.claim())!;
+    const outcome = await handler.run({ worker: config.author, claim, job, jobs });
+    expect(pushes).toBe(expectedPushes);
+    expect(outcome).toEqual(expectedOutcome);
+    expect(store.getWork(work.workId)?.state).toBe(expectedPushes ? "in-review" : "checkpointed");
   });
 
   test("SC-005 a revise session ending in deadline does not run the fallback", async () => {

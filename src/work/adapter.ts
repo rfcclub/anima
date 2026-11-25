@@ -15,6 +15,8 @@ export interface WorkerAdapterInput {
   kind: "start-work" | "revise";
   maxIterations: number;
   deadlineMs: number;
+  /** Executor start time, including workspace preparation, in the executor's clock. */
+  startedAt?: number;
   /** Aborts on lease loss or deadline; the adapter must then stop and report cessation. */
   signal: AbortSignal;
   workspace: Workspace;
