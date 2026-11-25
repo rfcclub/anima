@@ -18,6 +18,7 @@ import type { ConsumerLog } from "./consumer";
 import type { MeshJobsPresence } from "./start";
 import type { MeshJobsWorkConfig } from "./config";
 import { WorkStore, type WorkRecord, type WorkState } from "../work/store";
+import { acquireWorkLock } from "../work/supervisor";
 
 const DAY_MS = 24 * 3_600_000;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -140,6 +141,8 @@ export interface StartWorkJobInput {
   workId?: string;
   /** 0 (default) is the first job for the approval; each later attempt gets its own idempotency key. */
   attempt?: number;
+  /** A continuation or operator-recovery event scopes replacement keys to that allowance. */
+  continuation?: number;
 }
 
 /** Same shape `mesh work` posts to the gateway, including the work reference the work runtime parses. */
@@ -152,7 +155,7 @@ export function buildStartWorkJob(input: StartWorkJobInput): Record<string, unkn
     priority: -10,
     workRef: `${input.workId ?? `w${randomBytes(5).toString("hex")}`}.${input.digest}`,
     expiresAt: input.now + DAY_MS,
-    idempotencyKey: `work:${input.repo}#${input.issue}:${input.digest}${input.attempt ? `:r${input.attempt}` : ""}`,
+    idempotencyKey: `work:${input.repo}#${input.issue}:${input.digest}${input.continuation ? `:c${input.continuation}` : ""}${input.attempt ? `:r${input.attempt}` : ""}`,
   };
 }
 
@@ -193,7 +196,7 @@ interface GitHubIssue {
 export interface IssueDispatchDeps {
   config: PipelineConfig;
   work: MeshJobsWorkConfig;
-  store: Pick<WorkStore, "listWorks"> & Partial<Pick<WorkStore, "listEvents" | "appendEvent" | "setState">>;
+  store: Pick<WorkStore, "listWorks"> & Partial<Pick<WorkStore, "listEvents" | "appendEvent" | "setState" | "latestEndedSession" | "continueAfterLimit">>;
   mesh: Pick<MeshJobsClient, "enqueue"> & Partial<Pick<MeshJobsClient, "getJob">>;
   gh: GhRunner;
   log: ConsumerLog;
@@ -214,6 +217,9 @@ async function startJobIsDead(mesh: IssueDispatchDeps["mesh"], job: { id: string
   } catch {
     return false;
   }
+  // The job may have completed between the caller's read and the claims read.
+  if ((details.id !== undefined && details.id !== job.id) ||
+      (details.state !== undefined && details.state !== job.state)) return false;
   if (details.claims.some((claim) => claim.state === "active")) return false;
   if (job.state === "expired") return true;
   const eligible = details.eligible ?? [];
@@ -269,6 +275,88 @@ async function recoverQueuedWork(
   }
 }
 
+/** Confirm a blocked issue is still approved and has no merged closing PR. Any incomplete response fails closed. */
+async function issueStillNeedsWork(gh: GhRunner, repo: string, issue: number, digest: string, label: string): Promise<boolean> {
+  const [owner, name] = repo.split("/");
+  const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){state body labels(first:100){nodes{name} pageInfo{hasNextPage}} closedByPullRequestsReferences(first:100,includeClosedPrs:true){nodes{merged} pageInfo{hasNextPage}}}}}`;
+  try {
+    const raw = await gh(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${issue}`]);
+    const parsed = JSON.parse(raw) as { errors?: unknown; data?: { repository?: { issue?: {
+      state?: unknown; body?: unknown; labels?: { nodes?: Array<{ name?: unknown }>; pageInfo?: { hasNextPage?: unknown } };
+      closedByPullRequestsReferences?: { nodes?: Array<{ merged?: unknown }>; pageInfo?: { hasNextPage?: unknown } };
+    } } } };
+    const current = parsed.data?.repository?.issue;
+    const labels = current?.labels;
+    const prs = current?.closedByPullRequestsReferences;
+    return !parsed.errors && current?.state === "OPEN" && typeof current.body === "string" && issueDigest(current.body) === digest &&
+      Array.isArray(labels?.nodes) && labels.pageInfo?.hasNextPage === false && labels.nodes.some((entry) => entry.name === label) &&
+      Array.isArray(prs?.nodes) && prs.pageInfo?.hasNextPage === false && prs.nodes.every((entry) => entry.merged === false);
+  } catch {
+    return false;
+  }
+}
+
+/** Recover an existing checkpoint without guessing about the original job or racing a local supervisor. */
+async function recoverCheckpointedWork(
+  deps: IssueDispatchDeps, repo: string, issue: number, digest: string, record: WorkRecord, now: () => number,
+): Promise<boolean> {
+  const { store, mesh, config, work, log } = deps;
+  if (!store.listEvents || !store.appendEvent || !store.setState || !store.latestEndedSession || !mesh.getJob ||
+      (record.state === "blocked" && !store.continueAfterLimit)) return false;
+  let continued = false;
+  try {
+    const lock = acquireWorkLock(record.root);
+    if (!lock) return false;
+    try {
+      const fresh = () => store.listWorks().find((candidate) => candidate.workId === record.workId);
+      const unchanged = (candidate: WorkRecord | undefined) => candidate && candidate.state === record.state &&
+        candidate.generation === record.generation && candidate.root === record.root && candidate.sessionsUsed === record.sessionsUsed &&
+        candidate.approvedDigest.toLowerCase() === digest;
+      if (!unchanged(fresh())) return false;
+      const session = store.latestEndedSession(record.workId);
+      if (!session || session.generation !== record.generation) return false;
+      let events = store.listEvents(record.workId);
+      const reservedSeq = events.filter((event) => event.kind === "session-reserved" &&
+        (event.detail as { no?: unknown } | null)?.no === session.no).at(-1)?.seq ?? 0;
+      const latestDispatch = events.filter((event) => event.kind === REDISPATCH_EVENT && event.seq > reservedSeq).at(-1);
+      const dispatchedId = (latestDispatch?.detail as { jobId?: unknown } | undefined)?.jobId;
+      const currentId = typeof dispatchedId === "string" ? dispatchedId : session.jobId;
+      const current = await mesh.getJob(currentId);
+      if (current.id !== currentId || !(await startJobIsDead(mesh, current))) return false;
+      if (record.state === "blocked" && !(await issueStillNeedsWork(deps.gh, repo, issue, digest, config.issueLabel))) return false;
+      if (!unchanged(fresh())) return false;
+      const competing = store.listWorks().some((candidate) => candidate.workId !== record.workId &&
+        candidate.repo.toLowerCase() === repo.toLowerCase() && candidate.issue === issue && ACTIVE_STATES.has(candidate.state));
+      if (competing) return false;
+      if (record.state === "blocked") {
+        const resumed = store.continueAfterLimit!({ workId: record.workId, root: record.root, generation: record.generation,
+          sessionId: session.sessionId, jobType: "start-work", state: "blocked" });
+        if (!resumed) return false;
+        continued = true;
+        events = store.listEvents(record.workId);
+      }
+      const reset = events.filter((event) => event.kind === "limit-continuation" || event.kind === "operator-recovery").at(-1);
+      const attempts = events.filter((event) => event.kind === REDISPATCH_EVENT && event.seq > (reset?.seq ?? 0)).length;
+      if (attempts >= (config.maxStartRedispatch ?? 2)) {
+        store.setState(record.workId, "blocked", `start job expired ${attempts + 1} times without running`);
+        return continued;
+      }
+      const next = await mesh.enqueue(buildStartWorkJob({ repo, issue, digest, authorMeshId: work.authorMeshId,
+        now: now(), workId: record.workId, attempt: attempts + 1, ...(reset ? { continuation: reset.seq } : {}) }));
+      const after = fresh();
+      if (!after || after.state !== "checkpointed" || after.generation !== record.generation || after.root !== record.root) return continued;
+      store.appendEvent(record.workId, REDISPATCH_EVENT, { attempt: attempts + 1, expiredJob: current.id, jobId: next.id });
+      log("info", "start job re-dispatched", { repo, issue, workId: record.workId, attempt: attempts + 1, jobId: next.id });
+      return continued || next.state === "queued" || next.state === "reported";
+    } finally {
+      lock.release();
+    }
+  } catch (error) {
+    log("error", "checkpointed start job recovery failed", { repo, issue, error: errorText(error) });
+    return continued;
+  }
+}
+
 /** One poll. Returns the number of jobs the gateway accepted (a replay counts as zero for logging). */
 export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<number> {
   const { config, work, store, mesh, gh, log } = deps;
@@ -315,9 +403,18 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       }
       if (open.length > 0) {
         const orphan = open.find((r) => r.state === "queued" && r.sessionsUsed === 0 && r.approvedDigest.toLowerCase() === digest);
+        const checkpoint = open.find((r) => r.state === "checkpointed" && r.sessionsUsed > 0 && r.prNumber === null && r.approvedDigest.toLowerCase() === digest);
         if (orphan && open.length === 1) {
           if (await recoverQueuedWork(deps, repo, issue.number, digest, orphan, now)) dispatched += 1;
+        } else if (checkpoint && open.length === 1) {
+          if (await recoverCheckpointedWork(deps, repo, issue.number, digest, checkpoint, now)) dispatched += 1;
         } else log("info", "issue dispatch skipped: work already active", { repo, issue: issue.number });
+        continue;
+      }
+      const matching = records.filter((record) => record.approvedDigest.toLowerCase() === digest);
+      const latest = matching.at(-1);
+      if (latest?.state === "blocked" && latest.sessionsUsed > 0 && latest.prNumber === null) {
+        if (await recoverCheckpointedWork(deps, repo, issue.number, digest, latest, now)) dispatched += 1;
         continue;
       }
       // Any terminal work for the same approval digest is final: accepted, blocked, or otherwise. An edited

@@ -7,6 +7,8 @@
 export interface WorkCaps {
   /** Execution sessions per work, revise sessions and failed sessions included. */
   maxSessions: number;
+  /** Additional original allowances after a trusted limit stop. */
+  maxContinuations: number;
   /** Provider/tool-loop iterations per session. */
   maxIterationsPerSession: number;
   /** Wall time of one session. */
@@ -25,6 +27,7 @@ export interface WorkConfig {
 
 export const DEFAULT_CAPS: Readonly<WorkCaps> = Object.freeze({
   maxSessions: 3,
+  maxContinuations: 2,
   maxIterationsPerSession: 5,
   sessionWallMs: 10 * 60_000,
   workWallMs: 30 * 60_000,
@@ -35,7 +38,7 @@ const CAP_KEYS = Object.keys(DEFAULT_CAPS) as Array<keyof WorkCaps>;
 const MAX_SESSION_WALL_MS = 2_147_483_647;
 
 function checkCap(name: string, value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || !Number.isInteger(value)) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`work cap ${name} must be a finite positive integer, got ${String(value)}`);
   }
   return value;
@@ -87,7 +90,7 @@ export function loadWorkConfig(input: WorkConfigInput = {}): WorkConfig {
   };
 }
 
-/** Reads the caps stored in a work record. Every key must be present: a record is never repaired with defaults. */
+/** Reads persisted caps. Legacy records predate maxContinuations; all other keys must be present. */
 export function parseStoredCaps(json: string): WorkCaps {
   let raw: unknown;
   try {
@@ -96,7 +99,8 @@ export function parseStoredCaps(json: string): WorkCaps {
     throw new RangeError("stored work caps are not valid JSON");
   }
   if (typeof raw !== "object" || raw === null) throw new RangeError("stored work caps are not an object");
-  return checkCaps(raw as WorkCaps);
+  const stored = raw as Record<string, unknown>;
+  return checkCaps({ ...stored, ...(!Object.hasOwn(stored, "maxContinuations") ? { maxContinuations: DEFAULT_CAPS.maxContinuations } : {}) } as unknown as WorkCaps);
 }
 
 /**
