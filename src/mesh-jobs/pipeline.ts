@@ -17,12 +17,11 @@ import { spawnGh, type GhRunner } from "./github";
 import type { ConsumerLog } from "./consumer";
 import type { MeshJobsPresence } from "./start";
 import type { MeshJobsWorkConfig } from "./config";
-import { WorkStore, type WorkRecord, type WorkState } from "../work/store";
+import { LIMIT_BLOCK_REASON, WorkStore, type WorkRecord, type WorkState } from "../work/store";
 import { acquireWorkLock } from "../work/supervisor";
 
 const DAY_MS = 24 * 3_600_000;
-/** Works that hold or wait for an author session; a blocked work is continued only while fewer are in flight. */
-const IN_FLIGHT_STATES: ReadonlySet<WorkState> = new Set(["queued", "running", "checkpointed", "revising"]);
+/** A blocked work is continued only while fewer works than this hold a slot (see holdsSlot). */
 const BACKLOG_IN_FLIGHT_LIMIT = 2;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
@@ -299,6 +298,25 @@ async function issueStillNeedsWork(gh: GhRunner, repo: string, issue: number, di
   }
 }
 
+/**
+ * Whether a work counts against the backlog limit: running or revising always; queued or checkpointed only while
+ * something touched it within a job's lifetime, so a dead checkpoint the poll never visits cannot hold a slot forever.
+ */
+function holdsSlot(store: IssueDispatchDeps["store"], record: WorkRecord, now: number): boolean {
+  if (record.state === "running" || record.state === "revising") return true;
+  if (record.state !== "queued" && record.state !== "checkpointed") return false;
+  const last = Math.max(Date.parse(record.updatedAt) || 0,
+    ...(store.listEvents ? store.listEvents(record.workId).map((event) => Date.parse(event.at) || 0) : []));
+  return now - last < DAY_MS;
+}
+
+/** Cheap, local checks first: only a limit block with a work root and continuations left may cost remote calls. */
+function mayContinue(store: IssueDispatchDeps["store"], record: WorkRecord): boolean {
+  if (!LIMIT_BLOCK_REASON.test(record.blockedReason ?? "") || !existsSync(record.root)) return false;
+  const used = store.listEvents ? store.listEvents(record.workId).filter((event) => event.kind === "limit-continuation").length : 0;
+  return used < record.caps.maxContinuations;
+}
+
 /** Recover an existing checkpoint without guessing about the original job or racing a local supervisor. */
 async function recoverCheckpointedWork(
   deps: IssueDispatchDeps, repo: string, issue: number, digest: string, record: WorkRecord, now: () => number,
@@ -326,7 +344,8 @@ async function recoverCheckpointedWork(
       const currentId = typeof dispatchedId === "string" ? dispatchedId : session.jobId;
       const current = await mesh.getJob(currentId);
       if (current.id !== currentId || !(await startJobIsDead(mesh, current))) return false;
-      if (record.state === "blocked" && !(await issueStillNeedsWork(deps.gh, repo, issue, digest, config.issueLabel))) return false;
+      // Every replacement enqueue rechecks the issue, including a retry after an allowance was already granted.
+      if (!(await issueStillNeedsWork(deps.gh, repo, issue, digest, config.issueLabel))) return false;
       if (!unchanged(fresh())) return false;
       const competing = store.listWorks().some((candidate) => candidate.workId !== record.workId &&
         candidate.repo.toLowerCase() === repo.toLowerCase() && candidate.issue === issue && ACTIVE_STATES.has(candidate.state));
@@ -416,10 +435,10 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       }
       const matching = records.filter((record) => record.approvedDigest.toLowerCase() === digest);
       const latest = matching.at(-1);
-      if (latest?.state === "blocked" && latest.sessionsUsed > 0 && latest.prNumber === null) {
+      if (latest?.state === "blocked" && latest.sessionsUsed > 0 && latest.prNumber === null && mayContinue(store, latest)) {
         // Drain the blocked backlog slowly: a start job expires a day after it is queued, so flooding the queue
         // behind one author would only expire the jobs and block the works again.
-        const inFlight = store.listWorks().filter((record) => IN_FLIGHT_STATES.has(record.state)).length;
+        const inFlight = store.listWorks().filter((record) => holdsSlot(store, record, now())).length;
         if (inFlight >= BACKLOG_IN_FLIGHT_LIMIT) {
           log("info", "blocked work continuation deferred: other works are in flight", { repo, issue: issue.number, inFlight });
           continue;

@@ -236,6 +236,9 @@ function toOutbox(r: Row): OutboxEntry {
 
 const RESERVABLE: ReadonlySet<WorkState> = new Set(["queued", "checkpointed", "revising"]);
 
+/** A block written when a work reached its time or session limit; only such a block may be continued. */
+export const LIMIT_BLOCK_REASON = /^(?:execution time limit reached|sessions exhausted \(\d+ of \d+ used\))(?:; publish fallback declined: .*)?$/;
+
 export class WorkStore {
   private readonly now: () => number;
   private readonly rootBase: string;
@@ -630,7 +633,7 @@ export class WorkStore {
       if (!work || input.jobType !== "start-work" || work.prNumber !== null || work.state !== input.state ||
           work.root !== input.root || work.generation !== input.generation) return null;
       // A trusted old stop must not undo a later block for another reason.
-      if (work.state === "blocked" && !/^(?:execution time limit reached|sessions exhausted \(\d+ of \d+ used\))(?:; publish fallback declined: .*)?$/.test(work.blockedReason ?? "")) return null;
+      if (work.state === "blocked" && !LIMIT_BLOCK_REASON.test(work.blockedReason ?? "")) return null;
       if (work.sessionsUsed < work.caps.maxSessions && !this.wallSpent(work, work.caps.workWallMs)) return null;
       const sessions = this.listSessions(work.workId);
       const latest = sessions.at(-1);

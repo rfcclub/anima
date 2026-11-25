@@ -99,6 +99,46 @@ describe("Slice 1 checkpointed work dispatch", () => {
     expect(enqueued).toHaveLength(1);
   });
 
+  test("Slice 1 a checkpoint retry rechecks the issue before enqueueing", async () => {
+    const work = stopped(7);
+    const { mesh, enqueued } = gateway("expired");
+    const merged = async (args: string[]) => args[0] === "issue" ? gh(args) : JSON.stringify({ data: { repository: { issue: {
+      state: "OPEN", body, labels: { nodes: [{ name: "orca:approved" }], pageInfo: { hasNextPage: false } },
+      closedByPullRequestsReferences: { nodes: [{ merged: true }], pageInfo: { hasNextPage: false } },
+    } } } });
+    expect(await dispatch(mesh, merged)).toBe(0);
+    expect(enqueued).toHaveLength(0);
+    expect(store.getWork(work.workId)?.state).toBe("checkpointed");
+  });
+
+  test("Slice 1 stale checkpoints outside the poll do not hold the backlog slots", async () => {
+    store.close();
+    let clock = Date.parse("2026-11-01T00:00:00Z");
+    store = WorkStore.open(":memory:", { rootBase: root, now: () => clock });
+    stopped(30);
+    stopped(31);
+    clock += 3 * 24 * 3_600_000;
+    const blocked = stopped(7, true);
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatchApprovedIssues({ config, work: workConfig, store, mesh, gh, log: () => {}, now: () => clock })).toBe(1);
+    expect(store.getWork(blocked.workId)?.state).toBe("checkpointed");
+    expect(enqueued).toHaveLength(1);
+  });
+
+  test("Slice 1 a blocked work that cannot continue makes no remote call", async () => {
+    const work = stopped(7, true);
+    store.setState(work.workId, "blocked", "worker reported blocked: needs a decision");
+    const { mesh, enqueued } = gateway("expired");
+    let reads = 0;
+    mesh.getJob = async (id: string) => { reads += 1; return { id, state: "expired", claims: [], eligible: ["worker@mesh"] } as never; };
+    let graphql = 0;
+    const counting = async (args: string[]) => { if (args[0] !== "issue") graphql += 1; return gh(args); };
+    expect(await dispatch(mesh, counting)).toBe(0);
+    expect(reads).toBe(0);
+    expect(graphql).toBe(0);
+    expect(enqueued).toHaveLength(0);
+  });
+
   test("Slice 1 a failed claim on a queued start job is recovered", async () => {
     const work = stopped(7, true);
     const { mesh, enqueued } = gateway("queued");
