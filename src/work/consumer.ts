@@ -353,7 +353,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
     // The host fallback publishes under the same lease as the session did, so the heartbeat runs until it is done.
     const priorLimitDecline = store.listEvents(work.workId).some((event, index, events) =>
       event.kind === "limit-terminal-declined" &&
-      !events.slice(index + 1).some((later) => later.kind === "operator-recovery"));
+      !events.slice(index + 1).some((later) => later.kind === "operator-recovery" || later.kind === "limit-continuation"));
     const fallbackRuns = (result.stopCause === "done" || result.stopCause === "max_reached" ||
       (result.stopCause === "deadline" && limitTerminal))
       && (!limitTerminal || !priorLimitDecline)
@@ -495,6 +495,12 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
                 log("error", "could not record the host push event", { workId: work.workId, error: error instanceof Error ? error.message : String(error) });
               }
             }
+            // The remote PR check has settled; the same lease and generation must still own this decision.
+            await settledGuard();
+            const continued = store.continueAfterLimit({ workId: work.workId, root: work.root,
+              generation: reserved.session.generation, sessionId: reserved.session.sessionId,
+              jobType: job.type === "revise" ? "revise" : "start-work", state: "checkpointed" });
+            if (continued) return { kind: "release" };
             return blockWork(work.workId, `${limit}; publish fallback declined: ${reason}`);
           }
         }
