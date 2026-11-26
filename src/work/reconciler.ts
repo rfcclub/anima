@@ -4,10 +4,11 @@
  * `collectEvidence` is what the work handler calls when a session says it is done: it finds the pull request
  * on GitHub, checks it belongs to this work, records its head and queues the review. `tick` executes the
  * outbox and watches open pull requests. Every outward operation is keyed by work, pull request and head, and
- * the same key goes to Mesh as the idempotency key, so a crash or a lost response at any point leaves one
- * review job per head and one revise job per head.
+ * stable keys go to Mesh as idempotency keys, so retries do not duplicate a review or revision. A returned
+ * head may need a new review key when its earlier Mesh job can no longer run.
  */
 
+import { createHash } from "node:crypto";
 import { baseForRepo } from "./config";
 import { anyCurrentChangeRequest, checksGreen, decideAcceptance, readReviews, verifyPullRequest, type WorkGitHub } from "./evidence";
 import type { MeshJobDetails } from "../mesh-jobs/client";
@@ -55,6 +56,7 @@ export interface ReconcilerDeps {
 }
 
 const DAY_MS = 24 * 3_600_000;
+const validHead = (head: unknown): head is string => typeof head === "string" && /^[a-f0-9]{40}$/i.test(head);
 
 export class Reconciler {
   private readonly now: () => number;
@@ -74,6 +76,7 @@ export class Reconciler {
     // A writer whose lease or generation went while GitHub answered must not record the PR or queue a review.
     await options.guard?.();
     if (!pr) return { ok: false, reason: `no pull request from branch ${work.branch}` };
+    if (!validHead(pr.headSha)) return { ok: false, reason: "pull request head unavailable" };
     const verdict = verifyPullRequest(work, pr, { base: baseForRepo(config.repoBases, config.base, work.repo), authorActor: config.authorActor });
     if (!verdict.ok) return { ok: false, reason: verdict.reason };
     // Decided by the kind of session that ran, not by the work's state: closing the session has already moved
@@ -81,15 +84,25 @@ export class Reconciler {
     if (options.revise && work.prHead && pr.headSha.toLowerCase() === work.prHead.toLowerCase()) {
       return { ok: false, reason: "no new commit since the review that asked for changes" };
     }
-    store.recordPullRequest(workId, { number: pr.number, head: pr.headSha, url: pr.url });
-    this.queueReview(work, pr.number, pr.headSha);
+    const verified = { number: pr.number, head: pr.headSha, url: pr.url };
+    if (!store.recordReviewHead(work, verified, false)) {
+      // A concurrent observer may already have recorded this exact verified head and reopened review.
+      const current = store.getWork(workId);
+      const observedSameHead = work.state === "checkpointed" && work.prNumber === pr.number && work.prHead !== null &&
+        work.prHead.toLowerCase() !== pr.headSha.toLowerCase() && current?.generation === work.generation &&
+        current.state === "in-review" && current.prNumber === pr.number &&
+        current.prHead?.toLowerCase() === pr.headSha.toLowerCase();
+      if (!observedSameHead || !store.recordReviewHead(current, verified, false)) {
+        return { ok: false, reason: "work changed while reading the pull request" };
+      }
+    }
     return { ok: true, url: pr.url };
   }
 
   /** Watches open pull requests and runs the outbox. Safe to run again at any time. */
   async tick(): Promise<void> {
     for (const work of this.deps.store.listWorks()) {
-      if ((work.state === "in-review" || work.state === "revising") && work.prNumber !== null) {
+      if (work.prNumber !== null && (work.state === "in-review" || work.state === "revising" || work.state === "checkpointed")) {
         try {
           await this.observe(work);
         } catch (error) {
@@ -103,17 +116,19 @@ export class Reconciler {
   private async observe(work: WorkRecord): Promise<void> {
     const { store, github, config } = this.deps;
     const pr = await github.pullRequest(work.repo, work.prNumber!);
+    const current = store.getWork(work.workId);
+    if (!current || current.generation !== work.generation || current.state !== work.state ||
+        current.prNumber !== work.prNumber || current.prHead !== work.prHead) return;
+    if (pr.number !== work.prNumber || !validHead(pr.headSha)) throw new Error("pull request head unavailable");
     if (pr.merged || pr.state !== "open") {
-      await this.settle(work, pr);
+      if (work.state !== "checkpointed") await this.settle(work, pr);
       return;
     }
-    if (work.prHead && pr.headSha.toLowerCase() !== work.prHead.toLowerCase()) {
-      store.recordPullRequest(work.workId, { number: pr.number, head: pr.headSha, url: pr.url });
-      store.setState(work.workId, "in-review");
-      this.queueReview(work, pr.number, pr.headSha);
-      return;
-    }
-    if (work.state !== "in-review") return;
+    const head = pr.headSha.toLowerCase();
+    const moved = head !== work.prHead?.toLowerCase();
+    if (work.state === "checkpointed" && !moved) return;
+    if (!store.recordReviewHead(work, { number: pr.number, head, url: pr.url }, moved)) return;
+    if (moved || work.state !== "in-review") return;
     const reviews = await github.reviews(work.repo, work.prNumber!);
     const reviewerLogins = config.reviewers.map((r) => r.login);
     const reading = readReviews(reviews, { head: pr.headSha, authorActor: config.authorActor, reviewerLogins });
@@ -122,14 +137,14 @@ export class Reconciler {
       ? readReviews(reviews, { head: pr.headSha, authorActor: config.authorActor, reviewerLogins: [...reviewerLogins, ...config.externalReviewers!] }).standingChanges
       : reading.standingChanges;
     if (standingChanges.length > 0) {
-      const key = `revise:${work.workId}@${pr.headSha}`;
+      const key = `revise:${work.workId}@${head}`;
       const inserted = store.enqueueOutbox({
         key, workId: work.workId, purpose: "revise",
-        payload: { repo: work.repo, number: pr.number, head: pr.headSha, reviews: standingChanges.map((r) => r.id) },
+        payload: { repo: work.repo, number: pr.number, head, reviews: standingChanges.map((r) => r.id) },
       });
       if (inserted) {
         store.setState(work.workId, "revising");
-        store.appendEvent(work.workId, "changes-requested", { head: pr.headSha, reviews: standingChanges.map((r) => r.id) });
+        store.appendEvent(work.workId, "changes-requested", { head, reviews: standingChanges.map((r) => r.id) });
       }
       return;
     }
@@ -196,18 +211,13 @@ export class Reconciler {
     }
   }
 
-  private queueReview(work: WorkRecord, number: number, head: string): void {
-    this.deps.store.enqueueOutbox({
-      key: `review:${work.workId}:${number}@${head}`, workId: work.workId, purpose: "review", payload: { repo: work.repo, number, head },
-    });
-  }
-
   private async runOutbox(): Promise<void> {
     const { store } = this.deps;
     for (const entry of store.dueOutbox(this.now())) {
       try {
-        await this.execute(entry);
-        store.completeOutbox(entry.key);
+        const status = await this.execute(entry);
+        if (status === "deferred") continue;
+        store.completeOutbox(entry.key, status ?? "done");
       } catch (error) {
         store.retryOutbox(entry.key, this.now() + this.deps.config.retryBackoffMs, errorText(error));
         this.log("error", "outbox operation failed; will retry", { key: entry.key, error: errorText(error) });
@@ -215,7 +225,7 @@ export class Reconciler {
     }
   }
 
-  private async execute(entry: OutboxEntry): Promise<void> {
+  private async execute(entry: OutboxEntry): Promise<"superseded" | "deferred" | undefined> {
     const { mesh, config, store } = this.deps;
     const work = store.getWork(entry.workId);
     if (!work) return;
@@ -236,16 +246,68 @@ export class Reconciler {
       if (leftToEnqueuer.length > 0) store.appendEvent(work.workId, "confirm-left-to-enqueuer", { jobIds: leftToEnqueuer });
       return;
     }
-    const payload = entry.payload as { repo: string; number: number; head: string; failedJobId?: string; reviewers?: string[] };
+    const payload = entry.payload as {
+      repo: string; number: number; head: string; failedJobId?: string; reviewers?: string[];
+      previousDispatchKey?: string; dispatchKey?: string;
+    };
+    const retry = entry.purpose === "revise" && entry.key.startsWith("revise-retry:");
+    if (!retry) {
+      const pr = await this.deps.github.pullRequest(payload.repo, payload.number);
+      if (pr.number !== payload.number || !validHead(pr.headSha)) throw new Error("pull request head unavailable");
+      const current = store.getWork(work.workId);
+      if (pr.state !== "open" || pr.merged || pr.headSha.toLowerCase() !== payload.head.toLowerCase() ||
+          current?.prNumber !== payload.number || current.prHead?.toLowerCase() !== payload.head.toLowerCase()) return "superseded";
+    }
     const target = { repo: payload.repo, kind: "pr", number: payload.number, headSha: payload.head };
     const expiresAt = this.now() + DAY_MS;
     if (entry.purpose === "review") {
-      await mesh.enqueue({
+      const input = {
         type: "review", target, slots: Math.min(2, config.reviewers.length), eligible: config.reviewers.map((r) => r.meshId),
-        excluded: config.authorMeshIds, expiresAt, idempotencyKey: `review:work:${work.workId}:${payload.number}@${payload.head}`,
-      });
+        excluded: config.authorMeshIds, expiresAt,
+      };
+      if (!payload.previousDispatchKey) {
+        await mesh.enqueue({ ...input, idempotencyKey: `review:work:${work.workId}:${payload.number}@${payload.head}` });
+        return;
+      }
+
+      // Idempotently resolve even legacy rows that did not store the gateway job ID.
+      const port = mesh.retrySession ? mesh.retrySession() : mesh;
+      if (!port.getJob) throw new Error("review return deferred: prior Mesh job cannot be read");
+      const candidateKey = payload.dispatchKey ?? payload.previousDispatchKey;
+      const candidate = await port.enqueue({ ...input, idempotencyKey: candidateKey });
+      const prior = await port.getJob(candidate.id);
+      if (prior.id !== candidate.id || prior.type !== "review" || prior.target?.kind !== "pr" ||
+          prior.target.repo?.toLowerCase() !== payload.repo.toLowerCase() || prior.target.number !== payload.number ||
+          prior.target.headSha?.toLowerCase() !== payload.head.toLowerCase()) {
+        throw new Error("review return deferred: prior Mesh job does not match the pull request");
+      }
+      let usable = usableReviewJob(prior, this.now());
+      if (prior.state === "reported" || prior.state === "completed" ||
+          prior.claims.filter((claim) => claim.state === "reported").length >= prior.slots) {
+        const reading = readReviews(await this.deps.github.reviews(payload.repo, payload.number), {
+          head: payload.head, authorActor: config.authorActor, reviewerLogins: config.reviewers.map((reviewer) => reviewer.login),
+        });
+        usable = reading.approvals.length > 0 || reading.standingChanges.length > 0;
+      }
+
+      // The head or work may have changed while the gateway answered.
+      const pr = await this.deps.github.pullRequest(payload.repo, payload.number);
+      if (pr.number !== payload.number || !validHead(pr.headSha)) throw new Error("pull request head unavailable");
+      const current = store.getWork(work.workId);
+      if (pr.state !== "open" || pr.merged || pr.headSha.toLowerCase() !== payload.head.toLowerCase() ||
+          !current || current.generation !== work.generation || current.state !== work.state ||
+          current.prNumber !== payload.number || current.prHead?.toLowerCase() !== payload.head.toLowerCase()) return "superseded";
+      if (usable) {
+        if (!store.setPendingReviewDispatchKey(entry.key, candidateKey, payload.dispatchKey)) return "deferred";
+        return;
+      }
+      const firstReplacement = `review:work:${entry.key.slice("review:".length)}`;
+      const replacementKey = payload.dispatchKey === undefined ? firstReplacement
+        : `${firstReplacement}:after:${createHash("sha256").update(candidateKey).digest("hex").slice(0, 24)}`;
+      // Persist before sending; a competing stale snapshot must not overwrite the winner's key.
+      if (!store.setPendingReviewDispatchKey(entry.key, replacementKey, payload.dispatchKey)) return "deferred";
+      await port.enqueue({ ...input, idempotencyKey: replacementKey });
     } else if (entry.purpose === "revise") {
-      const retry = entry.key.startsWith("revise-retry:");
       const port = retry && mesh.retrySession ? mesh.retrySession() : mesh;
       if (retry) {
         if (work.state !== "checkpointed" || work.repo !== payload.repo || work.prNumber !== payload.number ||
@@ -300,6 +362,30 @@ export class Reconciler {
   private log(level: "info" | "error", message: string, fields?: Record<string, unknown>): void {
     this.deps.log?.(level, message, fields);
   }
+}
+
+/** A job with an active or claimable reviewer can still serve this head; unknown data fails closed. */
+function usableReviewJob(job: MeshJobDetails, now: number): boolean {
+  if (!["queued", "reported", "completed", "expired"].includes(job.state) ||
+      !Number.isFinite(job.expiresAt) || !Number.isSafeInteger(job.slots) || job.slots < 1 ||
+      !Array.isArray(job.eligible) ||
+      !job.eligible.every((worker) => typeof worker === "string") ||
+      !Array.isArray(job.excluded) || !job.excluded.every((worker) => typeof worker === "string") ||
+      !Array.isArray(job.claims) || job.claims.some((claim) =>
+        typeof claim.worker !== "string" || !["active", "reported", "failed", "lost", "released"].includes(claim.state))) {
+    throw new Error("review return deferred: prior Mesh job has unknown state");
+  }
+  if (job.state === "reported" || job.state === "completed") return true;
+  // Mesh reads the job and its claims separately; all slots may report between those reads.
+  if (job.claims.filter((claim) => claim.state === "reported").length >= job.slots) return true;
+  if (job.state === "expired" || job.expiresAt <= now) return false;
+  const excluded = new Set(job.excluded.map((worker) => worker.toLowerCase()));
+  const eligible = job.eligible.map((worker) => worker.toLowerCase()).filter((worker) => !excluded.has(worker));
+  const active = new Set(job.claims.filter((claim) => claim.state === "active").map((claim) => claim.worker.toLowerCase()));
+  if (eligible.some((worker) => active.has(worker))) return true;
+  const consumed = new Set(job.claims.filter((claim) => ["active", "reported", "failed"].includes(claim.state))
+    .map((claim) => claim.worker.toLowerCase()));
+  return eligible.some((worker) => !consumed.has(worker));
 }
 
 function errorText(error: unknown): string {

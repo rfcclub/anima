@@ -132,13 +132,15 @@ describe("operator retry of a recovered revision", () => {
     },
   );
 
-  test("a moved PR head does not enqueue a retry", async () => {
+  test("a moved PR head gets a review instead of retrying the old revision", async () => {
     enqueueRetry();
     pr.headSha = "b".repeat(40);
     const sent: Record<string, unknown>[] = [];
     const mesh = { getJob: async () => priorJob(), enqueue: async (input: Record<string, unknown>) => { sent.push(input); return { id: "new" }; }, confirm: async () => {} };
     await new Reconciler({ store, github: github(), mesh, config, now: () => 1_000_000 }).tick();
-    expect(sent).toHaveLength(0);
+    expect(sent).toEqual([expect.objectContaining({
+      type: "review", target: expect.objectContaining({ headSha: pr.headSha }),
+    })]);
   });
 
   test("a withdrawn operator-selected review does not enqueue a retry", async () => {
