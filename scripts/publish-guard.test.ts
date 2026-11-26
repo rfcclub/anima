@@ -127,6 +127,46 @@ describe("publish guard: review of #400", () => {
     expect(JSON.stringify(found)).not.toContain("someone@example.org");
   });
 
+  test("a generic local example in ordinary commit prose is not an email identity", () => {
+    const dir = repo({ "a.txt": "x\n" });
+    git(dir, "-c", "user.name=t", "-c", "user.email=noreply@github.com", "commit", "--allow-empty", "-q", "-m", "Document the example user@host.local");
+    expect(rules(dir, { publicMode: true, history: true })).not.toContain("email");
+  });
+
+  test("the generic example remains an error in identities", () => {
+    const identity = repo({ "a.txt": "x\n" }, "user@host.local");
+    expect(rules(identity, { publicMode: true, history: true })).toContain("email");
+
+    const author = repo({ "a.txt": "x\n" });
+    git(author, "-c", "user.name=t", "-c", "user.email=noreply@github.com", "commit", "--allow-empty", "-q", "--author", "Example <user@host.local>", "-m", "change");
+    expect(rules(author, { history: true })).toContain("email");
+
+    const committer = repo({ "a.txt": "x\n" });
+    git(committer, "-c", "user.name=t", "-c", "user.email=user@host.local", "commit", "--allow-empty", "-q", "--author", "Example <noreply@github.com>", "-m", "change");
+    expect(rules(committer, { history: true })).toContain("email");
+
+    const tagger = repo({ "a.txt": "x\n" });
+    git(tagger, "-c", "user.name=t", "-c", "user.email=user@host.local", "tag", "-a", "v1", "-m", "release");
+    expect(rules(tagger, { history: true })).toContain("email");
+
+    for (const message of [
+      "Example user@host.local\n\nCo-Authored-By: Example <user@host.local>",
+      "Details\n\nSigned-off-by: Example user@host.local",
+      "Contact <user@host.local>",
+      "Contact < user@host.local >",
+    ]) {
+      const dir = repo({ "a.txt": "x\n" });
+      git(dir, "-c", "user.name=t", "-c", "user.email=noreply@github.com", "commit", "--allow-empty", "-q", "-m", message);
+      expect(rules(dir, { publicMode: true, history: true })).toContain("email");
+    }
+  });
+
+  test("another local address in ordinary commit prose remains an error", () => {
+    const dir = repo({ "a.txt": "x\n" });
+    git(dir, "-c", "user.name=t", "-c", "user.email=noreply@github.com", "commit", "--allow-empty", "-q", "-m", "Document other@host.local");
+    expect(rules(dir, { publicMode: true, history: true })).toContain("email");
+  });
+
   test("the Claude trailer address is allowed", () => {
     const dir = repo({ "a.txt": "x\n" });
     writeFileSync(join(dir, "a.txt"), "y\n");

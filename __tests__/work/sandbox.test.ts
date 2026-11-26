@@ -175,7 +175,7 @@ describe("commit identity", () => {
   test("the parent's git identity and config variables never reach the session", () => {
     const env = sessionEnv({
       PATH: "/usr/bin", GIT_AUTHOR_EMAIL: "real@example.com", GIT_COMMITTER_NAME: "Real Name",
-      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.email", GIT_CONFIG_VALUE_0: "real@example.com", GIT_CONFIG_GLOBAL: "/home/real/.gitconfig",
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.email", GIT_CONFIG_VALUE_0: "real@example.com", GIT_CONFIG_GLOBAL: "/home/user/.gitconfig",
     });
     expect(env.GIT_CONFIG_VALUE_0).toBe(WORK_COMMIT_IDENTITY.name);
     expect(env.GIT_CONFIG_VALUE_1).toBe(WORK_COMMIT_IDENTITY.email);

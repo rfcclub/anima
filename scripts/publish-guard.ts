@@ -166,7 +166,7 @@ export function runGuard(opts: GuardOptions): Finding[] {
   };
   const add = (level: Level, rule: string, where: string, detail: string): void => { findings.push({ level, rule, where: safe(where), detail }); };
 
-  // 1. identities and messages: every author, committer and tagger address, and every address inside a message, must be a noreply address
+  // 1. identities and messages: addresses must be noreply, except the generic local example in ordinary commit prose.
   // NUL cannot occur in a commit message or an address, so it is the only safe field separator (a control byte can)
   const records = (out: string, fields: number): string[][] => {
     const parts = out.split("\0");
@@ -178,9 +178,18 @@ export function runGuard(opts: GuardOptions): Finding[] {
   };
   const log = records(git(repo, ["log", ...range, "--format=%h%x00%ae%x00%ce%x00%B%x00"]).out, 4);
   const seenEmail = new Set<string>();
-  const checkText = (where: string, text: string): void => {
+  const checkText = (where: string, text: string, bodyStart = Infinity): void => {
     for (const m of text.matchAll(EMAIL)) {
       const e = m[0];
+      const offset = m.index!;
+      const lineStart = text.lastIndexOf("\n", offset - 1) + 1;
+      const lineEnd = text.indexOf("\n", offset);
+      const line = text.slice(lineStart, lineEnd < 0 ? undefined : lineEnd);
+      const before = line.slice(0, offset - lineStart);
+      const after = line.slice(offset - lineStart + e.length);
+      const trailer = /^\s*[\w-]+\s*:/.test(line);
+      const bracketed = /<\s*$/.test(before) && /^\s*>/.test(after);
+      if (offset >= bodyStart && e.toLowerCase() === "user@host.local" && !trailer && !bracketed) continue;
       if (NOREPLY.test(e) || seenEmail.has(e)) continue;
       seenEmail.add(e);
       add("error", "email", where, "address " + e.replace(/^(.).*@/, "$1***@") + " is not a GitHub noreply address");
@@ -193,7 +202,7 @@ export function runGuard(opts: GuardOptions): Finding[] {
     if (values.some((v) => text.includes(v))) add("error", "secret-value", where, "contains a value found in a local secrets file");
     if (opts.publicMode && [...text].some((c) => c.codePointAt(0)! > 127 && /\p{L}/u.test(c))) add("error", "non-english", where, "public repositories are English only");
   };
-  for (const [sha, ae, ce, body] of log) checkText("commit " + sha, [ae, ce, body].join("\n"));
+  for (const [sha, ae, ce, body] of log) checkText("commit " + sha, [ae, ce, body].join("\n"), ae.length + ce.length + 2);
   const tags = records(git(repo, ["for-each-ref", "refs/tags", "--format=%(refname:short)%00%(taggeremail)%00%(contents)%00"]).out, 3);
   for (const [name, email, body] of tags) {
     checkText("tag " + name, [email, body].join("\n"));
