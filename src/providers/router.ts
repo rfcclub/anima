@@ -74,6 +74,7 @@ export class ModeRouter {
   }
 
   async query(req: ProviderRequest, mode: TaskMode): Promise<ProviderResponse> {
+    req.signal?.throwIfAborted();
     const chain = this.buildChain();
 
     // If agent has a fallback config, use that chain. Otherwise use modeMap resolution.
@@ -89,6 +90,7 @@ export class ModeRouter {
     const errors: { ref: string; code: string; message: string }[] = [];
 
     for (const entry of chain) {
+      req.signal?.throwIfAborted();
       const { provider, model } = this.registry.resolve(entry.ref);
 
       // Check breaker — skip if OPEN
@@ -104,10 +106,12 @@ export class ModeRouter {
       let lastError: ProviderError | undefined;
       for (let attempt = 1; attempt <= entry.retry; attempt++) {
         try {
+          req.signal?.throwIfAborted();
           const result = await this.providerFor(provider).query({
             ...req,
             model: model.id,
           });
+          req.signal?.throwIfAborted();
           if (isAsyncGenerator(result)) {
             throw new ProviderError("SERVER_ERROR", provider.id, "streaming provider responses are not supported by ModeRouter");
           }
@@ -119,10 +123,12 @@ export class ModeRouter {
             this.breaker.recordSuccess(provider.id);
             console.log(`[breaker] ${provider.id} half-open → closed`);
           } else {
-            await this.breaker.recordModelSuccess(provider.id);
+            await this.breaker.recordModelSuccess(provider.id, req.signal);
           }
+          req.signal?.throwIfAborted();
           return result;
         } catch (error) {
+          req.signal?.throwIfAborted();
           if (error instanceof ProviderError) {
             lastError = error;
             if (error.code === "AUTH_ERROR") {
@@ -141,11 +147,13 @@ export class ModeRouter {
 
       // All retries exhausted (or auth error)
       if (lastError) {
+        req.signal?.throwIfAborted();
         errors.push({ ref: entry.ref, code: lastError.code, message: lastError.message });
 
         // Open breaker if retries exhausted on transient errors
         if (lastError.code !== "AUTH_ERROR") {
           const prevState = (await this.breaker.getState(provider.id))?.state;
+          req.signal?.throwIfAborted();
           this.breaker.recordFailure(provider.id);
           const newState = (await this.breaker.getState(provider.id))?.state;
           if (prevState !== "open" && newState === "open") {
@@ -155,6 +163,7 @@ export class ModeRouter {
       }
     }
 
+    req.signal?.throwIfAborted();
     const trail = errors.map((e) => `${e.ref}: ${e.code} — ${e.message}`).join("; ");
     throw new ProviderError("SERVER_ERROR", "router", `all providers exhausted. tried: ${trail}`);
   }
@@ -165,6 +174,7 @@ export class ModeRouter {
     const providerErrors: { ref: string; code: string; message: string }[] = [];
 
     for (const ref of this.resolve(mode)) {
+      req.signal?.throwIfAborted();
       const { provider, model } = this.registry.resolve(ref);
 
       // Breaker check for modeMap fallback too
@@ -180,15 +190,18 @@ export class ModeRouter {
       }
 
       try {
+        req.signal?.throwIfAborted();
         const result = await this.providerFor(provider).query({
           ...req,
           model: model.id,
         });
+        req.signal?.throwIfAborted();
         if (isAsyncGenerator(result)) {
           throw new ProviderError("SERVER_ERROR", provider.id, "streaming provider responses are not supported by ModeRouter");
         }
         return result;
       } catch (error) {
+        req.signal?.throwIfAborted();
         if (error instanceof ProviderError && error.code === "AUTH_ERROR") {
           skippedProviders.add(provider.id);
           providerErrors.push({ ref, code: error.code, message: error.message });
@@ -203,6 +216,7 @@ export class ModeRouter {
       }
     }
 
+    req.signal?.throwIfAborted();
     const trail = providerErrors.map((e) => `${e.ref}: ${e.code} — ${e.message}`).join("; ");
     throw new ProviderError("SERVER_ERROR", "router", `all providers exhausted. tried: ${trail}`);
   }

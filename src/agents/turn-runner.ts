@@ -89,10 +89,12 @@ export class TurnRunner {
         for (const call of response.tool_calls) {
           if (context.signal?.aborted) break;
           yield emit({ type: "tool-call", call, iteration });
+          if (context.signal?.aborted) break;
           if (context.guard) {
             let input: Record<string, unknown> = {};
             try { input = JSON.parse(call.arguments); } catch {}
             const decision = await context.guard(call.name, input);
+            if (context.signal?.aborted) break;
             if (!decision.allow) {
               const result = `Error: tool blocked — ${decision.message ?? "not allowed"}`;
               messages.push({ role: "tool", tool_call_id: call.id, content: result });

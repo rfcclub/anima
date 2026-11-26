@@ -1,0 +1,45 @@
+scenarios:
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-1-signal-reaches-the-running-mesh-turn
+    test: src/continuity/mesh-session-handlers.test.ts
+    assertion: 'SC-1 a mesh timeout reaches the running turn and fences its late result'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-2-abort-during-conversation-check
+    test: src/continuity/mesh-session-handlers.test.ts
+    assertion: 'SC-2 aborting during conversation lookup never starts the turn'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-3-delayed-provider-response-after-cancellation
+    test: __tests__/channels/agent-session-channel.test.ts
+    assertion: 'SC-3 aborting a mesh channel turn prevents a delayed tool and another provider call'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-4-ordinary-request
+    test: src/continuity/mesh-session-handlers.test.ts
+    assertion: 'AJ-7 an answered request finishes its own conversation with the answer and is marked replied'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-5-cancellation-while-a-tool-event-is-observed
+    test: __tests__/agents/turn-runner.test.ts
+    assertion: 'TurnRunner > abort during dispatch after the tool event starts no tool'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-6-cancellation-during-a-permission-decision
+    test: __tests__/agents/turn-runner.test.ts
+    assertion: 'TurnRunner > abort during dispatch while permission is pending starts no tool'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-7-cancellation-in-a-fallback-chain
+    test: __tests__/providers/router-cancellation.test.ts
+    assertion: 'SC-7 abort does not retry or mark a provider failed in the fallback chain'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-8-cancellation-in-a-mode-map
+    test: __tests__/providers/router-cancellation.test.ts
+    assertion: 'SC-8 abort does not retry or mark a provider failed in the mode map'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-9-cancellation-during-success-bookkeeping
+    test: __tests__/providers/router-cancellation-bookkeeping.test.ts
+    assertion: 'SC-9 abort during success bookkeeping neither resets the breaker nor returns a response'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-10-cancellation-during-session-recall
+    test: __tests__/agents/session-preparation-cancellation.test.ts
+    assertion: 'SC-10 abort during recall prevents MCP startup and clears the active session'
+    status: passing
+  - scenario: cooperative-cancellation-for-timed-out-mesh-turns-sc-11-cancellation-during-mcp-startup
+    test: test/mcp-manager-cancellation.test.ts
+    assertion: 'SC-11 abort during discovery stops the first MCP client and starts no later client'
+    status: passing

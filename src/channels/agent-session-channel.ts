@@ -96,6 +96,7 @@ export class AgentSessionChannel implements ChannelHandler {
       result = await session.run({
         agent,
         message: msg.message,
+        signal: msg.signal,
         mode: agent.config.session.defaultMode,
         modelOverride: this.modelOverride,
         sessionId,

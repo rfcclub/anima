@@ -29,20 +29,52 @@ export class McpManager {
     this.clientFactory = options.clientFactory ?? ((config) => new McpClient(config));
   }
 
-  async start(): Promise<void> {
+  async start(signal?: AbortSignal): Promise<void> {
     await this.stop();
 
-    for (const config of this.configs) {
-      const client = this.clientFactory(config);
-      const started = await client.start();
-      if (!started) continue;
+    let cleanup: Promise<void> | undefined;
+    let cleanupError: unknown;
+    let cleanupFailed = false;
+    const stopOnAbort = () => {
+      cleanup ??= this.stop().catch((error) => {
+        cleanupFailed = true;
+        cleanupError = error;
+      });
+    };
+    signal?.addEventListener("abort", stopOnAbort, { once: true });
+    try {
+      for (const config of this.configs) {
+        signal?.throwIfAborted();
+        const client = this.clientFactory(config);
+        signal?.throwIfAborted();
+        this.clients.push(client);
+        const started = await client.start();
+        if (!started) {
+          const index = this.clients.indexOf(client);
+          if (index >= 0) this.clients.splice(index, 1);
+          signal?.throwIfAborted();
+          continue;
+        }
 
-      this.clients.push(client);
-      const tools = await client.listTools();
-      for (const tool of tools) {
-        this.tools.push(tool);
-        this.routes.set(tool.name, { client, serverName: config.name });
+        signal?.throwIfAborted();
+        const tools = await client.listTools();
+        signal?.throwIfAborted();
+        for (const tool of tools) {
+          this.tools.push(tool);
+          this.routes.set(tool.name, { client, serverName: config.name });
+        }
       }
+      signal?.throwIfAborted();
+    } catch (error) {
+      if (signal?.aborted) {
+        await cleanup;
+        await this.stop();
+        if (cleanupFailed) throw cleanupError;
+        signal.throwIfAborted();
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", stopOnAbort);
     }
   }
 

@@ -212,12 +212,14 @@ export class CircuitBreaker {
    *  (PR #101: a same-provider fallback must not trip the shared breaker).
    *  Follows the disabled policy, and a breaker-file error never fails the
    *  successful request. */
-  async recordModelSuccess(providerId: string): Promise<void> {
+  async recordModelSuccess(providerId: string, signal?: AbortSignal): Promise<void> {
     if (breakerDisabled()) return;
     try {
       const state = await this.getState(providerId);
+      signal?.throwIfAborted();
       if ((state?.failureCount ?? 0) > 0) this.recordSuccess(providerId);
     } catch {
+      signal?.throwIfAborted();
       // The request already succeeded; breaker bookkeeping is best-effort here.
     }
   }

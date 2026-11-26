@@ -3,6 +3,7 @@ export interface ChannelMessage {
   message: string;
   userId?: string;
   channelId: string;
+  signal?: AbortSignal;
 }
 
 export interface ChannelHandler {
