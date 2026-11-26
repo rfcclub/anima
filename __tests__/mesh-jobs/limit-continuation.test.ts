@@ -326,3 +326,55 @@ describe("Slice 1 checkpointed work dispatch", () => {
     expect(enqueued).toHaveLength(0);
   });
 });
+
+
+describe("Backlog label parks an approved issue", () => {
+  const ghBacklog = async (args: string[]) => args[0] === "issue"
+    ? JSON.stringify([{ number: 7, body, labels: [{ name: "orca:approved" }, { name: "orca:backlog" }], createdAt: "2026-11-01T00:00:00Z" }])
+    : JSON.stringify({ data: { repository: { issue: { state: "OPEN", body, labels: { nodes: [{ name: "orca:approved" }, { name: "orca:backlog" }], pageInfo: { hasNextPage: false } }, closedByPullRequestsReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+
+  test("a backlog issue with no work is not dispatched", async () => {
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh, ghBacklog)).toBe(0);
+    expect(enqueued).toHaveLength(0);
+    expect(store.listWorks()).toHaveLength(0);
+  });
+
+  test("a qualifying blocked work on a backlog issue is not continued", async () => {
+    const work = stopped(7, true);
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh, ghBacklog)).toBe(0);
+    expect(store.getWork(work.workId)?.state).toBe("blocked");
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("a checkpointed work with a dead start job on a backlog issue is not re-dispatched", async () => {
+    const work = stopped();
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh, ghBacklog)).toBe(0);
+    expect(store.getWork(work.workId)?.state).toBe("checkpointed");
+    expect(enqueued).toHaveLength(0);
+  });
+});
+
+describe("Backlog label added between listing and recheck", () => {
+  const ghLate = async (args: string[]) => args[0] === "issue"
+    ? JSON.stringify([{ number: 7, body, labels: [{ name: "orca:approved" }], createdAt: "2026-11-01T00:00:00Z" }])
+    : JSON.stringify({ data: { repository: { issue: { state: "OPEN", body, labels: { nodes: [{ name: "orca:approved" }, { name: "orca:backlog" }], pageInfo: { hasNextPage: false } }, closedByPullRequestsReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+
+  test("a blocked work is not continued when only the recheck sees the backlog label", async () => {
+    const work = stopped(7, true);
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh, ghLate)).toBe(0);
+    expect(store.getWork(work.workId)?.state).toBe("blocked");
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("a checkpointed work is not re-dispatched when only the recheck sees the backlog label", async () => {
+    const work = stopped();
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh, ghLate)).toBe(0);
+    expect(store.getWork(work.workId)?.state).toBe("checkpointed");
+    expect(enqueued).toHaveLength(0);
+  });
+});
