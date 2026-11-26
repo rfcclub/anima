@@ -30,7 +30,7 @@ describe("createHostTestRunner", () => {
     expect(seen[0]!.wrapped[0]).toBe(SANDBOX_BINARY);
     expect(seen[0]!.wrapped[1]).toBe("-p");
     expect(seen[0]!.wrapped.slice(-3)).toEqual(["bun", "test", "./__tests__/x.test.ts"]);
-    expect(Object.keys(seen[0]!.env).sort()).toEqual(["HOME", "LANG", "PATH", "TMPDIR"]);
+    expect(Object.keys(seen[0]!.env).sort()).toEqual(["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "HOME", "LANG", "PATH", "TMPDIR"]);
     expect(JSON.stringify(seen[0]!.env)).not.toContain("ghp_");
   });
 

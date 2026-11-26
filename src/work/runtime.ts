@@ -11,7 +11,7 @@ import { createWorkHandler, type SessionExecutor, type StopCause } from "./consu
 import { loadWorkConfig } from "./config";
 import { readReviews, type WorkGitHub } from "./evidence";
 import { Reconciler, type MeshEnqueuer } from "./reconciler";
-import type { WorkRecord, WorkStore } from "./store";
+import type { StopRecord, WorkRecord, WorkStore } from "./store";
 import { checkContinuation, createStopRecorder, recordInterruptedStops, type TreeRead } from "./stops";
 
 export interface WorkRuntimeDeps {
@@ -26,6 +26,7 @@ export interface WorkRuntimeDeps {
    * every session end and recovery writes interrupted records (rfcclub/anima#238 AC-8). Absent keeps the old behavior.
    */
   treeRead?: TreeRead;
+  onTrustedStop?: (work: WorkRecord, stop: StopRecord) => void;
   /** Host-side publish safety net; absent keeps the old behavior. */
   publishFallback?: (input: {
     work: WorkRecord;
@@ -75,6 +76,7 @@ export function buildWorkRuntime(config: MeshJobsWorkConfig, deps: WorkRuntimeDe
     log: deps.log,
   });
 
+  const recordStop = deps.treeRead ? createStopRecorder({ store: deps.store, read: deps.treeRead }) : undefined;
   const handler = createWorkHandler({
     store: deps.store,
     executor: deps.executor,
@@ -84,7 +86,11 @@ export function buildWorkRuntime(config: MeshJobsWorkConfig, deps: WorkRuntimeDe
     findPublishedPr: async (repo, branch) => (await deps.workGithub.findPullRequest(repo, branch)) !== null,
     validateRevision: validateRevisionFeedback(deps.workGithub, config, deps.store),
     ...(deps.publishFallback ? { publishFallback: deps.publishFallback } : {}),
-    ...(deps.treeRead ? { recordStop: createStopRecorder({ store: deps.store, read: deps.treeRead }) } : {}),
+    ...(recordStop ? { recordStop: (input) => {
+      const stop = recordStop(input);
+      if (stop.trusted) deps.onTrustedStop?.(input.work, stop);
+      return stop;
+    } } : {}),
     ...(deps.treeRead ? { continuation: (work: WorkRecord) => checkContinuation(deps.store, work, deps.treeRead!) } : {}),
     authors: (config.extraAuthors ?? []).map((extra) => extra.agent),
     maxConcurrentWorks: config.maxConcurrentWorks,

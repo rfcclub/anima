@@ -12,7 +12,7 @@ describe("loadWorkConfig", () => {
     expect(c.author).toBe("finn");
     expect(c.provider).toBe("agnes");
     expect(c.model).toBe("agnes-3.0-flash");
-    expect(c.caps).toEqual({ maxSessions: 3, maxIterationsPerSession: 5, sessionWallMs: 10 * 60_000, workWallMs: 30 * 60_000 });
+    expect(c.caps).toEqual({ maxSessions: 3, maxContinuations: 2, maxIterationsPerSession: 5, sessionWallMs: 10 * 60_000, workWallMs: 30 * 60_000 });
     expect(c.caps).toEqual(DEFAULT_CAPS);
   });
 
@@ -66,5 +66,17 @@ describe("parseStoredCaps", () => {
   test("a stored record with a bad value or bad JSON is rejected", () => {
     expect(() => parseStoredCaps(JSON.stringify({ ...DEFAULT_CAPS, workWallMs: -5 }))).toThrow(RangeError);
     expect(() => parseStoredCaps("{not json")).toThrow(RangeError);
+  });
+});
+
+describe("Slice 1 continuation caps", () => {
+  test("Slice 1 defaults the continuation cap and reads legacy persisted caps", () => {
+    expect(loadWorkConfig().caps).toMatchObject({ maxContinuations: 2 });
+    const legacy = { maxSessions: 3, maxIterationsPerSession: 5, sessionWallMs: 600_000, workWallMs: 1_800_000 };
+    expect(parseStoredCaps(JSON.stringify(legacy))).toEqual({ ...legacy, maxContinuations: 2 });
+  });
+
+  test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("Slice 1 rejects invalid continuation cap %s", (value) => {
+    expect(() => loadWorkConfig({ caps: { maxContinuations: value } } as never)).toThrow(RangeError);
   });
 });

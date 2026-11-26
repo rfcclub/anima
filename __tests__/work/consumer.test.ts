@@ -13,6 +13,7 @@ import { WorkStore } from "../../src/work/store";
 import { createWorkHandler, type SessionExecutor, type SessionResult } from "../../src/work/consumer";
 import { issueDigest12 } from "../../src/work/approval";
 import { loadWorkConfig } from "../../src/work/config";
+import { captureLimitHandoff, shouldContinueAfterLimit } from "../../src/work/production";
 import { publishCommittedWork } from "../../src/work/publish-fallback";
 import { createSessionExecutor } from "../../src/work/executor";
 import { createStopRecorder } from "../../src/work/stops";
@@ -907,6 +908,49 @@ describe("host publish fallback", () => {
     expect(fallbackCalls).toBe(0);
   });
 
+  test.each([
+    { maxSessions: 3, expectedPushes: 0, expectedOutcome: { kind: "release" } },
+    { maxSessions: 1, expectedPushes: 1, expectedOutcome: { kind: "report", report: { outcome: "done", evidenceRef: "https://github.com/example/repo/pull/12" } } },
+  ])("a covered Low revision respects its session allowance ($maxSessions)", async ({ maxSessions, expectedPushes, expectedOutcome }) => {
+    const config = loadWorkConfig({ externalAdapter: "low", caps: { maxSessions, workWallMs: 60_000, sessionWallMs: 60_000 } });
+    const { work } = store.createWork({ repo: "example/repo", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0", config });
+    const head = "a".repeat(40);
+    const url = "https://github.com/example/repo/pull/12";
+    store.recordPullRequest(work.workId, { number: 12, head, url });
+    store.setState(work.workId, "revising");
+    const recordStop = createStopRecorder({ store, read: (_tree, args) => args[0] === "rev-parse" ? head : "" });
+    let pushes = 0;
+    const handler = createWorkHandler({
+      store, config, github, heartbeatMs: 10,
+      executor: {
+        adapterKind: "low",
+        ready: () => ({ ok: true }),
+        async runSession({ session }) {
+          const scratch = join(work.root, "tmp");
+          mkdirSync(scratch, { recursive: true });
+          writeFileSync(join(scratch, `AGENT_HANDOFF_${session.sessionId}.md`), "Next: verify the revision.");
+          return { stopCause: "max_reached", iterations: 1, execMs: 60_000, cessation: "proven" };
+        },
+      },
+      continuation: () => ({ ok: true }),
+      recordStop: (input) => captureLimitHandoff(store, input.work, recordStop(input)),
+      collectEvidence: async () => ({ ok: true, url }),
+      publishFallback: async (input) => {
+        if (shouldContinueAfterLimit(store, input)) return { published: false };
+        pushes++;
+        return { published: true };
+      },
+    });
+    const jobs = new FakeJobs();
+    const job = workJob({ type: "revise", target: { repo: work.repo, kind: "pr", number: 12, headSha: head } });
+    jobs.queued.push(job);
+    const claim = (await jobs.claim())!;
+    const outcome = await handler.run({ worker: config.author, claim, job, jobs });
+    expect(pushes).toBe(expectedPushes);
+    expect(outcome).toEqual(expectedOutcome);
+    expect(store.getWork(work.workId)?.state).toBe(expectedPushes ? "in-review" : "checkpointed");
+  });
+
   test("SC-005 a revise session ending in deadline does not run the fallback", async () => {
     const created = store.createWork({ repo: "rfcclub/anima", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0",
       config: loadWorkConfig({ caps: { workWallMs: 500, sessionWallMs: 500 } }) }).work;
@@ -1504,5 +1548,71 @@ describe("host-observed deadline recovery", () => {
   test.each(["sigint", "unknown"] as const)("an independent or unknown %s interruption stays interrupted even if the timer fired", async (source) => {
     const { session } = await runDeadline({ source });
     expect(session.stopCause).toBe("interrupted");
+  });
+});
+
+describe("Slice 1 terminal limit continuation", () => {
+  test("Slice 1 a trusted proven terminal start-work releases with a fresh allowance", async () => {
+    const config = loadWorkConfig({ caps: { maxSessions: 1, sessionWallMs: 500, workWallMs: 500 } });
+    const work = store.createWork({ repo: "rfcclub/anima", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0", config }).work;
+    const executor = new FakeExecutor();
+    executor.results.push({ stopCause: "deadline", iterations: 1, execMs: 500, cessation: "proven" });
+    const jobs = new FakeJobs();
+    const job = workJob();
+    jobs.queued.push(job);
+    const claim = (await jobs.claim())!;
+    const recordStop = createStopRecorder({ store, read: (_tree, args) => args[0] === "rev-parse" ? "a".repeat(40) : "" });
+    const handler = createWorkHandler({ store, config, executor, github, heartbeatMs: 10, recordStop,
+      collectEvidence: async () => ({ ok: false, reason: "unused" }), findPublishedPr: async () => false,
+      publishFallback: async () => ({ published: false, reason: "working tree is not clean" }) });
+    expect(await handler.run({ worker: config.author, claim, job, jobs })).toEqual({ kind: "release" });
+    expect(store.getWork(work.workId)).toMatchObject({ state: "checkpointed", caps: { maxSessions: 2, workWallMs: 1000 } });
+    expect(store.listEvents(work.workId).filter((event) => event.kind === "limit-continuation")).toHaveLength(1);
+  });
+});
+
+describe("Slice 1 continuation bounds", () => {
+  test("Slice 1 repeated terminal stops get exactly two fresh allowances, then block", async () => {
+    const config = loadWorkConfig({ caps: { maxSessions: 1, sessionWallMs: 500, workWallMs: 500 } });
+    const work = store.createWork({ repo: "rfcclub/anima", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0", config }).work;
+    const executor = new FakeExecutor();
+    for (let i = 0; i < 3; i++) executor.results.push({ stopCause: "deadline", iterations: 1, execMs: 500, cessation: "proven" });
+    const jobs = new FakeJobs();
+    const job = workJob();
+    let fallbackCalls = 0;
+    const handler = createWorkHandler({ store, config, executor, github, heartbeatMs: 10,
+      recordStop: createStopRecorder({ store, read: (_tree, args) => args[0] === "rev-parse" ? "a".repeat(40) : "" }),
+      collectEvidence: async () => ({ ok: false, reason: "unused" }), findPublishedPr: async () => false,
+      publishFallback: async () => { fallbackCalls++; return { published: false, reason: "no commit ahead" }; } });
+    const outcomes = [];
+    for (let i = 0; i < 3; i++) {
+      jobs.queued.push(job);
+      const claim = (await jobs.claim())!;
+      outcomes.push(await handler.run({ worker: config.author, claim, job, jobs }));
+    }
+    expect(outcomes.map((result) => result.kind)).toEqual(["release", "release", "report"]);
+    expect(fallbackCalls).toBe(3);
+    expect(store.getWork(work.workId)).toMatchObject({ state: "blocked", caps: { maxSessions: 3, workWallMs: 1500 } });
+    expect(store.listEvents(work.workId).filter((event) => event.kind === "limit-continuation")).toHaveLength(2);
+  });
+
+  test("Slice 1 lease loss during the PR check writes no continuation or block", async () => {
+    const config = loadWorkConfig({ caps: { maxSessions: 1, sessionWallMs: 500, workWallMs: 500 } });
+    const work = store.createWork({ repo: "rfcclub/anima", issue: 7, approvedDigest: DIGEST, workId: "wabc1234ef0", config }).work;
+    const executor = new FakeExecutor();
+    executor.results.push({ stopCause: "deadline", iterations: 1, execMs: 500, cessation: "proven" });
+    const jobs = new FakeJobs();
+    jobs.heartbeatError = new LeaseLostError(409, "lost");
+    const job = workJob();
+    jobs.queued.push(job);
+    const claim = (await jobs.claim())!;
+    const handler = createWorkHandler({ store, config, executor, github, heartbeatMs: 10,
+      recordStop: createStopRecorder({ store, read: (_tree, args) => args[0] === "rev-parse" ? "a".repeat(40) : "" }),
+      collectEvidence: async () => ({ ok: false, reason: "unused" }),
+      findPublishedPr: async () => { await new Promise((resolve) => setTimeout(resolve, 35)); return false; },
+      publishFallback: async () => ({ published: false, reason: "no commit ahead" }) });
+    expect(await handler.run({ worker: config.author, claim, job, jobs })).toEqual({ kind: "lease-lost" });
+    expect(store.getWork(work.workId)?.state).toBe("checkpointed");
+    expect(store.listEvents(work.workId).some((event) => event.kind === "limit-continuation" || event.kind === "limit-terminal-declined")).toBe(false);
   });
 });

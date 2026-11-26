@@ -236,6 +236,9 @@ function toOutbox(r: Row): OutboxEntry {
 
 const RESERVABLE: ReadonlySet<WorkState> = new Set(["queued", "checkpointed", "revising"]);
 
+/** A block written when a work reached its time or session limit; only such a block may be continued. */
+export const LIMIT_BLOCK_REASON = /^(?:execution time limit reached|sessions exhausted \(\d+ of \d+ used\))(?:; publish fallback declined: .*)?$/;
+
 export class WorkStore {
   private readonly now: () => number;
   private readonly rootBase: string;
@@ -618,6 +621,48 @@ export class WorkStore {
 
   listSessions(workId: string): SessionRecord[] {
     return (this.db.query("SELECT * FROM work_sessions WHERE work_id = ? ORDER BY no").all(workId) as Row[]).map(toSession);
+  }
+
+  /** Grant one original allowance after the current trusted terminal limit stop. The caller holds the work lock. */
+  continueAfterLimit(input: {
+    workId: string; root: string; generation: number; sessionId: string;
+    jobType: "start-work" | "revise"; state: "checkpointed" | "blocked";
+  }): WorkRecord | null {
+    return this.db.transaction(() => {
+      const work = this.getWork(input.workId);
+      if (!work || input.jobType !== "start-work" || work.prNumber !== null || work.state !== input.state ||
+          work.root !== input.root || work.generation !== input.generation) return null;
+      // A trusted old stop must not undo a later block for another reason.
+      if (work.state === "blocked" && !LIMIT_BLOCK_REASON.test(work.blockedReason ?? "")) return null;
+      if (work.sessionsUsed < work.caps.maxSessions && !this.wallSpent(work, work.caps.workWallMs)) return null;
+      const sessions = this.listSessions(work.workId);
+      const latest = sessions.at(-1);
+      if (sessions.length !== work.sessionsUsed || sessions.some((session, i) => session.no !== i + 1 || session.endedAt === null) ||
+          !latest || latest.sessionId !== input.sessionId || latest.endedUnknown || latest.generation !== work.generation ||
+          (latest.stopCause !== "deadline" && latest.stopCause !== "max_reached")) return null;
+      const stop = this.getStop(latest.sessionId);
+      if (!stop || stop.workId !== work.workId || !stop.trusted || stop.cessation !== "proven" || stop.interrupted ||
+          stop.stopCause !== latest.stopCause) return null;
+      const continuations = this.listEvents(work.workId).filter((event) => event.kind === "limit-continuation");
+      if (continuations.length >= work.caps.maxContinuations || continuations.some((event) =>
+          (event.detail as { sessionId?: unknown } | null)?.sessionId === latest.sessionId)) return null;
+      let baseCaps: WorkCaps;
+      try {
+        const first = continuations[0]?.detail as { baseCaps?: unknown } | undefined;
+        baseCaps = first ? parseStoredCaps(JSON.stringify(first.baseCaps)) : work.caps;
+      } catch {
+        return null;
+      }
+      const caps = { ...work.caps, maxSessions: work.caps.maxSessions + baseCaps.maxSessions,
+        workWallMs: work.caps.workWallMs + baseCaps.workWallMs };
+      if (!Number.isSafeInteger(caps.maxSessions) || !Number.isSafeInteger(caps.workWallMs) ||
+          caps.maxSessions <= work.sessionsUsed || this.wallSpent(work, caps.workWallMs)) return null;
+      this.db.run("UPDATE works SET state = 'checkpointed', blocked_reason = NULL, caps_json = ?, updated_at = ? WHERE work_id = ?",
+        [JSON.stringify(caps), this.stamp(), work.workId]);
+      this.writeEvent(work.workId, "limit-continuation", { n: continuations.length + 1, stopCause: latest.stopCause,
+        sessionId: latest.sessionId, baseCaps, previousCaps: work.caps, caps });
+      return this.mustGet(work.workId);
+    }).immediate();
   }
 
   /**

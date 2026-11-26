@@ -3,11 +3,12 @@
  * Runs real `sandbox-exec` children; the group is skipped, with the reason printed, where the binary is absent.
  */
 
-import { test, expect, describe, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildProfile, probeSandbox, sandboxCommand, sanitizedEnv, SANDBOX_BINARY } from "../../src/work/sandbox";
+import { buildProfile, probeSandbox, sandboxCommand, sanitizedEnv, SANDBOX_BINARY, WORK_COMMIT_IDENTITY } from "../../src/work/sandbox";
 
 const available = existsSync(SANDBOX_BINARY);
 if (!available) console.warn(`sandbox tests skipped: ${SANDBOX_BINARY} is not present on this platform`);
@@ -149,6 +150,76 @@ describe("environment", () => {
     expect(env.TMPDIR).toBe("/w/tmp");
     expect(env.PATH).toBe("/usr/bin");
     for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "ANIMA_MESH_TOKEN", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK"]) expect(k in env).toBe(false);
+  });
+});
+
+describe("commit identity", () => {
+  const sessionEnv = (parent: Record<string, string | undefined> = { PATH: process.env.PATH ?? "" }, home = "/w/home") =>
+    sanitizedEnv(parent, { home, tmp: "/w/tmp" });
+
+  test("a session's git identity is a neutral noreply one, never derived from the host account", () => {
+    const env = sessionEnv({ PATH: "/usr/bin" });
+    expect(env.GIT_CONFIG_COUNT).toBe("2");
+    expect(env.GIT_CONFIG_KEY_0).toBe("user.name");
+    expect(env.GIT_CONFIG_VALUE_0).toBe(WORK_COMMIT_IDENTITY.name);
+    expect(env.GIT_CONFIG_KEY_1).toBe("user.email");
+    expect(env.GIT_CONFIG_VALUE_1).toBe(WORK_COMMIT_IDENTITY.email);
+    expect(WORK_COMMIT_IDENTITY.email).toMatch(/@users\.noreply\.github\.com$/);
+  });
+
+  test("it is a default, not a lock: the author and committer variables are not set, so an explicit identity can still win", () => {
+    const env = sessionEnv({ PATH: "/usr/bin" });
+    for (const k of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) expect(k in env).toBe(false);
+  });
+
+  test("the parent's git identity and config variables never reach the session", () => {
+    const env = sessionEnv({
+      PATH: "/usr/bin", GIT_AUTHOR_EMAIL: "real@example.com", GIT_COMMITTER_NAME: "Real Name",
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.email", GIT_CONFIG_VALUE_0: "real@example.com", GIT_CONFIG_GLOBAL: "/home/real/.gitconfig",
+    });
+    expect(env.GIT_CONFIG_VALUE_0).toBe(WORK_COMMIT_IDENTITY.name);
+    expect(env.GIT_CONFIG_VALUE_1).toBe(WORK_COMMIT_IDENTITY.email);
+    for (const k of ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_CONFIG_GLOBAL"]) expect(k in env).toBe(false);
+  });
+
+  describe("real git under the session environment", () => {
+    let repo: string;
+    beforeEach(() => {
+      repo = mkdtempSync(join(tmpdir(), "work-identity-"));
+    });
+    afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+    const gitIn = (args: string[]) => {
+      const env = { ...sanitizedEnv({ PATH: process.env.PATH ?? "" }, { home: join(repo, "home"), tmp: repo }), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+      return spawnSync("git", ["-C", repo, ...args], { env, encoding: "utf8" });
+    };
+    const commit = (name: string, extra: string[] = []) => {
+      writeFileSync(join(repo, name), `${name}\n`);
+      gitIn(["add", name]);
+      return gitIn([...extra, "commit", "-q", "-m", name]);
+    };
+    const last = () => gitIn(["log", "-1", "--format=%an <%ae> | %cn <%ce>"]).stdout.trim();
+    const neutral = `${WORK_COMMIT_IDENTITY.name} <${WORK_COMMIT_IDENTITY.email}>`;
+
+    test("a default commit carries the neutral identity", () => {
+      gitIn(["init", "-q"]);
+      expect(commit("a.txt").status).toBe(0);
+      expect(last()).toBe(`${neutral} | ${neutral}`);
+    });
+
+    test("an explicit -c identity still wins, so a fixture or the host publisher can choose its own author", () => {
+      gitIn(["init", "-q"]);
+      expect(commit("b.txt", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]).status).toBe(0);
+      expect(last()).toBe("Fixture <fixture@example.invalid> | Fixture <fixture@example.invalid>");
+    });
+
+    test("a configured author.name/author.email still wins for the author, as git resolves them before user.*", () => {
+      gitIn(["init", "-q"]);
+      gitIn(["config", "author.name", "Planted"]);
+      gitIn(["config", "author.email", "planted@example.invalid"]);
+      expect(commit("c.txt").status).toBe(0);
+      expect(last()).toBe(`Planted <planted@example.invalid> | ${neutral}`);
+    });
   });
 });
 

@@ -17,7 +17,7 @@ let dbPath: string;
 let store: WorkStore;
 let iterations: number[];
 let deadlines: number[];
-const EXPECTED_DEFAULTS = { maxSessions: 3, maxIterationsPerSession: 5, sessionWallMs: 600_000, workWallMs: 1_800_000 };
+const EXPECTED_DEFAULTS = { maxSessions: 3, maxContinuations: 2, maxIterationsPerSession: 5, sessionWallMs: 600_000, workWallMs: 1_800_000 };
 
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "caps-runtime-")));
@@ -89,8 +89,8 @@ describe("work caps (WC)", () => {
     expect(deadlines).toEqual([600_000]);
   });
 
-  test("all four caps reach the work record and session", async () => {
-    const caps = { maxSessions: 9, maxIterationsPerSession: 40, sessionWallMs: 120_000, workWallMs: 240_000 };
+  test("all five caps reach the work record and session", async () => {
+    const caps = { maxSessions: 9, maxContinuations: 3, maxIterationsPerSession: 40, sessionWallMs: 120_000, workWallMs: 240_000 };
     await expect(start(caps)).resolves.toEqual({ kind: "release" });
     expect(storedCaps()).toEqual(caps);
     expect(iterations).toEqual([40]);
