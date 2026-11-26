@@ -23,6 +23,8 @@ import { acquireWorkLock } from "../work/supervisor";
 const DAY_MS = 24 * 3_600_000;
 /** A blocked work is continued only while fewer works than this hold a slot (see holdsSlot). */
 const BACKLOG_IN_FLIGHT_LIMIT = 2;
+/** An approved issue that also carries this label is parked by the owner: no new work, no continuation, no re-dispatch. */
+export const PARKED_LABEL = "orca:backlog";
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
 const ACTIVE_STATES: ReadonlySet<WorkState> = new Set(["queued", "running", "checkpointed", "in-review", "revising"]);
@@ -277,7 +279,7 @@ async function recoverQueuedWork(
   }
 }
 
-/** Confirm a blocked issue is still approved and has no merged closing PR. Any incomplete response fails closed. */
+/** Confirm a blocked issue is still approved, not parked, and has no merged closing PR. Any incomplete response fails closed. */
 async function issueStillNeedsWork(gh: GhRunner, repo: string, issue: number, digest: string, label: string): Promise<boolean> {
   const [owner, name] = repo.split("/");
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){state body labels(first:100){nodes{name} pageInfo{hasNextPage}} closedByPullRequestsReferences(first:100,includeClosedPrs:true){nodes{merged} pageInfo{hasNextPage}}}}}`;
@@ -292,6 +294,7 @@ async function issueStillNeedsWork(gh: GhRunner, repo: string, issue: number, di
     const prs = current?.closedByPullRequestsReferences;
     return !parsed.errors && current?.state === "OPEN" && typeof current.body === "string" && issueDigest(current.body) === digest &&
       Array.isArray(labels?.nodes) && labels.pageInfo?.hasNextPage === false && labels.nodes.some((entry) => entry.name === label) &&
+      !labels.nodes.some((entry) => entry.name === PARKED_LABEL) &&
       Array.isArray(prs?.nodes) && prs.pageInfo?.hasNextPage === false && prs.nodes.every((entry) => entry.merged === false);
   } catch {
     return false;
@@ -403,6 +406,7 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
       issues = (JSON.parse(raw) as GitHubIssue[]).filter((issue) =>
         Number.isInteger(issue?.number) && issue.number > 0
         && (issue.labels ?? []).some((label) => label?.name === config.issueLabel)
+        && !(issue.labels ?? []).some((label) => label?.name === PARKED_LABEL)
         && (config.notBefore === undefined
           || (typeof issue.createdAt === "string" && Date.parse(issue.createdAt) >= config.notBefore)));
     } catch {
