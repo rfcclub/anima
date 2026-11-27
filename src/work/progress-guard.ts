@@ -4,11 +4,14 @@ import type { ProgressClassification, WorkStore } from "./store";
 
 type Intervention = "none" | "warn" | "stop";
 export interface ProgressSample {
+  /** Opaque identity used to clear a warning for this call. */
+  callHash: string;
   classification: ProgressClassification | "polling";
   streak: number;
   wouldAction: Intervention;
   action: Intervention;
   falsePositive: boolean;
+  budgetExhausted: boolean;
 }
 export interface ProgressGuardInput {
   store: WorkStore;
@@ -17,7 +20,10 @@ export interface ProgressGuardInput {
   claimId: string;
   generation: number;
   signal: AbortSignal;
-  state: () => Promise<string | null>;
+  state: (signal: AbortSignal) => Promise<string | null>;
+  /** Total wall time allowed for snapshots during this guard's session. */
+  observationBudgetMs?: number;
+  now?: () => number;
   enforce?: boolean;
   pollingReadPaths?: readonly string[];
   pollingCommands?: readonly string[];
@@ -57,14 +63,45 @@ function isPolling(call: ProviderToolCall, args: Record<string, unknown> | null,
 /** Advisory observations are best-effort; only an emitted, known observation can lead to enforcement. */
 export function createProgressGuard(input: ProgressGuardInput) {
   const warnedAt = new Map<string, number>();
+  const now = input.now ?? (() => performance.now());
+  const budget = Number.isFinite(input.observationBudgetMs) && input.observationBudgetMs! >= 0
+    ? input.observationBudgetMs! : 1_000;
+  let spent = 0;
+
+  async function snapshot(): Promise<{ state: string | null; limited: boolean }> {
+    const remaining = budget - spent;
+    if (remaining <= 0) return { state: null, limited: true };
+    if (input.signal.aborted) return { state: null, limited: false };
+    const started = now();
+    const controller = new AbortController();
+    let limited = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
+    try {
+      const stopped = new Promise<null>((resolve) => {
+        abort = () => { controller.abort(); resolve(null); };
+        input.signal.addEventListener("abort", abort, { once: true });
+        timer = setTimeout(() => { limited = true; abort!(); }, remaining);
+        if (input.signal.aborted) abort();
+      });
+      const state = await Promise.race([Promise.resolve().then(() => input.state(controller.signal)).catch(() => null), stopped]);
+      const elapsed = Math.max(0, now() - started);
+      spent += elapsed;
+      return { state: limited || input.signal.aborted || elapsed > remaining ? null : state, limited: limited || elapsed > remaining };
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (abort) input.signal.removeEventListener("abort", abort);
+    }
+  }
   return {
     async observe(observation: ToolObservation): Promise<ProgressSample> {
-      const unknown: ProgressSample = { classification: "unknown", streak: 0, wouldAction: "none", action: "none", falsePositive: false };
+      const identity = callIdentity(observation.call);
+      const unknown: ProgressSample = { callHash: identity.hash, classification: "unknown", streak: 0, wouldAction: "none", action: "none", falsePositive: false, budgetExhausted: false };
       try {
-        const identity = callIdentity(observation.call);
         let state: string | null = null;
+        let budgetExhausted = false;
         if (observation.completed && !input.signal.aborted) {
-          try { state = await input.state(); } catch { /* incomplete snapshots are unknown */ }
+          ({ state, limited: budgetExhausted } = await snapshot());
         }
         const compared = input.store.observeProgress({
           workId: input.workId, sessionId: input.sessionId, claimId: input.claimId,
@@ -73,6 +110,7 @@ export function createProgressGuard(input: ProgressGuardInput) {
           stateHash: hexHash(state) ? state : null,
         });
         const eligible = compared.classification === "unchanged";
+        if (!eligible) warnedAt.delete(identity.hash);
         const polling = eligible && isPolling(observation.call, identity.args, input.pollingReadPaths ?? [], input.pollingCommands ?? []);
         const wouldAction: Intervention = eligible && compared.streak >= 2 ? (compared.streak === 2 ? "warn" : "stop") : "none";
         let action: Intervention = "none";
@@ -82,17 +120,19 @@ export function createProgressGuard(input: ProgressGuardInput) {
           else if (observation.iteration > warned) action = "stop";
         }
         const sample: ProgressSample = {
+          callHash: identity.hash, budgetExhausted,
           classification: polling ? "polling" : compared.classification, streak: compared.streak,
           wouldAction, action, falsePositive: polling && wouldAction !== "none",
         };
         input.store.appendEvent(input.workId, "progress-guard", {
           classification: sample.classification, streak: sample.streak, wouldAction, action,
-          falsePositive: sample.falsePositive, callHash: identity.hash,
+          falsePositive: sample.falsePositive, budgetExhausted, callHash: identity.hash,
           tool: ["read", "write", "edit", "bash", "publish"].includes(observation.call.name) ? observation.call.name : "unknown",
         });
         if (action === "warn") warnedAt.set(identity.hash, observation.iteration);
         return sample;
       } catch {
+        warnedAt.delete(identity.hash);
         return unknown;
       }
     },

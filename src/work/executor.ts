@@ -202,8 +202,8 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
         store: deps.store, workId: work.workId, sessionId: session.sessionId, claimId: input.claim.id,
         generation: session.generation, signal, enforce: deps.progressGuardEnforce,
         pollingReadPaths: deps.progressPollingReadPaths, pollingCommands: deps.progressPollingCommands,
-        state: () => fingerprintWorkState({
-          workspace: ws, denyReadRoots: deps.denyReadRoots ?? [], signal, parentEnv: deps.parentEnv ?? process.env,
+        state: (snapshotSignal) => fingerprintWorkState({
+          workspace: ws, denyReadRoots: deps.denyReadRoots ?? [], signal: snapshotSignal, parentEnv: deps.parentEnv ?? process.env,
         }),
       });
 
@@ -243,7 +243,8 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
           observeTool: async (entry: Parameters<typeof progress.observe>[0]) => {
             const sample = await progress.observe(entry);
             return {
-              ...(sample.action === "warn" ? { warning: "Progress guard: this tool call has repeated without an observed result or worktree change. Reassess the next step before repeating it." } : {}),
+              ...(sample.action === "warn" ? { warning: "Progress guard: this tool call has repeated without an observed result or worktree change. Reassess the next step before repeating it.", warningKey: sample.callHash } : {}),
+              ...(["first", "changed", "unknown"].includes(sample.classification) ? { clearWarningKey: sample.callHash } : {}),
               ...(sample.action === "stop" ? { stop: true } : {}),
             };
           },

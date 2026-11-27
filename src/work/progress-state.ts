@@ -6,7 +6,7 @@ import type { Workspace } from "./workspace";
  * worker. Git lists tracked and nonignored files; links are hashed as links, never followed. Limits make an
  * incomplete snapshot unknown rather than an apparent match.
  */
-const SNAPSHOT = String.raw`
+export const SNAPSHOT_PROGRAM = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
@@ -99,7 +99,7 @@ export async function fingerprintWorkState(input: {
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
   };
   try {
-    const argv = sandboxCommand({ writableRoots: [ws.root], denyReadRoots: input.denyReadRoots }, [process.execPath, "-e", SNAPSHOT, ws.root, ws.tree, ws.gitDir]);
+    const argv = sandboxCommand({ writableRoots: [ws.root], denyReadRoots: input.denyReadRoots }, [process.execPath, "-e", SNAPSHOT_PROGRAM, ws.root, ws.tree, ws.gitDir]);
     child = Bun.spawn(argv, { cwd: ws.tree, env: sanitizedEnv(input.parentEnv, { home: ws.home, tmp: ws.tmp }), detached: true, stdout: "pipe", stderr: "ignore" });
     input.signal.addEventListener("abort", stop, { once: true });
     if (input.signal.aborted) stop();

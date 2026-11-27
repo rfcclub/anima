@@ -82,7 +82,7 @@ export interface LoopHost {
   /** Tools the host runs for the model. Without them no tools are offered. */
   tools?: LoopHostTools;
   /** Optional advisory observation after a tool marker has been closed. */
-  observeTool?(entry: { call: ProviderToolCall; result: string; iteration: number; completed: boolean }): Promise<{ warning?: string; stop?: boolean }>;
+  observeTool?(entry: { call: ProviderToolCall; result: string; iteration: number; completed: boolean }): Promise<{ warning?: string; warningKey?: string; clearWarningKey?: string; stop?: boolean }>;
   /** Markers still open from earlier sessions of this work, oldest first. */
   openSteps(): LoopHostStep[];
   /** Check what the open steps left behind and mark them verified; returns text for the model's first message. */
@@ -301,7 +301,7 @@ export async function runLoopMode(
 
     // Host-run tools: each call has its own marker, runs one after another, and its result goes into the next message.
     let toolResults = "";
-    let progressWarning = "";
+    const progressWarnings = new Map<string, string>();
     let progressStop = false;
     const hostTools = options.host?.tools;
     if (hostTools && toolCalls.length > 0) {
@@ -327,8 +327,9 @@ export async function runLoopMode(
         sections.push(`#${toolCall.id} ${toolCall.name} ${toolCall.arguments.slice(0, 300)}\n${text}`);
         try {
           const progress = await options.host?.observeTool?.({ call: toolCall, result: rawResult ?? text, iteration: i, completed });
+          if (progress?.clearWarningKey !== undefined) progressWarnings.delete(progress.clearWarningKey);
           if (progress?.warning) {
-            progressWarning = progress.warning;
+            progressWarnings.set(progress.warningKey ?? "", progress.warning);
             warnedAtIteration ??= i;
           }
           // Never stop until the warning appeared in the message for a subsequent provider turn.
@@ -403,7 +404,7 @@ export async function runLoopMode(
     currentMessage = toolResults
       ? `[loop:${i}/${last}] Tool results:\n${toolResults}\n\nContinue. Previous step: ${reason}`
       : `[loop:${i}/${last}] Continue. Previous step: ${reason}`;
-    if (progressWarning) currentMessage += `\n\n${progressWarning}`;
+    if (progressWarnings.size) currentMessage += `\n\n${[...progressWarnings.values()].join("\n\n")}`;
     const hint = options.windDown?.(i, last);
     if (hint) currentMessage += `\n\n${hint}`;
   }

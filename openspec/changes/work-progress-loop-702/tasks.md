@@ -24,3 +24,9 @@
 
 - [x] Run the unchanged lease/generation, work-store, step-marker, idempotency, reconciliation and executor tests alongside the new tests. Run typecheck and build.
 - [x] Run executable `orca verify`, `orca gate-plan` and `orca gate-code`; preserve their actual receipts, including refusals and warnings.
+
+## Review regressions
+
+- [x] Capture failing tests for warning reset on changed and unknown observations and for clearing only the affected pending warning within a tool batch.
+- [x] Capture failing tests for the per-session snapshot budget, slow snapshots and aborting a snapshot at expiry. Record a synthetic observer-off/on deadline comparison; retain enforcement disabled by default pending real baseline collection.
+- [x] Capture failing cross-platform snapshot-logic tests, run actual sandbox cases only when available and add a macOS command that requires the real sandbox. A CI workflow would require a publisher with workflow permission.

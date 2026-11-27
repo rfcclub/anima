@@ -39,6 +39,59 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
+describe("review regressions", () => {
+  for (const reset of ["changed", "unknown"] as const) {
+    test(`review-reset: ${reset} requires a new warning before stop`, async () => {
+      const input = setup(); let state: string | null = hash("a");
+      const g = guard(input, { enforce: true, state: async () => state });
+      for (let i = 1; i <= 3; i++) await g.observe({ ...response(), iteration: i });
+      if (reset === "unknown") state = null;
+      await g.observe({ ...response("changed"), iteration: 4 });
+      state = hash("a");
+      let sample: any;
+      for (let i = 5; i <= (reset === "unknown" ? 7 : 6); i++) {
+        sample = await g.observe({ ...response("changed"), iteration: i });
+      }
+      expect(sample).toMatchObject({ classification: "unchanged", wouldAction: "warn", action: "warn" });
+    });
+  }
+
+  test("review-budget: exhausted observation budget reports unknown instead of taking more snapshots", async () => {
+    const input = setup(); let time = 0; let snapshots = 0;
+    const g = guard(input, {
+      observationBudgetMs: 50, now: () => time,
+      state: async () => { snapshots++; time += 30; return hash("a"); },
+    });
+    const samples = [];
+    for (let i = 1; i <= 6; i++) samples.push(await g.observe({ ...response(), iteration: i }));
+    expect(snapshots).toBeLessThanOrEqual(2);
+    expect(samples.at(-1)).toMatchObject({ classification: "unknown", action: "none" });
+  });
+
+  test("review-budget: a slow observation cannot run past the remaining session budget", async () => {
+    const input = setup();
+    const g = guard(input, {
+      observationBudgetMs: 20,
+      state: async () => { await Bun.sleep(250); return hash("a"); },
+    });
+    const start = performance.now();
+    const sample = await g.observe(response());
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(sample).toMatchObject({ classification: "unknown", action: "none" });
+  });
+
+  test("review-budget: expiry aborts the snapshot and never intervenes", async () => {
+    const input = setup(); let cancelled = false;
+    const g = guard(input, { enforce: true, observationBudgetMs: 20,
+      state: async (signal: AbortSignal) => new Promise<string | null>((resolve) => {
+        signal.addEventListener("abort", () => { cancelled = true; resolve(null); }, { once: true });
+      }),
+    });
+    expect(await g.observe(response())).toMatchObject({ classification: "unknown", action: "none" });
+    expect(cancelled).toBe(true);
+  });
+});
+
 describe("progress-aware repeat guard", () => {
   test("classifies unchanged repeats without storing raw arguments or results", async () => {
     const input = setup(); const g = guard(input);

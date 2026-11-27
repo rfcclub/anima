@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SANDBOX_BINARY } from "../../src/work/sandbox";
 
 let implementation: Record<string, any> = {};
 try { implementation = await import("../../src/work/progress-state"); } catch { /* initial RED */ }
@@ -23,8 +24,39 @@ async function sample(ws: ReturnType<typeof workspace>, signal = new AbortContro
 }
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 
+const sandboxAvailable = existsSync(SANDBOX_BINARY);
+if (!sandboxAvailable) console.warn("real sandbox fingerprint tests skipped: sandbox is unavailable");
+const sandboxTest = sandboxAvailable ? test : test.skip;
+
+function sampleSnapshotLogic(ws: ReturnType<typeof workspace>) {
+  expect(typeof implementation.SNAPSHOT_PROGRAM).toBe("string");
+  return Bun.spawnSync([process.execPath, "-e", implementation.SNAPSHOT_PROGRAM, ws.root, ws.tree, ws.gitDir], {
+    cwd: ws.tree, env: { ...process.env, HOME: ws.home, TMPDIR: ws.tmp }, stdout: "pipe", stderr: "pipe",
+  });
+}
+
 describe("progress state fingerprint", () => {
-  test("detects same-size changes to tracked and nonignored untracked files", async () => {
+  test("review-snapshot: snapshot logic detects changes without following outside links", () => {
+    const ws = workspace(); const outside = join(ws.root, "outside.txt");
+    writeFileSync(outside, "first"); symlinkSync(outside, join(ws.tree, "link"));
+    const first = sampleSnapshotLogic(ws); expect(first.exitCode).toBe(0);
+    expect(first.stdout.toString()).toMatch(/^[0-9a-f]{64}$/);
+    writeFileSync(outside, "changed");
+    expect(sampleSnapshotLogic(ws).stdout.toString()).toBe(first.stdout.toString());
+    writeFileSync(join(ws.tree, "tracked.txt"), "two");
+    expect(sampleSnapshotLogic(ws).stdout.toString()).not.toBe(first.stdout.toString());
+  });
+
+  test("review-snapshot: oversized input is rejected by the actual snapshot logic", () => {
+    const ws = workspace(); writeFileSync(join(ws.tree, "large.bin"), Buffer.alloc(9 * 1024 * 1024));
+    expect(sampleSnapshotLogic(ws).exitCode).not.toBe(0);
+  });
+
+  test.skipIf(sandboxAvailable)("review-snapshot: unavailable sandbox produces unknown", async () => {
+    expect(await sample(workspace())).toBeNull();
+  });
+
+  sandboxTest("detects same-size changes to tracked and nonignored untracked files", async () => {
     const ws = workspace();
     const first = await sample(ws); expect(first).toMatch(/^[0-9a-f]{64}$/);
     writeFileSync(join(ws.tree, "tracked.txt"), "two");
@@ -35,7 +67,7 @@ describe("progress state fingerprint", () => {
     expect(await sample(ws)).not.toBe(third);
   });
 
-  test("does not follow a worktree symlink to an outside file", async () => {
+  sandboxTest("does not follow a worktree symlink to an outside file", async () => {
     const ws = workspace(); const outside = join(ws.root, "outside.txt");
     writeFileSync(outside, "first"); symlinkSync(outside, join(ws.tree, "link"));
     const first = await sample(ws); expect(first).toMatch(/^[0-9a-f]{64}$/);
@@ -43,9 +75,13 @@ describe("progress state fingerprint", () => {
     expect(await sample(ws)).toBe(first);
   });
 
-  test("returns unknown for an oversized or aborted snapshot", async () => {
+  sandboxTest("returns unknown for an oversized snapshot", async () => {
     const ws = workspace(); writeFileSync(join(ws.tree, "large.bin"), Buffer.alloc(9 * 1024 * 1024));
     expect(await sample(ws)).toBeNull();
+  });
+
+  test("returns unknown for an aborted snapshot", async () => {
+    const ws = workspace();
     const controller = new AbortController(); controller.abort();
     expect(await sample(ws, controller.signal)).toBeNull();
   });
