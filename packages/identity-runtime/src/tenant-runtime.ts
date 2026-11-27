@@ -18,6 +18,7 @@ import {
 import { RuntimeEventStore } from "../../../src/identity-runtime/contract/runtime-events.ts";
 import { assertMeshInstallationHint, type MeshEnrollmentPort, type MeshEnrollmentResult, type MeshInstallationHint, type MeshSendInput } from "./mesh-enrollment.ts";
 import { StaticServiceContinuity, staticJoinResult } from "./service-continuity.ts";
+import type { SubstrateFile, SubstrateLoaderPort, SubstrateMappingEntry } from "../../../src/identity-runtime/substrate-load.ts";
 import { tenantInstanceId } from "./tenant-instance-id.ts";
 import { TenantMutationOutbox } from "./tenant-mutation-outbox.ts";
 
@@ -54,6 +55,11 @@ export interface TenantRuntimeTenant {
   mesh?: TenantMeshRegistrationPort;
   platform?: string;
   recallPolicy?: TenantDirectRecallPolicy;
+  /**
+   * On-demand substrate loading, authorised by the tenant's own join session.
+   * Absent means this tenant exposes no substrate over the network.
+   */
+  substrateLoader?: SubstrateLoaderPort;
 }
 
 export interface TenantIdentityRuntimeOptions {
@@ -154,6 +160,17 @@ export interface TenantDirectRecallInput {
   /** Same guard as recall/remember: the caller must hold the lease's current projection state. */
   stateHash: string;
   query: string;
+}
+
+/** No `path` lists the virtual mapping; a `path` loads that one declared file. */
+export interface TenantSubstrateLoadInput {
+  /** The agent named in the request path; it must be the session's own agent. */
+  agentId: string;
+  leaseId: string;
+  clientId: string;
+  sessionToken: string;
+  stateHash: string;
+  path?: string;
 }
 
 export interface TenantRoomReadInput extends Omit<TenantDirectRecallInput, "query"> {
@@ -429,6 +446,25 @@ export class TenantIdentityRuntime {
 
   async directRecall(input: TenantDirectRecallInput): Promise<unknown> {
     return this.logged("directRecall", { agentId: this.agentIdForLease(input.leaseId), leaseId: input.leaseId, clientId: input.clientId }, () => this.directRecallInternal(input));
+  }
+
+  /**
+   * The agent's own substrate: with no path the virtual mapping (declared files
+   * only, never a real path), with a virtual id that one file after a
+   * containment check. Admission is the join session's, so a token minted for
+   * one tenant can never read another's substrate.
+   */
+  async loadSubstrate(input: TenantSubstrateLoadInput): Promise<SubstrateMappingEntry[] | SubstrateFile> {
+    return this.logged("loadSubstrate", { agentId: this.agentIdForLease(input.leaseId), leaseId: input.leaseId, clientId: input.clientId }, async () => {
+      const { lease, session, tenant } = this.authorize(input);
+      // The path names the substrate being asked for; a session of another tenant is refused
+      // exactly like a forged session, so a token only ever reads its own agent's substrate.
+      if (input.agentId !== session.agentId) throw new Error("runtime session is unavailable");
+      if (input.stateHash !== lease.baseManifest.stateHash) throw new Error("substrate-load stateHash is stale");
+      const loader = tenant.substrateLoader;
+      if (!loader) throw new Error("tenant substrate loader is unavailable");
+      return input.path === undefined ? loader.mapping() : loader.load(input.path);
+    });
   }
 
   async readRoom(input: TenantRoomReadInput) {
