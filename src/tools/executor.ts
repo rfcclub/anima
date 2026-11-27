@@ -77,6 +77,8 @@ function defaultLogViolation(record: PolicyViolationRecord): void {
 /** Mask credentials a command may carry inline before it reaches a log line. */
 export function redactCommand(command: string): string {
   const masked = command
+    // a JSON field whose name mentions a credential ({"password":"..."})
+    .replace(/("[A-Za-z0-9_-]*(?:key|token|auth|secret|password|passwd|cookie|credential)[A-Za-z0-9_-]*"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[redacted]"')
     // a quoted header whose name mentions a credential is masked up to its closing quote (Cookie: a=1; b=2)
     .replace(/(["'])([A-Za-z0-9-]*(?:key|token|auth|secret|password|cookie)[A-Za-z0-9-]*\s*:\s*)[^"']*\1/gi, "$1$2[redacted]$1")
     .replace(/\b([A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?|AUTH)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[redacted]")

@@ -154,6 +154,8 @@ interface ScannerSpec {
   patternFirst?: Set<string>;
   /** find: leading option letters before the paths, and operands end at the first expression word. */
   findSyntax?: boolean;
+  /** With no path operand it reads piped input instead of walking the cwd (rg, ag; recursive grep still walks). */
+  readsPipedInput?: boolean;
 }
 
 const always = () => true;
@@ -174,11 +176,13 @@ const SCANNERS: Record<string, ScannerSpec> = {
     recursive: always,
     valueFlags: new Set(["-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-j", "-M", "-E", "-r", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--max-count", "--max-depth", "--threads", "--max-columns", "--context", "--after-context", "--before-context", "--type-add", "--sort", "--sortr", "--pre", "--encoding", "--engine", "--replace", "--colors"]),
     patternFirst: new Set(["-e", "-f", "--regexp", "--file", "--files", "--type-list"]),
+    readsPipedInput: true,
   },
   ag: {
     recursive: always,
     valueFlags: new Set(["-A", "-B", "-C", "-m", "-G", "-g", "--ignore", "--file-search-regex", "--context", "--max-count"]),
     patternFirst: new Set([]),
+    readsPipedInput: true,
   },
   fd: {
     recursive: always,
@@ -231,6 +235,7 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   let i = 0;
   if (spec.findSyntax) {
     while (i < args.length && /^-[EHLPXdsx]+$/.test(args[i]!)) flags.push(args[i++]!);
+    if (args[i] === "--") i++;
     while (i < args.length && !/^[-(!]/.test(args[i]!)) operands.push(args[i++]!);
   } else {
     let endOfFlags = false;
@@ -256,8 +261,8 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   }
   const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
   const paths = spec.patternFirst && !patternSupplied ? operands.slice(1) : operands;
-  // a searcher with no path operand reads its input when fed by a pipe or xargs, instead of walking the cwd
-  if (paths.length === 0 && stdinFed && spec.patternFirst) return undefined;
+  // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
+  if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;
   return (paths.length ? paths : ["."]).map((p) => operandDir(p, cwd));
 }
 
@@ -291,7 +296,7 @@ function shellTokens(command: string): ShellToken[] {
     if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
     if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
     const two = command.slice(i, i + 2);
-    if (two === "&&" || two === "||" || two === "$(") { flush(); out.push({ kind: "sep", text: two }); i++; continue; }
+    if (two === "&&" || two === "||" || two === "$(") { flush(); dropNext = false; out.push({ kind: "sep", text: two }); i++; continue; }
     if (ch === "<" || ch === ">") {
       // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
       if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
@@ -299,10 +304,11 @@ function shellTokens(command: string): ShellToken[] {
       while (j + 1 < command.length && "<>".includes(command[j + 1]!)) j++;
       const dup = /^&\d*-?/.exec(command.slice(j + 1))?.[0] ?? "";
       i = j + dup.length;
-      if (dup === "") { dropNext = true; if (command[i + 1] === "-") i++; }
+      // <(...) and >(...) are process substitutions: the parenthesis opens a command, nothing to drop
+      if (dup === "" && command[i + 1] !== "(") { dropNext = true; if (command[i + 1] === "-") i++; }
       continue;
     }
-    if ("\n;|&()`".includes(ch)) { flush(); out.push({ kind: "sep", text: ch }); continue; }
+    if ("\n;|&()`".includes(ch)) { flush(); dropNext = false; out.push({ kind: "sep", text: ch }); continue; }
     if (/\s/.test(ch)) { flush(); continue; }
     word += ch;
     inWord = true;
