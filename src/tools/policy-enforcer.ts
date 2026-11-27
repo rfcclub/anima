@@ -211,6 +211,20 @@ function isBroadScanRoot(path: string): boolean {
   return isPathInside(join(home, "Library"), target);
 }
 
+/** Expand brace alternatives ({a,b}, nested left to right) the way bash does before tilde expansion. Capped for safety. */
+function expandBraces(word: string, limit = 64): string[] {
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!m) return [word];
+  const out: string[] = [];
+  for (const alt of m[1]!.split(",")) {
+    for (const w of expandBraces(word.slice(0, m.index) + alt + word.slice(m.index + m[0].length), limit)) {
+      if (out.length >= limit) return out;
+      out.push(w);
+    }
+  }
+  return out;
+}
+
 function unquote(word: string): string {
   return word.replace(/^["']+|["']+$/g, "");
 }
@@ -270,7 +284,7 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   const paths = [...flagPaths, ...(spec.patternFirst && !patternSupplied ? operands.slice(1) : operands)];
   // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
   if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;
-  return (paths.length ? paths : ["."]).map((p) => operandDir(p, cwd));
+  return (paths.length ? paths : ["."]).flatMap((p) => expandBraces(p)).map((p) => operandDir(p, cwd));
 }
 
 type ShellToken = { kind: "word"; text: string } | { kind: "sep"; text: string };
