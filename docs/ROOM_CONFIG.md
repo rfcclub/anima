@@ -183,13 +183,27 @@ session:
   compactThreshold: 60000     # default: 60000 — tokens before compaction
   idleTimeoutMs: 300000       # optional — auto-sleep after idle (ms)
   maxTokens: 16000            # optional — max response tokens
+  resetAfterDream: true       # default: true — reset idle sessions after the nightly consolidation
+  resetIdleMs: 1800000        # default: 1800000 — idle threshold for that reset (ms)
 ```
 
 - **`defaultMode`** — The initial permission mode for new sessions.  
 - **`autoModeOptIn`** — Must be explicitly set to `true` to enable auto mode. If `true`, `policy.allowedTools` is required.  
 - **`compactThreshold`** — When the session's estimated token count exceeds this, the compactor summarizes old turns into a baseline.  
 - **`idleTimeoutMs`** — If set, the agent auto-sleeps after this many milliseconds of inactivity.  
-- **`maxTokens`** — Cap on response tokens from the provider.
+- **`maxTokens`** — Cap on response tokens from the provider.  
+- **`resetAfterDream`** — Whether the nightly consolidation ends this agent's idle conversational sessions (`talk`, `ui`, `ambient:*`). Default `true`.  
+- **`resetIdleMs`** — Idle threshold for that reset. A session with a turn newer than this is left alone, so a conversation in progress is never cut. Default 30 minutes.  
+
+### Session reset after consolidation
+
+After the nightly dream, each agent's open conversational sessions that have been idle for
+`resetIdleMs` are ended through the same path as `newSession`, so the session-end summary still
+reaches memory. Before a session ends the agent gets one turn with its own tools to write
+`HANDOFF.md` in its room; that file becomes boot context of the next session, which then starts
+from the handoff plus the consolidated memory instead of the old conversation. The previous
+handoffs are kept as dated copies in `staging/handoffs/` (the last seven). A session is ended
+even when the handoff turn fails or writes nothing.
 
 ---
 
