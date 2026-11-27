@@ -111,6 +111,40 @@ export interface StepRecord {
   outcome: StepOutcome;
 }
 
+export type DomainItemStatus = "not_started" | "in_progress" | "completed" | "failed";
+export type DomainJson = null | boolean | number | string | DomainJson[] | { [key: string]: DomainJson };
+export type DomainEvidence = { type: "note" | "reference"; value: string };
+export type DomainResult =
+  | { type: "text"; value: string }
+  | { type: "number"; value: number }
+  | { type: "boolean"; value: boolean }
+  | { type: "json"; value: DomainJson };
+
+/** The signal must be the host-owned signal for this session, not one supplied by a worker. */
+export interface DomainProgressOwner {
+  workId: string;
+  sessionId: string;
+  leaseId: string;
+  generation: number;
+  signal: AbortSignal;
+}
+
+export interface DomainProgressItem {
+  workId: string;
+  id: string;
+  owner: { sessionId: string; leaseId: string; generation: number };
+  status: DomainItemStatus;
+  evidence: DomainEvidence[];
+  result: DomainResult | null;
+  revision: number;
+}
+
+export interface DomainProgressUpdate {
+  status: DomainItemStatus;
+  evidence: DomainEvidence[];
+  result: DomainResult | null;
+}
+
 export interface CreateWorkInput {
   repo: string;
   issue: number;
@@ -142,6 +176,7 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const DIGEST = /^[0-9a-f]{12,64}$/i;
 const WORK_ID = /^[A-Za-z0-9_.-]{1,64}$/;
 const SECRET_KEY = /token|secret|password|authorization|capability|transcript|credential|api[-_]?key/i;
+const DOMAIN_ITEM_ID = /^[^\u0000-\u001f\u007f]{1,128}$/u;
 
 /** `ANIMA_WORK_DB` wins; under `NODE_ENV=test` the default is memory, never the live file. */
 export function resolveWorkDbPath(env: Record<string, string | undefined> = process.env): string {
@@ -163,6 +198,83 @@ function redact(value: unknown): unknown {
 const id = (prefix: string) => prefix + randomBytes(5).toString("hex");
 
 type Row = Record<string, unknown>;
+
+function canonicalDomainJson(value: unknown, ancestors = new Set<object>(), depth = 0): DomainJson {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "object" || depth >= 50 || ancestors.has(value)) throw new TypeError("invalid domain JSON value");
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) throw new TypeError("invalid domain JSON object");
+  if (Object.getOwnPropertySymbols(value).length) throw new TypeError("invalid domain JSON object");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.keys(value).length !== value.length) throw new TypeError("invalid domain JSON array");
+      return Array.from({ length: value.length }, (_, i) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+        if (!descriptor || !("value" in descriptor)) throw new TypeError("invalid domain JSON array");
+        return canonicalDomainJson(descriptor.value, ancestors, depth + 1);
+      });
+    }
+    const result: Record<string, DomainJson> = Object.create(null);
+    for (const key of Object.keys(value).sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) throw new TypeError("invalid domain JSON property");
+      result[key] = canonicalDomainJson(descriptor.value, ancestors, depth + 1);
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function domainPair(value: unknown): value is { type: unknown; value: unknown } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  const keys = Reflect.ownKeys(value);
+  return keys.length === 2 && keys.includes("type") && keys.includes("value") &&
+    ["type", "value"].every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
+    });
+}
+
+function validateDomainUpdate(input: DomainProgressUpdate): { status: DomainItemStatus; evidence: string; result: string | null } {
+  if (!input || !["not_started", "in_progress", "completed", "failed"].includes(input.status)) {
+    throw new TypeError("invalid domain item status");
+  }
+  if (!Array.isArray(input.evidence) || input.evidence.some((entry) =>
+    !domainPair(entry) || (entry.type !== "note" && entry.type !== "reference") || typeof entry.value !== "string")) {
+    throw new TypeError("invalid domain evidence");
+  }
+  const evidence = JSON.stringify(input.evidence.map((entry) => ({ type: entry.type, value: entry.value })));
+  let result: string | null = null;
+  if (input.result !== null) {
+    const value: unknown = input.result;
+    if (!domainPair(value)) throw new TypeError("invalid domain result");
+    if (value.type === "text" && typeof value.value === "string") result = JSON.stringify({ type: value.type, value: value.value });
+    else if (value.type === "number" && typeof value.value === "number" && Number.isFinite(value.value)) result = JSON.stringify({ type: value.type, value: value.value });
+    else if (value.type === "boolean" && typeof value.value === "boolean") result = JSON.stringify({ type: value.type, value: value.value });
+    else if (value.type === "json") result = JSON.stringify({ type: value.type, value: canonicalDomainJson(value.value) });
+    else throw new TypeError("invalid domain result");
+  }
+  if (input.status === "completed" && result === null) throw new TypeError("completed domain item requires a result");
+  if (Buffer.byteLength(evidence) + Buffer.byteLength(result ?? "") > 65_536) throw new RangeError("domain item data is too large");
+  return { status: input.status, evidence, result };
+}
+
+function toDomainItem(r: Row): DomainProgressItem {
+  return {
+    workId: r.work_id as string,
+    id: r.item_id as string,
+    owner: { sessionId: r.session_id as string, leaseId: r.lease_id as string, generation: r.generation as number },
+    status: r.status as DomainItemStatus,
+    evidence: JSON.parse(r.evidence_json as string) as DomainEvidence[],
+    result: r.result_json === null ? null : JSON.parse(r.result_json as string) as DomainResult,
+    revision: r.revision as number,
+  };
+}
 
 function toWork(r: Row): WorkRecord {
   return {
@@ -242,6 +354,7 @@ export const LIMIT_BLOCK_REASON = /^(?:execution time limit reached|sessions exh
 export class WorkStore {
   private readonly now: () => number;
   private readonly rootBase: string;
+  private readonly revokedDomainSessions = new Set<string>();
 
   private constructor(private readonly db: Database, options: StoreOptions) {
     this.now = options.now ?? Date.now;
@@ -352,6 +465,27 @@ export class WorkStore {
       )
     `);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_work_steps_work ON work_steps(work_id, outcome, started_at)");
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS work_domain_items (
+        work_id TEXT NOT NULL REFERENCES works(work_id),
+        item_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES work_sessions(session_id),
+        lease_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'completed', 'failed')),
+        evidence_json TEXT NOT NULL,
+        result_json TEXT,
+        revision INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (work_id, item_id)
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS work_domain_revoked_leases (
+        session_id TEXT PRIMARY KEY REFERENCES work_sessions(session_id),
+        lease_id TEXT NOT NULL,
+        generation INTEGER NOT NULL
+      )
+    `);
     // One stop record per session end (rfcclub/anima#238 AC-8): each tree field a value or unknown/unavailable/untrusted.
     this.db.run(`
       CREATE TABLE IF NOT EXISTS work_stops (
@@ -814,6 +948,101 @@ export class WorkStore {
 
   retryOutbox(key: string, retryAtMs: number, error: string): void {
     this.db.run("UPDATE work_outbox SET attempts = attempts + 1, retry_at = ?, last_error = ? WHERE key = ? AND status = 'pending'", [retryAtMs, error.slice(0, 300), key]);
+  }
+
+  // ---- domain progress ---------------------------------------------------------
+
+  /** The host calls this before aborting a session whose lease is lost or uncertain. */
+  revokeDomainLease(sessionId: string, leaseId: string, generation: number): void {
+    // Keep the current connection fenced even if the database is unavailable.
+    this.revokedDomainSessions.add(sessionId);
+    const session = this.getSession(sessionId);
+    if (!session || session.claimId !== leaseId || session.generation !== generation) {
+      throw new Error("domain progress lease does not match its session");
+    }
+    this.db.run(
+      "INSERT OR IGNORE INTO work_domain_revoked_leases (session_id, lease_id, generation) VALUES (?, ?, ?)",
+      [sessionId, leaseId, generation],
+    );
+  }
+
+  private domainWrite<T>(owner: DomainProgressOwner, write: () => T): T {
+    return this.db.transaction(() => {
+      if (!(owner.signal instanceof AbortSignal) || owner.signal.aborted) throw new Error("domain progress lease is not held");
+      if (this.revokedDomainSessions.has(owner.sessionId) ||
+          this.db.query("SELECT 1 FROM work_domain_revoked_leases WHERE session_id = ?").get(owner.sessionId)) {
+        throw new Error("domain progress lease is revoked");
+      }
+      const work = this.getWork(owner.workId);
+      const session = this.getSession(owner.sessionId);
+      if (!work || work.state !== "running" || work.generation !== owner.generation ||
+          !session || session.workId !== owner.workId || session.endedAt !== null ||
+          session.claimId !== owner.leaseId || session.generation !== owner.generation) {
+        throw new Error("domain progress owner is stale");
+      }
+      return write();
+    }).immediate();
+  }
+
+  createDomainItem(owner: DomainProgressOwner, itemId: string): DomainProgressItem {
+    if (typeof itemId !== "string" || !DOMAIN_ITEM_ID.test(itemId)) throw new TypeError("invalid domain item id");
+    return this.domainWrite(owner, () => {
+      const existing = this.getDomainItem(owner.workId, itemId);
+      if (existing) {
+        if (existing.owner.sessionId !== owner.sessionId || existing.owner.leaseId !== owner.leaseId ||
+            existing.owner.generation !== owner.generation) throw new Error("domain item is claimed by another session");
+        return existing;
+      }
+      this.db.run(
+        `INSERT INTO work_domain_items (work_id, item_id, session_id, lease_id, generation, status, evidence_json, result_json)
+         VALUES (?, ?, ?, ?, ?, 'not_started', '[]', NULL)`,
+        [owner.workId, itemId, owner.sessionId, owner.leaseId, owner.generation],
+      );
+      return this.getDomainItem(owner.workId, itemId)!;
+    });
+  }
+
+  claimDomainItem(owner: DomainProgressOwner, itemId: string): DomainProgressItem {
+    return this.domainWrite(owner, () => {
+      const item = this.getDomainItem(owner.workId, itemId);
+      if (!item) throw new Error("domain item does not exist");
+      if (item.owner.sessionId !== owner.sessionId || item.owner.leaseId !== owner.leaseId ||
+          item.owner.generation !== owner.generation) {
+        this.db.run(
+          "UPDATE work_domain_items SET session_id = ?, lease_id = ?, generation = ?, revision = revision + 1 WHERE work_id = ? AND item_id = ?",
+          [owner.sessionId, owner.leaseId, owner.generation, owner.workId, itemId],
+        );
+      }
+      return this.getDomainItem(owner.workId, itemId)!;
+    });
+  }
+
+  updateDomainItem(owner: DomainProgressOwner, itemId: string, update: DomainProgressUpdate): DomainProgressItem {
+    return this.domainWrite(owner, () => {
+      const item = this.getDomainItem(owner.workId, itemId);
+      if (!item) throw new Error("domain item does not exist");
+      if (item.owner.sessionId !== owner.sessionId || item.owner.leaseId !== owner.leaseId ||
+          item.owner.generation !== owner.generation) throw new Error("domain item is claimed by another session");
+      const valid = validateDomainUpdate(update);
+      if (item.status !== valid.status || JSON.stringify(item.evidence) !== valid.evidence ||
+          (item.result === null ? null : JSON.stringify(item.result)) !== valid.result) {
+        this.db.run(
+          `UPDATE work_domain_items SET status = ?, evidence_json = ?, result_json = ?, revision = revision + 1
+           WHERE work_id = ? AND item_id = ?`,
+          [valid.status, valid.evidence, valid.result, owner.workId, itemId],
+        );
+      }
+      return this.getDomainItem(owner.workId, itemId)!;
+    });
+  }
+
+  getDomainItem(workId: string, itemId: string): DomainProgressItem | null {
+    const row = this.db.query("SELECT * FROM work_domain_items WHERE work_id = ? AND item_id = ?").get(workId, itemId) as Row | null;
+    return row ? toDomainItem(row) : null;
+  }
+
+  listDomainItems(workId: string): DomainProgressItem[] {
+    return (this.db.query("SELECT * FROM work_domain_items WHERE work_id = ? ORDER BY item_id").all(workId) as Row[]).map(toDomainItem);
   }
 
   // ---- step markers ------------------------------------------------------------
