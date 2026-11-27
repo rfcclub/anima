@@ -31,3 +31,9 @@
 ## Verification
 
 - [x] Run the focused domain, store, consumer, step and fencing tests, typecheck and build. Run `orca verify`, `orca gate-plan`, and `orca gate-code`; retain their actual outputs and do not equate coverage bookkeeping with execution.
+
+## Review regressions
+
+- [x] Capture a failing sparse-evidence test; reject sparse and malformed indexed entries without mutating the row.
+- [x] Capture a failing delayed-retry test; require an expected revision, allow an immediate identical retry, reject stale writes and allow deliberate reopening at the current revision.
+- [x] Capture a failing mismatched-revocation test; validate the tuple before marking it revoked, while preserving the local fence if the database write fails.

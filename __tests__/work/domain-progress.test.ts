@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { WorkStore } from "../../src/work/store";
 import { loadWorkConfig } from "../../src/work/config";
 
@@ -36,9 +37,63 @@ function setup(path = ":memory:") {
   return { store, work, ...ownerFor(store, work.workId, "lease-1") };
 }
 function tempDb() { const dir = mkdtempSync(join(tmpdir(), "domain-progress-")); dirs.push(dir); return join(dir, "work.db"); }
+function updateCurrent(api: Progress, owner: Owner, id: string, update: Record<string, unknown>): Item {
+  const item = api.getDomainItem!(owner.workId, id)!;
+  return api.updateDomainItem!(owner, id, { ...update, expectedRevision: item.revision });
+}
 afterEach(() => {
   while (stores.length) stores.pop()!.close();
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
+
+describe("review regressions", () => {
+  test("review-sparse: sparse evidence is rejected without changing the item", () => {
+    const { store, owner } = setup(); const api = progress(store);
+    api.createDomainItem!(owner, "item-1");
+    updateCurrent(api, owner, "item-1", underway);
+    const before = api.getDomainItem!(owner.workId, "item-1");
+    const sparse = Array(1);
+    expect(() => api.updateDomainItem!(owner, "item-1", { ...complete, evidence: sparse, expectedRevision: before!.revision })).toThrow();
+    expect(api.getDomainItem!(owner.workId, "item-1")).toEqual(before);
+  });
+
+  test("review-delayed: a retry cannot replace a newer completed result", () => {
+    const { store, owner } = setup(); const api = progress(store);
+    const created = api.createDomainItem!(owner, "item-1");
+    const earlier = { ...underway, expectedRevision: created.revision };
+    const first = api.updateDomainItem!(owner, "item-1", earlier);
+    expect(api.updateDomainItem!(owner, "item-1", earlier)).toEqual(first);
+    const completed = api.updateDomainItem!(owner, "item-1", { ...complete, expectedRevision: first.revision });
+    expect(() => api.updateDomainItem!(owner, "item-1", earlier)).toThrow(/revision/i);
+    expect(api.getDomainItem!(owner.workId, "item-1")).toEqual(completed);
+    expect(updateCurrent(api, owner, "item-1", underway).status).toBe("in_progress");
+  });
+
+  test("review-revocation: a rejected lease tuple leaves the valid owner writable", () => {
+    const { store, owner } = setup(); const api = progress(store);
+    api.createDomainItem!(owner, "item-1");
+    expect(() => api.revokeDomainLease!(owner.sessionId, "wrong-lease", owner.generation)).toThrow();
+    expect(updateCurrent(api, owner, "item-1", underway).status).toBe("in_progress");
+  });
+
+  test("review-revocation: a valid lease stays fenced if persisting revocation fails", () => {
+    const path = tempDb(); const { store, owner } = setup(path); const api = progress(store);
+    api.createDomainItem!(owner, "item-1");
+    const fault = new Database(path);
+    fault.run("CREATE TRIGGER fail_revocation BEFORE INSERT ON work_domain_revoked_leases BEGIN SELECT RAISE(FAIL, 'injected failure'); END");
+    fault.close();
+    expect(() => api.revokeDomainLease!(owner.sessionId, owner.leaseId, owner.generation)).toThrow();
+    expect(() => updateCurrent(api, owner, "item-1", underway)).toThrow(/revoked/);
+  });
+
+  test("review-revision: missing or invalid revision is rejected without a write", () => {
+    const { store, owner } = setup(); const api = progress(store);
+    const before = api.createDomainItem!(owner, "item-1");
+    for (const expectedRevision of [undefined, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => api.updateDomainItem!(owner, "item-1", { ...underway, expectedRevision })).toThrow(/revision/i);
+      expect(api.getDomainItem!(owner.workId, "item-1")).toEqual(before);
+    }
+  });
 });
 
 const complete = { status: "completed", evidence: [{ type: "note", value: "checked" }], result: { type: "text", value: "done" } };
@@ -51,7 +106,7 @@ describe("domain progress", () => {
     expect(typeof api.createDomainItem).toBe("function");
     api.createDomainItem!(owner, "item-1");
     api.claimDomainItem!(owner, "item-1");
-    api.updateDomainItem!(owner, "item-1", complete);
+    updateCurrent(api, owner, "item-1", complete);
     expect(api.getDomainItem!(owner.workId, "item-1")).toMatchObject({
       id: "item-1", workId: owner.workId,
       owner: { sessionId: owner.sessionId, leaseId: owner.leaseId, generation: owner.generation },
@@ -64,7 +119,7 @@ describe("domain progress", () => {
     const { store, owner } = setup();
     const api = progress(store);
     api.createDomainItem?.(owner, "item-1");
-    api.updateDomainItem?.(owner, "item-1", underway);
+    updateCurrent(api, owner, "item-1", underway);
     const prior = api.getDomainItem?.(owner.workId, "item-1");
     expect(prior?.status).toBe("in_progress");
     const cyclic: { self?: unknown } = {}; cyclic.self = cyclic;
@@ -79,7 +134,7 @@ describe("domain progress", () => {
       { ...complete, result: null },
     ];
     for (const update of invalid) {
-      expect(() => api.updateDomainItem!(owner, "item-1", update)).toThrow();
+      expect(() => updateCurrent(api, owner, "item-1", update)).toThrow();
       expect(api.getDomainItem!(owner.workId, "item-1")).toEqual(prior);
     }
   });
@@ -88,7 +143,7 @@ describe("domain progress", () => {
     const path = tempDb();
     const first = setup(path);
     progress(first.store).createDomainItem?.(first.owner, "item-1");
-    progress(first.store).updateDomainItem?.(first.owner, "item-1", underway);
+    updateCurrent(progress(first.store), first.owner, "item-1", underway);
     expect(progress(first.store).getDomainItem?.(first.work.workId, "item-1")?.status).toBe("in_progress");
     close(first.store);
     const store = open(path);
@@ -96,7 +151,7 @@ describe("domain progress", () => {
     const second = ownerFor(store, first.work.workId, "lease-2");
     const item = progress(store).claimDomainItem!(second.owner, "item-1");
     expect(item).toMatchObject({ ...underway, owner: { sessionId: second.owner.sessionId, leaseId: "lease-2", generation: second.owner.generation } });
-    progress(store).updateDomainItem!(second.owner, "item-1", complete);
+    updateCurrent(progress(store), second.owner, "item-1", complete);
     expect(progress(store).getDomainItem!(first.work.workId, "item-1")?.result).toEqual(complete.result);
   });
 
@@ -112,7 +167,7 @@ describe("domain progress", () => {
     for (const stale of [first.owner, { ...second.owner, leaseId: "wrong" }]) {
       expect(() => api.createDomainItem!(stale, "item-2")).toThrow();
       expect(() => api.claimDomainItem!(stale, "item-1")).toThrow();
-      expect(() => api.updateDomainItem!(stale, "item-1", complete)).toThrow();
+      expect(() => updateCurrent(api, stale, "item-1", complete)).toThrow();
       expect(api.getDomainItem!(first.work.workId, "item-1")).toEqual(current);
     }
   });
@@ -121,14 +176,14 @@ describe("domain progress", () => {
     const first = setup();
     const api = progress(first.store);
     api.createDomainItem!(first.owner, "item-1");
-    api.updateDomainItem!(first.owner, "item-1", underway);
+    updateCurrent(api, first.owner, "item-1", underway);
     first.store.closeSession(first.owner.sessionId, { iterations: 1, execMs: 1, stopCause: "max_reached" });
     const second = ownerFor(first.store, first.work.workId, "lease-2");
     const before = api.getDomainItem!(first.work.workId, "item-1");
-    expect(() => api.updateDomainItem!(second.owner, "item-1", complete)).toThrow(/claimed by another session/);
+    expect(() => updateCurrent(api, second.owner, "item-1", complete)).toThrow(/claimed by another session/);
     expect(api.getDomainItem!(first.work.workId, "item-1")).toEqual(before);
     api.claimDomainItem!(second.owner, "item-1");
-    expect(api.updateDomainItem!(second.owner, "item-1", complete).status).toBe("completed");
+    expect(updateCurrent(api, second.owner, "item-1", complete).status).toBe("completed");
   });
 
   test("a revoked lease stays fenced through another store connection", () => {
@@ -140,7 +195,7 @@ describe("domain progress", () => {
     expect(typeof api.revokeDomainLease).toBe("function");
     api.revokeDomainLease!(first.owner.sessionId, first.owner.leaseId, first.owner.generation);
     const replacement = { ...first.owner, signal: new AbortController().signal };
-    expect(() => second.updateDomainItem!(replacement, "item-1", complete)).toThrow();
+    expect(() => updateCurrent(second, replacement, "item-1", complete)).toThrow();
     expect(second.getDomainItem!(first.work.workId, "item-1")?.status).toBe("not_started");
   });
 
@@ -148,9 +203,9 @@ describe("domain progress", () => {
     const { store, owner } = setup();
     const api = progress(store);
     api.createDomainItem?.(owner, "item-1");
-    const first = api.updateDomainItem?.(owner, "item-1", { ...complete, result: { type: "json", value: { a: 1, b: 2 } } });
+    const first = api.updateDomainItem?.(owner, "item-1", { ...complete, expectedRevision: 0, result: { type: "json", value: { a: 1, b: 2 } } });
     expect(first?.status).toBe("completed");
-    const second = api.updateDomainItem!(owner, "item-1", { ...complete, result: { type: "json", value: { b: 2, a: 1 } } });
+    const second = api.updateDomainItem!(owner, "item-1", { ...complete, expectedRevision: 0, result: { type: "json", value: { b: 2, a: 1 } } });
     expect(second).toEqual(first);
     expect(api.listDomainItems!(owner.workId)).toHaveLength(1);
   });

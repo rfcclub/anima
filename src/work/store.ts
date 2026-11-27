@@ -140,6 +140,8 @@ export interface DomainProgressItem {
 }
 
 export interface DomainProgressUpdate {
+  /** The revision read before this update; an immediate identical retry is idempotent. */
+  expectedRevision: number;
   status: DomainItemStatus;
   evidence: DomainEvidence[];
   result: DomainResult | null;
@@ -241,14 +243,25 @@ function domainPair(value: unknown): value is { type: unknown; value: unknown } 
 }
 
 function validateDomainUpdate(input: DomainProgressUpdate): { status: DomainItemStatus; evidence: string; result: string | null } {
+  if (!input || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+    throw new TypeError("invalid domain item revision");
+  }
   if (!input || !["not_started", "in_progress", "completed", "failed"].includes(input.status)) {
     throw new TypeError("invalid domain item status");
   }
-  if (!Array.isArray(input.evidence) || input.evidence.some((entry) =>
-    !domainPair(entry) || (entry.type !== "note" && entry.type !== "reference") || typeof entry.value !== "string")) {
+  if (!Array.isArray(input.evidence) || input.evidence.length > 65_536 ||
+      Reflect.ownKeys(input.evidence).length !== input.evidence.length + 1) {
     throw new TypeError("invalid domain evidence");
   }
-  const evidence = JSON.stringify(input.evidence.map((entry) => ({ type: entry.type, value: entry.value })));
+  const entries = Array.from({ length: input.evidence.length }, (_, index) => {
+    const property = Object.getOwnPropertyDescriptor(input.evidence, String(index));
+    const entry: unknown = property && "value" in property && property.enumerable ? property.value : null;
+    if (!domainPair(entry) || (entry.type !== "note" && entry.type !== "reference") || typeof entry.value !== "string") {
+      throw new TypeError("invalid domain evidence");
+    }
+    return { type: entry.type, value: entry.value };
+  });
+  const evidence = JSON.stringify(entries);
   let result: string | null = null;
   if (input.result !== null) {
     const value: unknown = input.result;
@@ -954,12 +967,12 @@ export class WorkStore {
 
   /** The host calls this before aborting a session whose lease is lost or uncertain. */
   revokeDomainLease(sessionId: string, leaseId: string, generation: number): void {
-    // Keep the current connection fenced even if the database is unavailable.
-    this.revokedDomainSessions.add(sessionId);
     const session = this.getSession(sessionId);
     if (!session || session.claimId !== leaseId || session.generation !== generation) {
       throw new Error("domain progress lease does not match its session");
     }
+    // Keep the validated session fenced on this connection even if the database write fails.
+    this.revokedDomainSessions.add(sessionId);
     this.db.run(
       "INSERT OR IGNORE INTO work_domain_revoked_leases (session_id, lease_id, generation) VALUES (?, ?, ?)",
       [sessionId, leaseId, generation],
@@ -1024,8 +1037,13 @@ export class WorkStore {
       if (item.owner.sessionId !== owner.sessionId || item.owner.leaseId !== owner.leaseId ||
           item.owner.generation !== owner.generation) throw new Error("domain item is claimed by another session");
       const valid = validateDomainUpdate(update);
-      if (item.status !== valid.status || JSON.stringify(item.evidence) !== valid.evidence ||
-          (item.result === null ? null : JSON.stringify(item.result)) !== valid.result) {
+      const same = item.status === valid.status && JSON.stringify(item.evidence) === valid.evidence &&
+        (item.result === null ? null : JSON.stringify(item.result)) === valid.result;
+      if (update.expectedRevision !== item.revision &&
+          !(same && update.expectedRevision === item.revision - 1)) {
+        throw new Error("domain item revision does not match");
+      }
+      if (!same) {
         this.db.run(
           `UPDATE work_domain_items SET status = ?, evidence_json = ?, result_json = ?, revision = revision + 1
            WHERE work_id = ? AND item_id = ?`,
