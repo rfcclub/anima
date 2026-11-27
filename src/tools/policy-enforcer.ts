@@ -263,7 +263,7 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   if (!spec.recursive(flags)) return undefined;
   // find -maxdepth 0 or 1 lists one directory, like ls
   if (spec.findSyntax) {
-    const depth = args.indexOf("-maxdepth");
+    const depth = args.lastIndexOf("-maxdepth"); // find honours the last one
     if (depth !== -1 && Number(args[depth + 1]) <= 1) return undefined;
   }
   const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
@@ -325,6 +325,8 @@ function shellTokens(command: string): ShellToken[] {
       backtickResumes = true;
       continue;
     }
+    // a backslash-newline joins two lines (outside single quotes)
+    if (ch === "\\" && command[i + 1] === "\n" && quote !== "'") { i++; continue; }
     if (quote) {
       if (ch === quote) quote = null;
       else if (ch === "\\" && quote === '"' && i + 1 < command.length) word += command[++i];
@@ -333,21 +335,9 @@ function shellTokens(command: string): ShellToken[] {
     }
     if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
     if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
-    if (command.startsWith("$((", i) || (command.startsWith("((", i) && !inWord)) {
-      // arithmetic: its text is not a command, only a word
-      arith++;
-      word += command.startsWith("$((", i) ? "$((" : "((";
-      inWord = true;
-      i += command.startsWith("$((", i) ? 2 : 1;
-      continue;
-    }
-    if (arith > 0 && command.startsWith("))", i)) {
-      arith--;
-      word += "))";
-      i++;
-      continue;
-    }
-    if (arith > 0) { word += ch; inWord = true; continue; }
+    // (( )) and $(( )) only change how << reads (a shift); their contents are still tokenized, so a $( ) inside runs through the checks
+    if (command.startsWith("$((", i) || (command.startsWith("((", i) && !inWord)) arith++;
+    else if (arith > 0 && command.startsWith("))", i)) arith--;
     if (ch === "#" && !inWord) {
       // a comment runs to the end of the line
       const end = command.indexOf("\n", i);
@@ -360,7 +350,7 @@ function shellTokens(command: string): ShellToken[] {
       const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;|&<>()]+))/.exec(command.slice(i));
       // << in a let statement or with a numeric delimiter is a shift ((( )) is read above as arithmetic)
       const letStatement = out[segmentStart]?.kind === "word" && out[segmentStart]!.text === "let";
-      if (heredoc && !command.startsWith("<<<", i) && !letStatement && !/^\d+$/.test(heredoc[4] ?? "")) {
+      if (heredoc && !command.startsWith("<<<", i) && arith === 0 && !letStatement && !/^\d+$/.test(heredoc[4] ?? "")) {
         heredocs.push({ delim: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, stripTabs: heredoc[1] === "-" });
         i += heredoc[0].length - 1;
         continue;

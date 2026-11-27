@@ -115,6 +115,8 @@ export function redactCommand(command: string): string {
       isCredentialName(name) ? pre + name + sp + "[redacted]" : m)
     .replace(/(\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]*?\s-p)(\S+)/g, "$1[redacted]")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@")
+    // an https URL with a bare userinfo is usually a token (https://<token>@host)
+    .replace(/(\bhttps?:\/\/)[^\s/@:]+@/gi, "$1[redacted]@")
     .replace(/((?:^|\s)(?:-u|--user)[= ]?)("[^"]*"|'[^']*'|[^\s:'"]+:\S+)/g, "$1[redacted]")
     .replace(/(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]");
   return redactSecrets(masked);
