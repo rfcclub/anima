@@ -88,7 +88,8 @@ function isCredentialName(name: string): boolean {
 export function redactCommand(command: string): string {
   const masked = command
     // a JSON field ({"password":"..."}, {\"token\":\"...\"}, {"pin":1234})
-    .replace(/(\\?"([A-Za-z0-9_-]+)\\?"\s*:\s*)(\\?"(?:[^"\\]|\\[^"])*\\?"|[^,}\s"'\\]+)/g, (m, head: string, name: string) =>
+    // values: a backslash-escaped string (inside a double-quoted shell word), a JSON string with escapes, or a bare scalar
+    .replace(/(\\?"([A-Za-z0-9_-]+)\\?"\s*:\s*)(\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|[^,}\s"'\\]+)/g, (m, head: string, name: string) =>
       isCredentialName(name) ? head + '"[redacted]"' : m)
     // a quoted header, masked up to its closing quote (Cookie: a=1; b=2)
     .replace(/(["'])([A-Za-z0-9-]+)(\s*:\s*)[^"']*\1/g, (m, q: string, name: string, sep: string) =>

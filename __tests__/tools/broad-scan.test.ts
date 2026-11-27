@@ -222,6 +222,7 @@ describe("redactCommand", () => {
       ['curl -d "{\\"password\\":\\"abc9\\"}" https://example.test', "abc9"],
       [`curl -d '{"pin_token":12345}' https://example.test`, "12345"],
       [`curl -d '{"password":true}' https://example.test`, "true"],
+      [String.raw`curl -d '{"password":"ab\"cd1234"}' https://example.test`, "cd1234"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);
