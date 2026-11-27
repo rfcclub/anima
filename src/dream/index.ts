@@ -4,3 +4,7 @@ export { DeepDream } from "./deep-dream";
 export type { DreamState, CrossAgentLink } from "./deep-dream";
 export { LucidDream } from "./lucid-dream";
 export type { LucidDreamOptions, LucidDreamResult } from "./lucid-dream";
+export { extractProposals, extractInboxFromMemory, readInbox, writeInbox, renderInbox, INBOX_MIN_CONFIDENCE, INBOX_MIN_EVIDENCE } from "./inbox";
+export type { InboxProposal, MemoryCandidate } from "./inbox";
+export { runReflectionTurn } from "./reflection-turn";
+export type { ReflectionTurnOptions, ReflectionTurnResult } from "./reflection-turn";

@@ -918,15 +918,17 @@ export async function startServer(gateway?: TelegramGateway, agoraClient?: Agora
     }
   }, 5 * 60 * 1000);
 
-  // Lucid dream sweep cron — weekly, Sunday 1h local (same wall-clock-anchored
+  // Reflection sweep cron — weekly, Sunday 1h local (same wall-clock-anchored
   // fix as deep dream above; was setInterval(fn, 7d) since process start).
-  // Same iterate-all-agents-sequentially pattern as deep dream, but runs
-  // LucidDream with a fixed review prompt instead. This enforces WHEN the
-  // reflection happens — agents were never reliably self-triggering /dream
-  // on their own — without deciding WHAT they do with it; LucidDream still
-  // only writes to staging/dreams/. (requirement: LucidDream runs at 1 AM every week)
+  // Same iterate-all-agents-sequentially pattern as deep dream. Per agent the
+  // sweep first extracts proposals from the memory store into staging/INBOX.md,
+  // then runs an agent turn that judges them and edits its own substrate. This
+  // enforces WHEN the reflection happens — agents were never reliably
+  // self-triggering /dream on their own — without deciding WHAT they keep.
+  // Without a memory store there is nothing to extract, so the legacy free
+  // reflection still runs. (requirement: LucidDream runs at 1 AM every week)
   const LUCID_DREAM_SWEEP_PROMPT =
-    "Read your staging/INBOX.md if it exists, and go through anything waiting there. If it doesn't exist yet, just reflect freely on what you've noticed recently.";
+    "Reflect freely on what you have noticed recently.";
   const lucidDreamSweepMarkerPath = join(roomsDir(), "staging", ".lucid-sweep-schedule.json");
   const lucidDreamSweepCheckTimer = setInterval(async () => {
     try {

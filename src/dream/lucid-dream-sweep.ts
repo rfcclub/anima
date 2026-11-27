@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { LucidDream } from "./lucid-dream";
+import { extractInboxFromMemory } from "./inbox";
+import { runReflectionTurn } from "./reflection-turn";
 import type { Provider } from "../providers/interface";
 import type { AgentMemoryStore } from "../memory/contract";
 
@@ -28,8 +30,9 @@ const STREAK_WARN_AT = 2;
 export interface LucidDreamSweepOptions {
   roomsDir: string;
   resolveProvider: (roomDir: string) => Promise<Provider>;
-  /** Optional — when provided, each agent's reflection is also persisted
-   *  directly via AgentMemoryStore.remember(). Omitting it keeps the sweep
+  /** Optional — when provided, each agent's memory store is distilled into
+   *  its staging/INBOX.md and the agent's judged reflection turn runs, storing
+   *  only the run's audit note back into memory. Omitting it keeps the sweep
    *  file-only, same as before this was added. */
   resolveMemoryStore?: (roomDir: string) => Promise<AgentMemoryStore | undefined>;
   prompt: string;
@@ -43,9 +46,11 @@ export interface LucidDreamSweepOptions {
  * way operationally.
  *
  * This enforces WHEN a reflection happens (discipline: the agent doesn't
- * have to remember to trigger it herself) without touching WHAT she decides
- * to keep — LucidDream still just writes the raw reflection to
- * staging/dreams/; nothing here promotes anything into an agent's substrate.
+ * have to remember to trigger it herself) without deciding WHAT she keeps:
+ * the sweep only extracts proposals into staging/INBOX.md, and the agent's
+ * own judged turn is what edits her substrate. Without a memory store there
+ * is nothing to extract, so the legacy free reflection (LucidDream writing to
+ * staging/dreams/) still runs.
  */
 export class LucidDreamSweep {
   async run(options: LucidDreamSweepOptions): Promise<void> {
@@ -83,8 +88,23 @@ export class LucidDreamSweep {
           const roomDir = join(roomsDir, agent);
           const provider = await resolveProvider(roomDir);
           const memoryStore = await resolveMemoryStore?.(roomDir);
-          await lucidDream.run({ roomDir, roomsDir, agentName: agent, userPrompt: prompt, provider, memoryStore });
-          reflected = true;
+          // Extraction, then reflection: the memory store is distilled into
+          // staging/INBOX.md and only the agent's own judged turn writes its
+          // substrate. With nothing to judge the turn is not started at all:
+          // the memory store keeps the audit note, never a whole response.
+          // Without a store there is nothing to extract, so the legacy free
+          // reflection still runs.
+          if (memoryStore) {
+            const proposals = await extractInboxFromMemory(roomDir, agent, memoryStore);
+            if (proposals.length > 0) {
+              const outcome = await runReflectionTurn({ roomDir, agentName: agent, provider, memoryStore });
+              if (outcome.error) throw new Error(outcome.error);
+            }
+            reflected = true;
+          } else {
+            await lucidDream.run({ roomDir, roomsDir, agentName: agent, userPrompt: prompt, provider });
+            reflected = true;
+          }
         } catch (err) {
           console.error(
             JSON.stringify({

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LucidDreamSweep } from "./lucid-dream-sweep";
@@ -27,18 +27,13 @@ const fakeProvider: Provider = {
   },
 };
 
+/** A store holding one supported pattern, so every agent has an inbox to judge. */
 function makeMemoryStoreSpy(): { store: AgentMemoryStore; calls: Omit<AgentMemoryEntry, "id" | "createdAt">[] } {
-  const calls: Omit<AgentMemoryEntry, "id" | "createdAt">[] = [];
-  const store: AgentMemoryStore = {
-    async remember(entry) {
-      calls.push(entry);
-      return { ...entry, id: "fake-id", createdAt: new Date().toISOString() };
-    },
-    async recall() { return []; },
-    async bootstrap() { return []; },
-    async forget() {},
-  };
-  return { store, calls };
+  return seededStore([
+    { id: "a", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.9 },
+    { id: "b", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.85 },
+    { id: "c", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.8 },
+  ]);
 }
 
 test("resolveMemoryStore, when provided, is called per agent and its store receives the reflection", async () => {
@@ -57,8 +52,10 @@ test("resolveMemoryStore, when provided, is called per agent and its store recei
   });
 
   expect(resolvedFor.sort()).toEqual([join(roomsDir, "hana"), join(roomsDir, "lena")]);
+  // the memory store keeps the run's audit note, never the model's whole response
   expect(calls).toHaveLength(2);
-  expect(calls.every((c) => c.content === "reflection")).toBe(true);
+  expect(calls.every((c) => c.content.includes("Reflection audit"))).toBe(true);
+  expect(calls.some((c) => c.content === "reflection")).toBe(false);
 });
 
 test("omitting resolveMemoryStore does not throw and the sweep still completes", async () => {
@@ -241,4 +238,110 @@ test("consecutive failing runs raise the failure streak recorded for that agent"
 
   await sweep.run({ roomsDir, resolveProvider: async () => fakeProvider, prompt: "reflect" });
   expect((await readState()).failureStreak).toEqual({});
+});
+
+/** A memory store whose bootstrap() returns the given entries, recording remember() calls. */
+function seededStore(entries: Array<{ id: string; content: string; tags: string[]; confidence: number }>): {
+  store: AgentMemoryStore;
+  calls: Omit<AgentMemoryEntry, "id" | "createdAt">[];
+} {
+  const calls: Omit<AgentMemoryEntry, "id" | "createdAt">[] = [];
+  const store: AgentMemoryStore = {
+    async remember(entry) {
+      calls.push(entry);
+      return { ...entry, id: "fake-id", createdAt: new Date().toISOString() };
+    },
+    async recall() { return []; },
+    async bootstrap() {
+      return entries.map((e, index) => ({
+        ...e, scope: "observation" as const, source: "pulse",
+        createdAt: `2026-01-01T00:00:0${index}.000Z`,
+      }));
+    },
+    async forget() {},
+  };
+  return { store, calls };
+}
+
+test("extraction fills the inbox from the agent's memory and the reflection turn judges it", async () => {
+  const { store, calls } = seededStore([
+    { id: "a", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.9 },
+    { id: "b", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.85 },
+    { id: "c", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.8 },
+  ]);
+
+  await new LucidDreamSweep().run({
+    roomsDir,
+    resolveProvider: async () => fakeProvider,
+    resolveMemoryStore: async () => store,
+    prompt: "reflect",
+  });
+
+  // the inbox now exists for each agent, and only the audit note reaches memory
+  const inbox = await Bun.file(join(roomsDir, "hana", "staging", "INBOX.md")).text();
+  expect(inbox).toContain("I judge sources before trusting them");
+  expect(calls).toHaveLength(2);
+  expect(calls.every((c) => c.content.includes("Reflection audit"))).toBe(true);
+  expect(calls.some((c) => c.content === "reflection")).toBe(false);
+});
+
+test("without proposals there is nothing to judge and the inbox says so", async () => {
+  const seen: string[] = [];
+  const probing: Provider = {
+    name: "fake" as Provider["name"],
+    async query(req: ProviderRequest): Promise<ProviderResponse> {
+      seen.push(String(req.messages[0]?.content ?? ""));
+      return { message: { role: "assistant", content: "reflection" } };
+    },
+  };
+  const { store } = seededStore([
+    { id: "a", content: "one mention", tags: ["weather"], confidence: 0.9 },
+  ]);
+
+  await new LucidDreamSweep().run({
+    roomsDir,
+    resolveProvider: async () => probing,
+    resolveMemoryStore: async () => store,
+    prompt: "reflect",
+  });
+
+  const inbox = await Bun.file(join(roomsDir, "lena", "staging", "INBOX.md")).text();
+  expect(inbox).toContain("(no proposals this pass)");
+  // with nothing to judge no reflection turn is started at all
+  expect(seen).toHaveLength(0);
+});
+
+test("a reflection turn that fails is recorded as a failed agent, and its writes are rolled back", async () => {
+  const { store } = seededStore([
+    { id: "a", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.9 },
+    { id: "b", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.85 },
+    { id: "c", content: "I judge sources before trusting them", tags: ["craft"], confidence: 0.8 },
+  ]);
+  let turn = 0;
+  const halfThenFail: Provider = {
+    name: "fake" as Provider["name"],
+    async query(): Promise<ProviderResponse> {
+      if (turn++ % 2 === 0) {
+        return {
+          message: { role: "assistant", content: null },
+          tool_calls: [{
+            id: "call-0",
+            name: "write",
+            arguments: JSON.stringify({ path: "SOUL.md", content: "- half applied\n" }),
+          }],
+        };
+      }
+      throw new Error("provider went away");
+    },
+  };
+
+  await new LucidDreamSweep().run({
+    roomsDir,
+    resolveProvider: async () => halfThenFail,
+    resolveMemoryStore: async () => store,
+    prompt: "reflect",
+  });
+
+  expect((await readState()).failedAgents).toEqual(["hana", "lena"]);
+  expect(existsSync(join(roomsDir, "lena", "SOUL.md"))).toBe(false);
 });
