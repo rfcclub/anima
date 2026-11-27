@@ -82,7 +82,10 @@ export function redactCommand(command: string): string {
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|token|api-key|secret)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]*?\s-p)(\S+)/g, "$1[redacted]")
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@");
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/((?:^|\s)(?:-u|--user)[= ]?)("[^"]*"|'[^']*'|[^\s:'"]+:\S+)/g, "$1[redacted]")
+    .replace(/(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(["']?[A-Za-z0-9-]*(?:key|token|auth|secret|password|cookie)[A-Za-z0-9-]*\s*:\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi, "$1[redacted]");
   return redactSecrets(masked);
 }
 

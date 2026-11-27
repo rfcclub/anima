@@ -37,6 +37,9 @@ describe("checkBroadScan: bash", () => {
       "rg token $HOME",
       "find ~/Library -name '*.plist'",
       "ls -R ~/Library/Containers",
+      "env -i find ~ -name x",
+      "sudo -u someone find / -name x",
+      "nice -n 5 rg token ~",
       "du -sh ~/Library/*",
       "echo start; find /Users -name x",
       "cd ~/work && find ~ -name x | head",
@@ -93,6 +96,8 @@ describe("checkBroadScan: bash", () => {
       "rg token",
       "cd ~/work/proj && find . -name x",
       "cd ~ && ls -la",
+      "(cd ~ && ls); find . -name x",
+      "echo $(cd / && pwd); grep -rn token .",
     ]) {
       const d = bash(command);
       expect({ command, allowed: d.allowed }).toEqual({ command, allowed: true });
@@ -162,6 +167,11 @@ describe("redactCommand", () => {
       ["psql --password=s3cr3tpw", "s3cr3tpw"],
       ["git clone https://user:pa55word@example.test/repo.git", "pa55word"],
       ["export MY_API_KEY=shortkey; run", "shortkey"],
+      ["curl -u admin:hunter2pw https://example.test", "hunter2pw"],
+      ["curl --user admin:hunter2pw https://example.test", "hunter2pw"],
+      ["curl -H 'X-Api-Key: abcd1234efgh' https://example.test", "abcd1234efgh"],
+      ["curl -H 'x-auth-token: abcdef12345' https://example.test", "abcdef12345"],
+      ["sshpass -p hunter2pw ssh host", "hunter2pw"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);

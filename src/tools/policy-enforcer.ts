@@ -191,6 +191,8 @@ const SCANNERS: Record<string, ScannerSpec> = {
 };
 /** Words that run the next word as the command. */
 const COMMAND_PREFIXES = new Set(["sudo", "command", "exec", "nice", "time", "xargs", "nohup", "env"]);
+/** Prefix options that take the next word as their value. */
+const PREFIX_VALUE_FLAGS = new Set(["-u", "-n", "-g", "-C"]);
 
 function homeDir(): string {
   return process.env.HOME || homedir();
@@ -261,10 +263,29 @@ export function checkBroadScan(input: { tool: string; args: Record<string, unkno
   if (tool === "bash") {
     const command = String(args.command ?? "");
     let cwd = startCwd;
-    for (const segment of command.split(/\n|;|&&|\|\||\||&|\$\(|`|\(|\)/)) {
+    // A cd inside a subshell or command substitution only moves the cwd until it closes.
+    const saved: string[] = [];
+    let inBacktick = false;
+    for (const segment of command.split(/(\n|;|&&|\|\||\||&|\$\(|`|\(|\))/)) {
+      if (segment === "(" || segment === "$(") { saved.push(cwd); continue; }
+      if (segment === ")") { cwd = saved.pop() ?? cwd; continue; }
+      if (segment === "`") {
+        if (inBacktick) cwd = saved.pop() ?? cwd;
+        else saved.push(cwd);
+        inBacktick = !inBacktick;
+        continue;
+      }
       const words = segment.trim().split(/\s+/).filter(Boolean);
       let i = 0;
-      while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || COMMAND_PREFIXES.has(words[i]!))) i++;
+      let afterPrefix = false;
+      while (i < words.length) {
+        const word = words[i]!;
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) { i++; continue; }
+        if (COMMAND_PREFIXES.has(word)) { afterPrefix = true; i++; continue; }
+        // options of a prefix (env -i, nice -n 5, sudo -u user) are skipped with their value
+        if (afterPrefix && word.startsWith("-")) { i += PREFIX_VALUE_FLAGS.has(word) ? 2 : 1; continue; }
+        break;
+      }
       const name = words[i]?.split("/").pop() ?? "";
       if (name === "cd") {
         const dest = words[i + 1];
