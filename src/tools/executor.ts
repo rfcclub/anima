@@ -75,7 +75,7 @@ function defaultLogViolation(record: PolicyViolationRecord): void {
 }
 
 /** Words that mark a field, header or variable name as holding a credential. */
-const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password", "passwd", "pass", "pwd", "pin", "cookie", "credential", "credentials", "auth", "authorization", "bearer"]);
+const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password", "passwd", "pass", "pwd", "pw", "pin", "cookie", "credential", "credentials", "auth", "authorization", "bearer"]);
 
 /** True when a name such as GITHUB_TOKEN, apiKey, x-auth-token or "password" holds a credential.
  *  Whole words only, so author, monkey, keyboard_layout or tokenizer stay readable. */
@@ -100,7 +100,9 @@ export function redactCommand(command: string): string {
       isCredentialName(name) ? pre + name + sep + "[redacted]" : m)
     // an environment assignment (GITHUB_TOKEN=..., PASSWORD=...)
     // an assignment or a form field (GITHUB_TOKEN=..., a=1&password=...): the value stops at & or ;
-    .replace(/\b([A-Za-z_][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|[^\s&;"']+)/g, (m, name: string) => (isCredentialName(name) ? name + "=[redacted]" : m))
+    // (an option such as --cookie=file is left to the option rules below)
+    .replace(/(^|[^-A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|[^\s&;"']+)/g, (m, pre: string, name: string) =>
+      isCredentialName(name) ? pre + name + "=[redacted]" : m)
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|pass|token|api-key|apikey|secret|auth)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\bredis-cli\b[^\n;|&]*?\s-a\s+)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
@@ -108,10 +110,9 @@ export function redactCommand(command: string): string {
     .replace(/(\s--password[= ])("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
     // curl -b with a cookie string (name=value); a cookie file name stays readable
     // every curl -b/--cookie with a cookie string (name=value, escaped spaces included); a cookie file name stays readable
-    // a quoted cookie string may hold ; so the whole command is searched once curl appears in it
-    .replace(/[\s\S]*/, (all) => (/\bcurl\b/.test(all)
-      ? all.replace(/(\s(?:-b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|(?:[^\s"'\\]|\\.)*=(?:[^\s"'\\]|\\.)*)/g, "$1[redacted]")
-      : all))
+    // curl cookie strings (-b, clustered as in -sSb, or --cookie), searched within each curl command only
+    .replace(/\bcurl\b(?:"[^"]*"|'[^']*'|\\.|[^\n;&|"'\\])*/g, (curl) =>
+      curl.replace(/(\s(?:-[A-Za-z]*b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|(?:[^\s"'\\=]|\\.)+=(?:[^\s"'\\]|\\.)*)/g, "$1[redacted]"))
     // SQL that sets a password (ALTER USER x PASSWORD '...', IDENTIFIED BY '...')
     .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s+)('[^']*'|\\?"[^"\\]*\\?")/gi, "$1'[redacted]'")
     // a credential set by name and value (aws configure set aws_secret_access_key VALUE, git config ... token VALUE)
@@ -168,7 +169,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
       event: "policy_violation",
       agent: agentName,
       tool: call.name,
-      target: call.name === "bash" ? redactCommand(secrets.target) : secrets.target,
+      target: call.name === "bash" && secrets.rule !== "broad-scan" ? redactCommand(secrets.target) : secrets.target,
       rule: secrets.rule,
       reason: secrets.reason,
       mode: "block",

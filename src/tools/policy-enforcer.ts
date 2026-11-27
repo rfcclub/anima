@@ -158,6 +158,8 @@ interface ScannerSpec {
   readsPipedInput?: boolean;
   /** -e/-f may carry the pattern attached (-efoo), as in grep and rg. */
   attachedPatternFlags?: boolean;
+  /** Short flags that take a value, so a cluster such as -rnetoken or -rne ends at them. */
+  shortValueLetters?: string;
 }
 
 const always = () => true;
@@ -165,10 +167,13 @@ const shortFlagHas = (letters: RegExp, longs: string[]) => (flags: string[]) =>
   flags.some((f) => (/^-[A-Za-z0-9]+$/.test(f) && letters.test(f.slice(1))) || longs.includes(f.split("=")[0]!));
 
 const GREP_SPEC: ScannerSpec = {
-  recursive: shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"]),
+  recursive: (flags) =>
+    shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"])(flags) ||
+    flags.some((f, k) => f === "--directories=recurse" || ((f === "-d" || f === "--directories") && flags[k + 1] === "recurse") || f === "-drecurse"),
   valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label"]),
   patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
   attachedPatternFlags: true,
+  shortValueLetters: "efmABCdD",
 };
 const SCANNERS: Record<string, ScannerSpec> = {
   find: { recursive: always, valueFlags: new Set(), findSyntax: true },
@@ -181,6 +186,7 @@ const SCANNERS: Record<string, ScannerSpec> = {
     patternFirst: new Set(["-e", "-f", "--regexp", "--file", "--files", "--type-list"]),
     readsPipedInput: true,
     attachedPatternFlags: true,
+    shortValueLetters: "efgtTmABCjMEr",
   },
   ag: {
     recursive: always,
@@ -239,7 +245,8 @@ function unquote(word: string): string {
 
 /** The directory a path operand walks: ~ and $HOME expanded, trailing glob segments dropped, relative words resolved against cwd. */
 function operandDir(word: string, cwd: string): string {
-  const w = unquote(word).replace(/^(?:~|\$\{HOME\}|\$HOME)(?=\/|$)/, homeDir());
+  // ~, $HOME and ${HOME} with a default or check (${HOME:?}, ${HOME:-/}) all name the home directory
+  const w = unquote(word).replace(/^(?:~|\$\{HOME(?:[:%#][^}]*)?\}|\$HOME)(?=\/|$)/, homeDir());
   const parts = w.split("/");
   const glob = parts.findIndex((p) => /[*?[]/.test(p));
   const kept = glob === -1 ? w : parts.slice(0, glob).join("/");
@@ -258,7 +265,14 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   const flagPaths: string[] = [];
   let i = 0;
   if (spec.findSyntax) {
-    while (i < args.length && /^-[EHLPXdsx]+$/.test(args[i]!)) flags.push(args[i++]!);
+    // leading options before the paths: BSD -E -H -L -P -X -d -s -x, GNU -O<level> and -D <debugopts>
+    for (;;) {
+      const a = args[i];
+      if (a === undefined) break;
+      if (/^-[EHLPXdsx]+$/.test(a) || /^-O\d*$/.test(a)) { flags.push(args[i++]!); continue; }
+      if (a === "-D") { i += 2; continue; }
+      break;
+    }
     if (args[i] === "--") i++;
     // BSD find -f <path> names a path that may look like an option
     while (args[i] === "-f" && i + 1 < args.length) { operands.push(args[i + 1]!); i += 2; }
@@ -270,12 +284,27 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
       if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
       if (!endOfFlags && word.startsWith("-") && word.length > 1) {
         flags.push(word);
+        // a short-flag cluster ends at its first value-taking letter: the rest, or else the next word, is the value
+        if (spec.shortValueLetters && /^-[A-Za-z0-9]{2,}$/.test(word)) {
+          const letters = word.slice(1);
+          const at = [...letters].findIndex((c) => spec.shortValueLetters!.includes(c));
+          if (at !== -1) {
+            const letter = letters[at]!;
+            const attached = letters.slice(at + 1);
+            if (letter === "e" || letter === "f") flags.push("-" + letter);
+            if (letter === "d" && (attached === "recurse" || (attached === "" && args[i + 1] === "recurse"))) flags.push("-d", "recurse");
+            if (attached === "") i++;
+            continue;
+          }
+        }
         const [flagName, inlineValue] = word.split(/=(.*)/s);
         const pathFlag = flagName === "--search-path" || flagName === "--base-directory";
         if (inlineValue !== undefined) { if (pathFlag) flagPaths.push(inlineValue); continue; }
         if (spec.valueFlags.has(word)) {
           const value = args[++i];
           if (value !== undefined && pathFlag) flagPaths.push(value);
+          // grep -d recurse walks like -r
+          if ((word === "-d" || word === "--directories") && value === "recurse") flags.push("recurse");
         }
         continue;
       }
@@ -362,7 +391,7 @@ function shellTokens(command: string): ShellToken[] {
     // (( )) and $(( )) only change how << reads (a shift); their contents are still tokenized, so a $( ) inside runs through the checks
     if (command.startsWith("$((", i) || (command.startsWith("((", i) && !inWord)) arith++;
     else if (arith > 0 && command.startsWith("))", i)) arith--;
-    if (ch === "#" && !inWord) {
+    if (ch === "#" && !inWord && (i === 0 || /[\s;&|(]/.test(command[i - 1]!))) {
       // a comment runs to the end of the line
       const end = command.indexOf("\n", i);
       i = (end === -1 ? command.length : end) - 1;
