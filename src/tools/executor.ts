@@ -99,7 +99,8 @@ export function redactCommand(command: string): string {
     .replace(/(^|[\s"'])([A-Za-z0-9_-]+)(\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, (m, pre: string, name: string, sep: string) =>
       isCredentialName(name) ? pre + name + sep + "[redacted]" : m)
     // an environment assignment (GITHUB_TOKEN=..., PASSWORD=...)
-    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, (m, name: string) => (isCredentialName(name) ? name + "=[redacted]" : m))
+    // an assignment or a form field (GITHUB_TOKEN=..., a=1&password=...): the value stops at & or ;
+    .replace(/\b([A-Za-z_][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|[^\s&;"']+)/g, (m, name: string) => (isCredentialName(name) ? name + "=[redacted]" : m))
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|pass|token|api-key|apikey|secret|auth)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\bredis-cli\b[^\n;|&]*?\s-a\s+)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")

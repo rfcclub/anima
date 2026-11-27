@@ -187,7 +187,7 @@ const SCANNERS: Record<string, ScannerSpec> = {
   fd: {
     recursive: always,
     valueFlags: new Set(["-e", "-t", "-E", "-d", "-x", "-X", "-j", "-S", "-o", "-c", "--extension", "--type", "--exclude", "--max-depth", "--min-depth", "--exact-depth", "--exec", "--exec-batch", "--threads", "--size", "--changed-within", "--changed-before", "--owner", "--color", "--base-directory", "--search-path"]),
-    patternFirst: new Set(["--search-path"]),
+    patternFirst: new Set([]),
   },
   du: { recursive: always, valueFlags: new Set(["-d", "-B", "-t", "-I", "--max-depth", "--exclude"]) },
   tree: { recursive: always, valueFlags: new Set(["-L", "-I", "-P", "-o", "-H", "--filelimit"]) },
@@ -232,6 +232,8 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   if (!spec) return undefined;
   const flags: string[] = [];
   const operands: string[] = [];
+  // directories given through a flag (fd --base-directory, --search-path), in either form
+  const flagPaths: string[] = [];
   let i = 0;
   if (spec.findSyntax) {
     while (i < args.length && /^-[EHLPXdsx]+$/.test(args[i]!)) flags.push(args[i++]!);
@@ -246,9 +248,12 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
       if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
       if (!endOfFlags && word.startsWith("-") && word.length > 1) {
         flags.push(word);
+        const [flagName, inlineValue] = word.split(/=(.*)/s);
+        const pathFlag = flagName === "--search-path" || flagName === "--base-directory";
+        if (inlineValue !== undefined) { if (pathFlag) flagPaths.push(inlineValue); continue; }
         if (spec.valueFlags.has(word)) {
           const value = args[++i];
-          if (value !== undefined && (word === "--search-path" || word === "--base-directory")) operands.push(value);
+          if (value !== undefined && pathFlag) flagPaths.push(value);
         }
         continue;
       }
@@ -262,7 +267,7 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
     if (depth !== -1 && Number(args[depth + 1]) <= 1) return undefined;
   }
   const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
-  const paths = spec.patternFirst && !patternSupplied ? operands.slice(1) : operands;
+  const paths = [...flagPaths, ...(spec.patternFirst && !patternSupplied ? operands.slice(1) : operands)];
   // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
   if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;
   return (paths.length ? paths : ["."]).map((p) => operandDir(p, cwd));
@@ -271,7 +276,9 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
 type ShellToken = { kind: "word"; text: string } | { kind: "sep"; text: string };
 
 /** Split a command line into words and separators. Quotes group words and are removed; separators
- *  (newline ; && || | & ( ) $( and backtick) count only outside quotes. Not a shell parser. */
+ *  (newline ; && || | & ( ) $( and backtick) count only outside quotes. Comments, heredoc bodies and
+ *  (( )) arithmetic are recognized well enough for agent commands; this is not a shell parser, and an
+ *  unrecognized form errs towards scanning (an unterminated heredoc is scanned, not skipped). */
 function shellTokens(command: string): ShellToken[] {
   const out: ShellToken[] = [];
   let word = "";
