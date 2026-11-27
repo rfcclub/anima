@@ -81,7 +81,8 @@ const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password"
  *  Whole words only, so author, monkey, keyboard_layout or tokenizer stay readable. */
 function isCredentialName(name: string): boolean {
   const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
-  return words.some((w) => CREDENTIAL_WORDS.has(w));
+  // concatenated names (PGPASSWORD, DBPASSWORD, MYTOKEN) end with an unambiguous credential word
+  return words.some((w) => CREDENTIAL_WORDS.has(w) || /(?:password|passwd|token|secret|apikey)$/.test(w));
 }
 
 /** Mask credentials a command may carry inline before it reaches a log line. Common shapes only, not a guarantee. */
@@ -92,10 +93,10 @@ export function redactCommand(command: string): string {
     .replace(/(\\?"([A-Za-z0-9_-]+)\\?"\s*:\s*)(\\"(?:[^"\\]|\\\\\\"|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|[^,}\s"'\\]+)/g, (m, head: string, name: string) =>
       isCredentialName(name) ? head + '"[redacted]"' : m)
     // a quoted header, masked up to its closing quote (Cookie: a=1; b=2)
-    .replace(/(["'])([A-Za-z0-9-]+)(\s*:\s*)[^"']*\1/g, (m, q: string, name: string, sep: string) =>
+    .replace(/(["'])([A-Za-z0-9_-]+)(\s*:\s*)[^"']*\1/g, (m, q: string, name: string, sep: string) =>
       isCredentialName(name) ? q + name + sep + "[redacted]" + q : m)
     // an unquoted header or key: value
-    .replace(/(^|[\s"'])([A-Za-z0-9-]+)(\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, (m, pre: string, name: string, sep: string) =>
+    .replace(/(^|[\s"'])([A-Za-z0-9_-]+)(\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, (m, pre: string, name: string, sep: string) =>
       isCredentialName(name) ? pre + name + sep + "[redacted]" : m)
     // an environment assignment (GITHUB_TOKEN=..., PASSWORD=...)
     .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, (m, name: string) => (isCredentialName(name) ? name + "=[redacted]" : m))

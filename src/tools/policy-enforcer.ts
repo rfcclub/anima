@@ -326,7 +326,11 @@ function shellTokens(command: string): ShellToken[] {
       // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
       if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
       const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;|&<>()]+))/.exec(command.slice(i));
-      if (heredoc && !command.startsWith("<<<", i)) {
+      // << inside (( )), $(( )) or let is a shift, and a numeric delimiter means arithmetic too
+      const before = command.slice(0, i);
+      const arithmetic = (before.match(/\(\(/g)?.length ?? 0) > (before.match(/\)\)/g)?.length ?? 0)
+        || /(?:^|[\n;&|]\s*)let\s[^\n;&|]*$/.test(before);
+      if (heredoc && !command.startsWith("<<<", i) && !arithmetic && !/^\d+$/.test(heredoc[4] ?? "")) {
         heredocs.push({ delim: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, stripTabs: heredoc[1] === "-" });
         i += heredoc[0].length - 1;
         continue;
