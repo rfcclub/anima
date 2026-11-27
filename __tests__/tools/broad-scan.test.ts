@@ -55,6 +55,8 @@ describe("checkBroadScan: bash", () => {
       "find -f ~ -name x",
       "ls -1R ~",
       "ls -a1R ~/Library",
+      "grep -1r x ~",
+      "egrep -8r x ~",
       'grep -rn ">" ~',
       "grep -rn '<<' ~",
       "find ~ -name x 2>&1 | head",
@@ -225,7 +227,12 @@ describe("redactCommand", () => {
       const out = redactCommand(command);
       expect({ command, leaked: out.includes(secret) }).toEqual({ command, leaked: false });
     }
-    expect(redactCommand("find ~/work -name '*.ts' | head")).toBe("find ~/work -name '*.ts' | head");
+    for (const plain of [
+      "find ~/work -name '*.ts' | head",
+      `curl -d '{"author":"someone","monkey":"banana","keyboard_layout":"us","keyword":"x","tokenizer":"bpe"}' https://example.test`,
+      "KEYBOARD=us TOKENIZER_PATH=/tmp/t run",
+      "curl -H 'Accept: application/json' https://example.test",
+    ]) expect(redactCommand(plain)).toBe(plain);
   });
 
   test("neither the command record nor a refusal record carries an inline credential", async () => {

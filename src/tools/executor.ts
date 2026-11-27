@@ -74,22 +74,36 @@ function defaultLogViolation(record: PolicyViolationRecord): void {
   console.warn(JSON.stringify(record));
 }
 
-/** Mask credentials a command may carry inline before it reaches a log line. */
+/** Words that mark a field, header or variable name as holding a credential. */
+const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password", "passwd", "pass", "pwd", "pin", "cookie", "credential", "credentials", "auth", "authorization", "bearer"]);
+
+/** True when a name such as GITHUB_TOKEN, apiKey, x-auth-token or "password" holds a credential.
+ *  Whole words only, so author, monkey, keyboard_layout or tokenizer stay readable. */
+function isCredentialName(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
+  return words.some((w) => CREDENTIAL_WORDS.has(w));
+}
+
+/** Mask credentials a command may carry inline before it reaches a log line. Common shapes only, not a guarantee. */
 export function redactCommand(command: string): string {
   const masked = command
-    // a JSON field whose name mentions a credential ({"password":"..."})
-    .replace(/(\\?"[A-Za-z0-9_-]*(?:key|token|auth|secret|password|passwd|pin|cookie|credential)[A-Za-z0-9_-]*\\?"\s*:\s*)(?:\\?"(?:[^"\\]|\\[^"])*\\?"|[^,}\s"'\\]+)/gi, '$1"[redacted]"')
-    // a quoted header whose name mentions a credential is masked up to its closing quote (Cookie: a=1; b=2)
-    .replace(/(["'])([A-Za-z0-9-]*(?:key|token|auth|secret|password|cookie)[A-Za-z0-9-]*\s*:\s*)[^"']*\1/gi, "$1$2[redacted]$1")
-    .replace(/\b([A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?|AUTH)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[redacted]")
-    .replace(/(authorization\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, "$1[redacted]")
+    // a JSON field ({"password":"..."}, {\"token\":\"...\"}, {"pin":1234})
+    .replace(/(\\?"([A-Za-z0-9_-]+)\\?"\s*:\s*)(\\?"(?:[^"\\]|\\[^"])*\\?"|[^,}\s"'\\]+)/g, (m, head: string, name: string) =>
+      isCredentialName(name) ? head + '"[redacted]"' : m)
+    // a quoted header, masked up to its closing quote (Cookie: a=1; b=2)
+    .replace(/(["'])([A-Za-z0-9-]+)(\s*:\s*)[^"']*\1/g, (m, q: string, name: string, sep: string) =>
+      isCredentialName(name) ? q + name + sep + "[redacted]" + q : m)
+    // an unquoted header or key: value
+    .replace(/(^|[\s"'])([A-Za-z0-9-]+)(\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, (m, pre: string, name: string, sep: string) =>
+      isCredentialName(name) ? pre + name + sep + "[redacted]" : m)
+    // an environment assignment (GITHUB_TOKEN=..., PASSWORD=...)
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, (m, name: string) => (isCredentialName(name) ? name + "=[redacted]" : m))
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|token|api-key|secret)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]*?\s-p)(\S+)/g, "$1[redacted]")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@")
     .replace(/((?:^|\s)(?:-u|--user)[= ]?)("[^"]*"|'[^']*'|[^\s:'"]+:\S+)/g, "$1[redacted]")
-    .replace(/(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
-    .replace(/(["']?[A-Za-z0-9-]*(?:key|token|auth|secret|password|cookie)[A-Za-z0-9-]*\s*:\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi, "$1[redacted]");
+    .replace(/(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]");
   return redactSecrets(masked);
 }
 
