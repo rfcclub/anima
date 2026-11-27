@@ -225,3 +225,82 @@ describe("retainWrapup", () => {
     expect(logs.join("\n")).not.toContain(TOKEN);
   });
 });
+
+describe("retainWrapup: an unconfirmed or unreadable body is never `ok`", () => {
+  test("a 202 with no body is queued, not retained", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response(null, { status: 202 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("queued");
+    expect(result.documentId).toBe("wrapup-s");
+  });
+
+  test("a 200 whose body is not JSON is an error, not a retained document", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response("<html>gateway</html>", { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.reason).toBe("unreadable-body");
+  });
+
+  test("a 200 with an empty body is an error, not a retained document", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.reason).toBe("unreadable-body");
+  });
+
+  test("a 200 whose body states no status is an error, not a retained document", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.reason).toBe("unconfirmed");
+  });
+
+  test("a stalled body is bounded and reported as a timeout", async () => {
+    const started = Date.now();
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      timeoutMs: 30,
+      // Headers arrive, the body never completes.
+      fetchFn: (async () => new Response(new ReadableStream({ start() {} }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.reason).toBe("timeout");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("a 202 whose body stalls is still queued rather than held to the deadline as an error", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      timeoutMs: 30,
+      fetchFn: (async () => new Response(new ReadableStream({ start() {} }), { status: 202 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("queued");
+    expect(result.documentId).toBe("wrapup-s");
+  });
+});

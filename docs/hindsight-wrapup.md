@@ -78,10 +78,17 @@ The retain requests completion (`async: false`) and the call is bounded by a fin
 |---------|---------|
 | `ok` | the server answered the retain itself: the document was processed |
 | `queued` | the server accepted the write and returned an operation id: the document is **not** yet known to exist, so it must not be counted until that operation reports success |
-| `error` | an incomplete wrap-up, a missing config, a non-2xx status, a stalled request (`reason: "timeout"`) or a connection failure |
+| `error` | an incomplete wrap-up, a missing config, a non-2xx status, an absent or unreadable body (`reason: "unreadable-body"`), a 200 whose body states no status (`reason: "unconfirmed"`), a stalled request (`reason: "timeout"`) or a connection failure |
 
-A 202, or any response carrying `operation_id`, is `queued` with that id — never `ok`. The CLI
-exits 0 only on `ok`, and prints the reason otherwise.
+A 202, or any response carrying `operation_id`, is `queued` with that id — never `ok`. A body that
+cannot be read (empty, non-JSON, or stalled past the deadline) and a body that carries no `status`
+are **not** evidence that the document was stored, so they are `error`, never `ok`: a count of
+retained wrap-ups must not include a document that may not exist. The CLI exits 0 only on `ok`,
+and prints the reason otherwise.
+
+Piped stdin is read to its end under a deadline too (`--stdin-timeout-ms`, default
+`DEFAULT_STDIN_TIMEOUT_MS`). A stdin that is opened and never written or closed cannot hold the CLI
+open: it reports `stdin-timeout` and exits 1.
 
 ### The session-end contract
 

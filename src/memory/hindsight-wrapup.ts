@@ -114,9 +114,10 @@ export interface RetainWrapupOptions extends WrapupInput {
 }
 
 /**
- * `ok` means the server answered the retain itself. `queued` means it accepted the write and
- * returned an operation id: the document is not yet known to exist, so it must not be counted as
- * retained until that operation reports success.
+ * `ok` means the server answered the retain itself, with a body saying it processed the document.
+ * `queued` means it accepted the write without confirming it (a 202, an operation id, a pending
+ * status): the document is not yet known to exist, so it must not be counted as retained until
+ * that operation reports success. An unreadable or status-less body is neither, so it is `error`.
  */
 export interface RetainWrapupResult {
   outcome: "ok" | "queued" | "error";
@@ -158,8 +159,10 @@ function operationIdOf(body: RetainResponse | null): string {
  * `hindsight_ingest_document` performs (`context: "ingested document"`, `strategy: "document"`).
  *
  * It asks for completion-aware retention (`async: false`) and bounds the wait, so `ok` means the
- * server processed the document rather than merely queueing it. A server that answers with an
- * operation id anyway yields `queued` (with that id), never `ok`.
+ * server processed the document rather than merely queueing it. A 202, or any answer naming an
+ * operation or a pending status, yields `queued` (with the id when there is one), never `ok`. A
+ * body that cannot be read, or that states no status, is `error`: it is no evidence of a stored
+ * document, and a count of retained wrap-ups must not include one that may not exist.
  *
  * Never throws: the caller is an agent ending a session, and a failed or malformed memory write
  * must not fail the session. A wrap-up that cannot be built comes back as `outcome: "error"` with
@@ -230,20 +233,33 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
     }), deadline]);
     if (!res.ok) return done("error", { documentId, reason: `status-${res.status}` });
 
+    // Read the body as text first so an empty body, a non-JSON body and a stalled body each get
+    // their own reason instead of all collapsing into "no status, therefore retained".
     let body: RetainResponse | null = null;
+    let bodyError: "timeout" | "unreadable-body" | null = null;
     try {
-      body = (await Promise.race([res.json(), deadline])) as RetainResponse;
-    } catch {
-      body = null;
+      const text = (await Promise.race([res.text(), deadline])) as string;
+      const parsed: unknown = text.trim() ? JSON.parse(text) : null;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as RetainResponse;
+    } catch (error) {
+      const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
+      bodyError = aborted ? "timeout" : "unreadable-body";
     }
+
     const operationId = operationIdOf(body);
     const status = typeof body?.status === "string" ? body.status.toLowerCase() : "";
-    if (operationId || QUEUED_STATUSES.has(status)) {
+    // A 202 is the server saying "accepted, not done", whatever its body holds (including none):
+    // that is `queued`, never `ok`. So is any body that names an operation or a pending status.
+    if (res.status === 202 || operationId || QUEUED_STATUSES.has(status)) {
       return done("queued", { documentId, ...(operationId ? { operationId } : {}), reason: "not-confirmed" });
     }
+    // Without a readable body carrying a status there is no evidence the document was processed,
+    // so it is not counted as retained.
+    if (!body) return done("error", { documentId, reason: bodyError ?? "unreadable-body" });
     if (status && status !== "ok" && status !== "completed" && status !== "succeeded" && status !== "success") {
       return done("error", { documentId, reason: `status-${status}` });
     }
+    if (!status) return done("error", { documentId, reason: "unconfirmed" });
     return done("ok", { documentId });
   } catch (error) {
     const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
