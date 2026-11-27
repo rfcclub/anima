@@ -64,6 +64,8 @@ export interface SessionRecord {
   claimId: string;
   generation: number;
   deadlineMs: number;
+  /** Extra time past the deadline for the handoff task (0 when the adapter has none). */
+  graceMs: number;
   startedAt: string;
   endedAt: string | null;
   stopCause: string | null;
@@ -200,6 +202,7 @@ function toSession(r: Row): SessionRecord {
     claimId: r.claim_id as string,
     generation: r.generation as number,
     deadlineMs: r.deadline_ms as number,
+    graceMs: (r.grace_ms as number | null) ?? 0,
     startedAt: r.started_at as string,
     endedAt: (r.ended_at as string | null) ?? null,
     stopCause: (r.stop_cause as string | null) ?? null,
@@ -371,6 +374,8 @@ export class WorkStore {
     `);
     const sessionColumns = (this.db.query("PRAGMA table_info(work_sessions)").all() as Array<{ name: string }>).map((c) => c.name);
     if (!sessionColumns.includes("adapter")) this.db.run("ALTER TABLE work_sessions ADD COLUMN adapter TEXT");
+    // Extra time past the deadline the executor may use for the handoff task; charged in full if the host crashes.
+    if (!sessionColumns.includes("grace_ms")) this.db.run("ALTER TABLE work_sessions ADD COLUMN grace_ms INTEGER NOT NULL DEFAULT 0");
   }
 
   private stamp(): string {
@@ -473,7 +478,7 @@ export class WorkStore {
   }
 
   /** Reserves and counts a session before it starts. Refuses, and blocks the work, when a cap is spent. */
-  reserveSession(workId: string, claim: { jobId: string; claimId: string }, adapter?: string): ReserveResult {
+  reserveSession(workId: string, claim: { jobId: string; claimId: string }, adapter?: string, graceMs = 0): ReserveResult {
     return this.db.transaction((): ReserveResult => {
       const w = this.getWork(workId);
       if (!w) return { ok: false, reason: "no-work" };
@@ -494,9 +499,9 @@ export class WorkStore {
       const no = w.sessionsUsed + 1;
       const sessionId = id("s");
       this.db.run(
-        `INSERT INTO work_sessions (session_id, work_id, no, job_id, claim_id, generation, deadline_ms, started_at, adapter)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sessionId, workId, no, claim.jobId, claim.claimId, w.generation + 1, deadlineMs, this.stamp(), adapter ?? null],
+        `INSERT INTO work_sessions (session_id, work_id, no, job_id, claim_id, generation, deadline_ms, started_at, adapter, grace_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionId, workId, no, claim.jobId, claim.claimId, w.generation + 1, deadlineMs, this.stamp(), adapter ?? null, Math.max(0, Math.floor(graceMs))],
       );
       this.db.run(
         "UPDATE works SET sessions_used = ?, generation = ?, state = 'running', blocked_reason = NULL, updated_at = ? WHERE work_id = ?",
@@ -531,13 +536,14 @@ export class WorkStore {
       const open = (this.db.query("SELECT * FROM work_sessions WHERE ended_at IS NULL ORDER BY started_at").all() as Row[]).map(toSession);
       for (const s of open) {
         const w = this.mustGet(s.workId);
+        const chargedMs = s.deadlineMs + s.graceMs;
         this.db.run(
           "UPDATE work_sessions SET ended_at = ?, stop_cause = 'unknown', iterations = ?, exec_ms = ?, ended_unknown = 1 WHERE session_id = ?",
-          [this.stamp(), w.caps.maxIterationsPerSession, s.deadlineMs, s.sessionId],
+          [this.stamp(), w.caps.maxIterationsPerSession, chargedMs, s.sessionId],
         );
-        this.charge(s.workId, w.caps.maxIterationsPerSession, s.deadlineMs);
+        this.charge(s.workId, w.caps.maxIterationsPerSession, chargedMs);
         this.demoteRunning(s.workId);
-        this.writeEvent(s.workId, "session-recovered", { no: s.no, chargedMs: s.deadlineMs, outcome: "unknown" });
+        this.writeEvent(s.workId, "session-recovered", { no: s.no, chargedMs, outcome: "unknown" });
       }
       return open.map((s) => this.mustSession(s.sessionId));
     })();

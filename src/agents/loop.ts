@@ -336,6 +336,12 @@ export async function runLoopMode(
       const sections: string[] = [];
       for (const toolCall of toolCalls) {
         if (interrupted) break;
+        // Working time ran out during this turn: the remaining ordinary calls (publish included) are not run.
+        // The handoff turns that follow get only the handoff tools.
+        if (!inHandoff && options.handoff?.due()) {
+          sections.push(`#${toolCall.id} ${toolCall.name}\nnot run: working time is over`);
+          continue;
+        }
         let toolStep: string | undefined;
         let text: string;
         try {

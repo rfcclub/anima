@@ -43,6 +43,7 @@ export function inspectHandoffNote(workRoot: string, sessionId: string): { text:
       return { problem: `${where} is not valid UTF-8` };
     }
     if (text.length > HANDOFF_MAX_CHARS) return { problem: `${where} has ${text.length} characters; the limit is ${HANDOFF_MAX_CHARS}` };
+    if (text.trim().length === 0) return { problem: `${where} is empty (only whitespace)` };
     return { text };
   } catch {
     return { problem: `${where} could not be read` };

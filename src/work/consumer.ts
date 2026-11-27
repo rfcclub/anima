@@ -260,7 +260,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
       const continuation = deps.continuation?.(work) ?? { ok: false as const, reason: "continuation check unavailable" };
       if (!continuation.ok) return blockWork(work.workId, continuation.reason);
     }
-    const reserved = store.reserveSession(work.workId, { jobId: job.id, claimId: claim.id }, adapter);
+    const reserved = store.reserveSession(work.workId, { jobId: job.id, claimId: claim.id }, adapter, executor.handoffGraceMs ?? 0);
     if (!reserved.ok) {
       log("info", "no session reserved", { workId: work.workId, reason: reserved.reason });
       return failed;

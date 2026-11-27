@@ -63,7 +63,9 @@ function provider(script: (n: number) => { content: string; calls?: ProviderTool
 }
 const call = (name: string, args: Record<string, unknown> = {}): ProviderToolCall => ({ id: `c-${name}`, name, arguments: JSON.stringify(args) });
 
-const workTools: LoopHostTools = { definitions: [{ name: "bash", description: "", parameters: {} }], async execute() { return "read output"; } };
+let toolRuns = 0;
+beforeEach(() => { toolRuns = 0; });
+const workTools: LoopHostTools = { definitions: [{ name: "bash", description: "", parameters: {} }], async execute() { toolRuns++; return "read output"; } };
 function handoffTools(writes: string[]): LoopHostTools {
   return {
     definitions: [{ name: "write", description: "", parameters: {} }],
@@ -80,10 +82,9 @@ describe("the loop's handoff task", () => {
   test("once the time is up the next turn asks only for the handoff, with only the handoff tools, and ends as a deadline", async () => {
     const seen: Seen[] = [];
     const writes: string[] = [];
-    let calls = 0;
     const result = await run(
       provider((n) => (n < 3 ? { content: "reading", calls: [call("bash")] } : { content: "note", calls: [call("write", { content: "Done: x" })] }), seen),
-      { handoff: { due: () => ++calls > 3, turns: 10, prompt: "HANDOFF-TASK", tools: handoffTools(writes), check: () => (writes.length ? null : "the note is missing") } },
+      { handoff: { due: () => toolRuns >= 3, turns: 10, prompt: "HANDOFF-TASK", tools: handoffTools(writes), check: () => (writes.length ? null : "the note is missing") } },
     );
     expect(result.exitReason).toBe("deadline");
     expect(seen).toHaveLength(4);
@@ -216,5 +217,26 @@ describe("the consumer's grace period", () => {
     await session(executor);
     expect(abortedAfter).toBeGreaterThanOrEqual(0);
     expect(abortedAfter).toBeLessThan(1_000);
+  });
+});
+
+describe("review fixes", () => {
+  test("once the working time is over inside a turn, its remaining ordinary tool calls are not run", async () => {
+    const seen: Seen[] = [];
+    const ran: string[] = [];
+    let over = false;
+    const tools: LoopHostTools = { definitions: [{ name: "bash", description: "", parameters: {} }], async execute(c) { ran.push(c.id); over = true; return "ran"; } };
+    const writes: string[] = [];
+    const result = await runLoopMode(agent(), "goal",
+      provider((n) => (n === 0
+        ? { content: "batch", calls: [{ id: "a", name: "bash", arguments: "{}" }, { id: "b", name: "bash", arguments: "{}" }, { id: "c", name: "publish", arguments: "{}" }] }
+        : { content: "note", calls: [call("write", { content: "Done: a" })] }), seen),
+      manager, sessions,
+      { host: { ...createLoopHost(workStore, workId, async () => "checked", { workSessionId }), tools }, maxIterations: 20,
+        handoff: { due: () => over, turns: 10, prompt: "HANDOFF-TASK", tools: handoffTools(writes), check: () => (writes.length ? null : "missing") } });
+    expect(ran).toEqual(["a"]);
+    expect(seen[1]!.message).toContain("not run: working time is over");
+    expect(seen[1]!.tools).toEqual(["write"]);
+    expect(result.exitReason).toBe("deadline");
   });
 });
