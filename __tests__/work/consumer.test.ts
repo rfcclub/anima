@@ -439,6 +439,55 @@ describe("lease loss", () => {
     }
   }, 15_000);
 
+  test("a heartbeat lease loss prevents the aborted session from writing domain progress", async () => {
+    const executor = new FakeExecutor();
+    let writeRejected = false;
+    let replacementSignalRejected = false;
+    executor.runSession = async (input) => {
+      const owner = {
+        workId: input.work.workId, sessionId: input.session.sessionId, leaseId: input.claim.id,
+        generation: input.session.generation, signal: input.signal,
+      };
+      const api = store as unknown as {
+        createDomainItem?: (subject: typeof owner, id: string) => unknown;
+        updateDomainItem?: (subject: typeof owner, id: string, update: unknown) => unknown;
+        getDomainItem?: (workId: string, id: string) => unknown;
+      };
+      api.createDomainItem?.(owner, "item-1");
+      if (!api.getDomainItem?.(owner.workId, "item-1")) {
+        return { stopCause: "interrupted", iterations: 1, execMs: 1, cessation: "proven" };
+      }
+      await new Promise<void>((resolve) => {
+        if (input.signal.aborted) resolve();
+        else input.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      try {
+        api.updateDomainItem?.(owner, "item-1", { status: "completed", evidence: [], result: { type: "text", value: "done" } });
+      } catch {
+        writeRejected = true;
+      }
+      try {
+        api.updateDomainItem?.(
+          { ...owner, signal: new AbortController().signal },
+          "item-1",
+          { status: "completed", evidence: [], result: { type: "text", value: "done" } },
+        );
+      } catch {
+        replacementSignalRejected = true;
+      }
+      return { stopCause: "interrupted", iterations: 1, execMs: 1, cessation: "proven" };
+    };
+    const { jobs, consumer } = build({ executor });
+    jobs.heartbeatError = new LeaseLostError(409, "lease-lost");
+    jobs.queued.push(workJob());
+    await consumer.tick();
+    const api = store as unknown as { getDomainItem?: (workId: string, id: string) => { status: string } | null };
+    expect(api.getDomainItem?.("wabc1234ef0", "item-1")?.status).toBe("not_started");
+    expect(writeRejected).toBe(true);
+    expect(replacementSignalRejected).toBe(true);
+    expect(jobs.reports).toEqual([]);
+  });
+
   test("a lost lease aborts the session; with proven cessation the work is checkpointed and nothing is reported", async () => {
     const executor = new FakeExecutor();
     executor.hangUntilAbort = true;

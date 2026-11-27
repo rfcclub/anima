@@ -294,14 +294,20 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
       });
       inflight = Promise.race([request, unanswered]).then(() => { inflight = null; }, (error) => {
         inflight = null;
-        if (error instanceof LeaseLostError) {
+        if (error instanceof LeaseLostError || error instanceof HeartbeatUnanswered) {
+          // An unanswered heartbeat also means the lease is uncertain: stop writing.
           leaseLost = true;
+          try {
+            store.revokeDomainLease(reserved.session.sessionId, claim.id, reserved.session.generation);
+          } catch (revokeError) {
+            log("error", "domain progress lease revocation could not be persisted", {
+              workId: work.workId, error: revokeError instanceof Error ? revokeError.message : String(revokeError),
+            });
+          }
           controller.abort();
-        } else if (error instanceof HeartbeatUnanswered) {
-          // Whether the lease still holds is unknown: stop writing, as for a lost lease.
-          leaseLost = true;
-          controller.abort();
-          log("error", "work heartbeat unanswered; treating the lease as lost", { claimId: claim.id, timeoutMs: heartbeatTimeoutMs });
+          if (error instanceof HeartbeatUnanswered) {
+            log("error", "work heartbeat unanswered; treating the lease as lost", { claimId: claim.id, timeoutMs: heartbeatTimeoutMs });
+          }
         } else {
           log("error", "work heartbeat failed", { claimId: claim.id, error: error instanceof Error ? error.message : String(error) });
         }

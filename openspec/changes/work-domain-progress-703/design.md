@@ -1,0 +1,13 @@
+# Design: durable domain progress
+
+Add a work-owned `work_domain_items` table to the existing SQLite store. Each key is `(work_id, item_id)`; each row holds the owner session id, lease claim id, generation, status, evidence JSON, result JSON and revision. The table is additive and does not alter existing checkpoints, session accounting, step markers or reconciliation.
+
+The host passes a `DomainProgressOwner` containing the current session id, lease claim id, generation and the session's host-controlled `AbortSignal`. Before create, claim or update, a single synchronous SQLite transaction checks that the signal is not aborted, the work is running at that generation, and its session is open with the same work, lease claim and generation. An update additionally requires that the item claim equals that owner.
+
+When a heartbeat reports lease loss or is unanswered, the consumer revokes that session's domain write authority before aborting the signal. After validating the session, lease and generation tuple, the store marks it in memory before recording the revocation in an additive `work_domain_revoked_leases` table, so writes on the current store fail closed even if persistence fails. A rejected tuple does not change the in-memory fence. A domain write rejects a revoked session independently of its supplied signal, preventing an old owner from bypassing the fence with a fresh signal. Existing session and lease handling remain intact; this fence follows the observed heartbeat and does not claim instantaneous remote lease validation.
+
+Creating an item starts it as `not_started` under the caller's claim. Claiming an existing item with a later valid session preserves its content and transfers its owner. An update supplies the revision it read: a matching revision permits a change, and an immediate retry of the same content at the preceding revision returns the existing row without incrementing it. Other stale revisions fail. Deliberate reopening is possible using the current revision. Reads do not require a lease and remain available after a restart.
+
+The runtime boundary validates item ids, revisions, the four status literals, dense evidence arrays containing only entries (`note` or `reference` with text), and discriminated text/number/boolean/JSON results. JSON values must be finite, acyclic and serializable. A completed item requires a result. Invalid inputs throw before mutation.
+
+Tests use temporary SQLite databases and the existing fake consumer heartbeat. They cover persistence across close and reopen, current and stale claims, an actual consumer lease-loss abort followed by writes using both the aborted signal and a replacement signal, invalid values, duplicate writes and unchanged existing reads.

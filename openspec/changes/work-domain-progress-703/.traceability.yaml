@@ -1,0 +1,22 @@
+scenarios:
+  - scenario: validated-domain-items-item-lifecycle
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > creates, claims and reads a completed item with typed evidence and result"
+  - scenario: validated-domain-items-invalid-values
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > rejects invalid status, evidence and result without storing success"
+  - scenario: durable-fenced-writes-restart-mid-item
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > preserves an in-progress item across restart and allows the replacement to claim it"
+  - scenario: durable-fenced-writes-stale-generation
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > rejects a stale generation and a mismatched lease claim on every write"
+  - scenario: durable-fenced-writes-lost-lease
+    test: __tests__/work/consumer.test.ts
+    assertion: "lease loss > a heartbeat lease loss prevents the aborted session from writing domain progress"
+  - scenario: durable-fenced-writes-duplicate-update
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > repeating an identical result is idempotent, including JSON key order"
+  - scenario: existing-checkpoint-compatibility-existing-records-remain-readable
+    test: __tests__/work/domain-progress.test.ts
+    assertion: "domain progress > preserves existing work session and event reads"
