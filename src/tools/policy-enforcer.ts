@@ -313,6 +313,7 @@ function shellTokens(command: string): ShellToken[] {
     const ch = command[i]!;
     if (quote === '"' && command.startsWith("$(", i)) {
       quote = null;
+      if (command.startsWith("$((", i)) arith++;
       sep("$(");
       depth++;
       resumeAt.push(depth);
