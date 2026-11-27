@@ -285,6 +285,9 @@ function shellTokens(command: string): ShellToken[] {
   let backtickResumes = false;
   // heredoc delimiters waiting for the end of the current line; their bodies are data, not commands
   const heredocs: Array<{ delim: string; stripTabs: boolean }> = [];
+  // unquoted (( )) / $(( )) nesting, and whether the current simple command is a let: << there is a shift
+  let arith = 0;
+  let segmentStart = 0;
   const flush = () => {
     if (inWord) {
       if (dropNext) dropNext = false;
@@ -297,6 +300,7 @@ function shellTokens(command: string): ShellToken[] {
     flush();
     dropNext = false;
     out.push({ kind: "sep", text });
+    segmentStart = out.length;
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
@@ -322,15 +326,34 @@ function shellTokens(command: string): ShellToken[] {
     }
     if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
     if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
+    if (command.startsWith("$((", i) || (command.startsWith("((", i) && !inWord)) {
+      // arithmetic: its text is not a command, only a word
+      arith++;
+      word += command.startsWith("$((", i) ? "$((" : "((";
+      inWord = true;
+      i += command.startsWith("$((", i) ? 2 : 1;
+      continue;
+    }
+    if (arith > 0 && command.startsWith("))", i)) {
+      arith--;
+      word += "))";
+      i++;
+      continue;
+    }
+    if (arith > 0) { word += ch; inWord = true; continue; }
+    if (ch === "#" && !inWord) {
+      // a comment runs to the end of the line
+      const end = command.indexOf("\n", i);
+      i = (end === -1 ? command.length : end) - 1;
+      continue;
+    }
     if (ch === "<" || ch === ">") {
       // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
       if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
       const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;|&<>()]+))/.exec(command.slice(i));
-      // << inside (( )), $(( )) or let is a shift, and a numeric delimiter means arithmetic too
-      const before = command.slice(0, i);
-      const arithmetic = (before.match(/\(\(/g)?.length ?? 0) > (before.match(/\)\)/g)?.length ?? 0)
-        || /(?:^|[\n;&|]\s*)let\s[^\n;&|]*$/.test(before);
-      if (heredoc && !command.startsWith("<<<", i) && !arithmetic && !/^\d+$/.test(heredoc[4] ?? "")) {
+      // << in a let statement or with a numeric delimiter is a shift ((( )) is read above as arithmetic)
+      const letStatement = out[segmentStart]?.kind === "word" && out[segmentStart]!.text === "let";
+      if (heredoc && !command.startsWith("<<<", i) && !letStatement && !/^\d+$/.test(heredoc[4] ?? "")) {
         heredocs.push({ delim: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, stripTabs: heredoc[1] === "-" });
         i += heredoc[0].length - 1;
         continue;
@@ -364,15 +387,19 @@ function shellTokens(command: string): ShellToken[] {
     }
     if (ch === "\n" && heredocs.length > 0) {
       sep(ch);
-      // skip each pending heredoc body up to its delimiter line
+      // skip each pending heredoc body up to its delimiter line; a body whose delimiter never comes is scanned as commands
       let pos = i + 1;
       for (const { delim, stripTabs } of heredocs.splice(0)) {
-        for (;;) {
-          const end = command.indexOf("\n", pos);
-          const line = command.slice(pos, end === -1 ? command.length : end);
-          pos = end === -1 ? command.length : end + 1;
-          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delim || end === -1) break;
+        let p = pos;
+        let found = false;
+        while (p < command.length) {
+          const end = command.indexOf("\n", p);
+          const line = command.slice(p, end === -1 ? command.length : end);
+          p = end === -1 ? command.length : end + 1;
+          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delim) { found = true; break; }
         }
+        if (!found) break;
+        pos = p;
       }
       i = pos - 1;
       continue;
@@ -411,8 +438,9 @@ export function checkBroadScan(input: { tool: string; args: Record<string, unkno
         let k = i + 1;
         while (segment[k] !== undefined && /^-[LPe@]+$|^--$/.test(segment[k]!)) k++;
         const dest = segment[k];
-        if (dest === undefined) cwd = homeDir();
-        else if (dest !== "-") cwd = operandDir(dest, cwd);
+        // bare cd goes home; bare pushd swaps the stack top, and -N/+N pick a stack entry: unknown, so keep the cwd
+        if (dest === undefined) { if (segment[i] === "cd") cwd = homeDir(); }
+        else if (dest !== "-" && !/^[-+]\d+$/.test(dest)) cwd = operandDir(dest, cwd);
         return undefined;
       }
       // Any word naming a scanner starts a scan, wherever it sits (after sudo, env -i, xargs -P 4, then, ...).

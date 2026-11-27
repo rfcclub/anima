@@ -82,7 +82,7 @@ const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password"
 function isCredentialName(name: string): boolean {
   const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
   // concatenated names (PGPASSWORD, DBPASSWORD, MYTOKEN) end with an unambiguous credential word
-  return words.some((w) => CREDENTIAL_WORDS.has(w) || /(?:password|passwd|token|secret|apikey)$/.test(w));
+  return words.some((w) => CREDENTIAL_WORDS.has(w) || /(?:password|passwd|pass|pwd|token|secret|apikey)$/.test(w));
 }
 
 /** Mask credentials a command may carry inline before it reaches a log line. Common shapes only, not a guarantee. */
@@ -103,8 +103,10 @@ export function redactCommand(command: string): string {
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|pass|token|api-key|apikey|secret|auth)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\bredis-cli\b[^\n;|&]*?\s-a\s+)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
-    .replace(/(\b(?:docker|podman|helm|nerdctl)\b[^\n;|&]*?\s(?:-p|--password)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
-    .replace(/(\bcurl\b[^\n;|&]*?\s(?:-b|--cookie)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\b(?:docker|podman|helm|nerdctl)\b[^\n;|&]*?\blogin\b[^\n;|&]*?\s(?:-p|--password)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\s--password[= ])("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    // curl -b with a cookie string (name=value); a cookie file name stays readable
+    .replace(/(\bcurl\b[^\n;|&]*?\s(?:-b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|[^\s"']*=\S*)/g, "$1[redacted]")
     // SQL that sets a password (ALTER USER x PASSWORD '...', IDENTIFIED BY '...')
     .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s+)('[^']*'|\\?"[^"\\]*\\?")/gi, "$1'[redacted]'")
     // a credential set by name and value (aws configure set aws_secret_access_key VALUE, git config ... token VALUE)
