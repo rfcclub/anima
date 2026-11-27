@@ -23,6 +23,7 @@ import type { RuntimeProjection } from "./contract/runtime-projection.ts";
 import type { AgentMemoryEntry, MemoryScope } from "../memory/contract";
 import { ScopeMapper } from "./contract/scope-mapper.ts";
 import { ProjectionGrantStore } from "./projection-grant-store";
+import { withCoreIdentity } from "./core-identity-section";
 
 const DEFAULT_GRANT_TTL_MS = 30 * 60 * 1000;
 
@@ -70,7 +71,10 @@ export class AnimaContinuityService implements RemoteContinuityPort {
     if (intent.identity !== this.options.identity) {
       throw new Error("active join identity does not match ANIMA continuity identity");
     }
-    const projection = await this.options.compileProjection(intent);
+    const compiled = await this.options.compileProjection(intent);
+    // Every tenant's compile carries the core section: it is the one part of
+    // the identity a client must always hold, and it points at the loader.
+    const projection = { ...compiled, prompt: withCoreIdentity(compiled.prompt, this.options.identity) };
     const issuedAt = this.now();
     const grant = {
       grantId: this.generateId(),
