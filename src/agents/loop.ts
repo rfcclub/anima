@@ -107,11 +107,25 @@ export interface LoopRunOptions {
   /** Allows the host to close the fresh work conversation without running agent memory hooks. */
   onWorkConversationStarted?: (sessionId: string) => void;
   now?: () => number;
+  /**
+   * The handoff as its own task (owner, 2026-11-27). When `due()` turns true between turns, or the iteration limit
+   * is reached, the run is not cut off: the turn in flight finishes, then the model gets up to `turns` more turns
+   * in the same conversation, offered only `tools`, whose only job is the handoff note. After each of those turns
+   * `check()` returns null once the note is usable, which ends the run, or the problem, which is sent back. A DONE
+   * in these turns ends the handoff, never the work. The run then ends as `deadline` (time) or `max_reached`.
+   */
+  handoff?: {
+    due: () => boolean;
+    turns: number;
+    prompt: string;
+    tools: LoopHostTools;
+    check: () => string | null;
+  };
 }
 
 export interface LoopRunResult {
   iterations: number;
-  exitReason: "done" | "max_reached" | "error" | "interrupted" | "blocked";
+  exitReason: "done" | "max_reached" | "error" | "interrupted" | "blocked" | "deadline";
   interruptionSource?: "abort" | "sigint";
   checkpoint?: RunCheckpoint;
 }
@@ -243,7 +257,26 @@ export async function runLoopMode(
     return { iterations, exitReason, checkpoint, ...(interruptionSource ? { interruptionSource } : {}) };
   };
 
-  for (let i = first; i <= last; i++) {
+  // The handoff task's first and last iteration, and what ended the working part of the run.
+  let handoffFrom: number | undefined;
+  let handoffLast = 0;
+  let handoffCause: "deadline" | "max_reached" = "deadline";
+  for (let i = first; ; i++) {
+    if (handoffFrom === undefined) {
+      const overLimit = i > last;
+      if (options.handoff && (overLimit || options.handoff.due())) {
+        handoffFrom = i;
+        handoffLast = i + Math.max(1, options.handoff.turns) - 1;
+        handoffCause = overLimit ? "max_reached" : "deadline";
+        currentMessage = `${currentMessage}\n\n${options.handoff.prompt}`;
+      } else if (overLimit) {
+        break;
+      }
+    } else if (i > handoffLast) {
+      return finish(handoffCause, i - 1, { reason: handoffCause, outcome: "completed" });
+    }
+    const inHandoff = handoffFrom !== undefined;
+    const turnTools = inHandoff ? options.handoff!.tools : options.host?.tools;
     const turns = sessionManager.getTurns(sessionId);
 
     let output: string;
@@ -264,7 +297,7 @@ export async function runLoopMode(
         ...(options.host?.link ? { work: options.host.link } : {}),
         mode: (options.permissionMode as never) ?? agent.config.session.defaultMode,
         cwd: agent.roomDir,
-        ...(options.host?.tools ? { tools: options.host.tools.definitions } : {}),
+        ...(turnTools ? { tools: turnTools.definitions } : {}),
         model: options.model ?? agent.config.provider.model,
         system: sys,
         cachePrefix: staticPrefix,
@@ -298,7 +331,7 @@ export async function runLoopMode(
 
     // Host-run tools: each call has its own marker, runs one after another, and its result goes into the next message.
     let toolResults = "";
-    const hostTools = options.host?.tools;
+    const hostTools = turnTools;
     if (hostTools && toolCalls.length > 0) {
       const sections: string[] = [];
       for (const toolCall of toolCalls) {
@@ -331,6 +364,17 @@ export async function runLoopMode(
 
     if (interrupted) {
       return finish("interrupted", i, { reason: "interrupted", outcome: "completed" });
+    }
+
+    if (inHandoff) {
+      // Only the note counts here: DONE, LOOP or silence end the handoff once the note is usable, and a problem is sent back.
+      const problem = options.handoff!.check();
+      if (problem === null || signal.type === "done" || i >= handoffLast) {
+        return finish(handoffCause, i, { reason: handoffCause, outcome: "completed" });
+      }
+      currentMessage = `${toolResults ? `Tool results:\n${toolResults}\n\n` : ""}The handoff note is not usable yet: ${problem}. ` +
+        `Fix it with the tools you have (${options.handoff!.tools.definitions.map((d) => d.name).join(", ")}).`;
+      continue;
     }
 
     // A done signal that came with tool calls is not final: the results have not been seen yet.

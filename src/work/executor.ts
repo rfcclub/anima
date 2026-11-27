@@ -7,7 +7,8 @@
  * Cessation is proven (or not) after the loop ends, whatever way it ended.
  */
 
-import { runLoopMode } from "../agents/loop";
+import { join, resolve } from "node:path";
+import { runLoopMode, type LoopHostTools } from "../agents/loop";
 import { headlessAgent } from "../agents/headless";
 import { buildHeadlessPromptParts } from "../cartridge/headless-profile";
 import type { SessionStore } from "../memory/session-store";
@@ -24,6 +25,7 @@ import { isDirty, prepareWorkspace, WorkspacePreparationStopped, type Workspace 
 import type { WorkerAdapter, WorkerAdapterResult } from "./adapter";
 import type { WorkRecord, WorkStore } from "./store";
 import { HANDOFF_MAX_CHARS } from "./work-order";
+import { handoffFileName, inspectHandoffNote } from "./handoff-note";
 
 export interface WorkIssue { title: string; body: string }
 
@@ -58,6 +60,10 @@ export interface ExecutorDeps {
   now?: () => number;
   /** Builds the session in the prepared workspace. Defaults to adapter #0, today's in-process loop. */
   adapter?: WorkerAdapter;
+  /** Turns the loop adapter gives the handoff task once a session's time or iterations run out. Default 10; 0 turns it off. */
+  handoffTurns?: number;
+  /** How long past the deadline the handoff task may run before the session is hard-stopped. Default 20 minutes. */
+  handoffGraceMs?: number;
 }
 
 const PUBLISH_DEFINITION: ProviderToolDefinition = {
@@ -111,6 +117,7 @@ export function createSessionExecutor(deps: ExecutorDeps): SessionExecutor {
   const adapter = deps.adapter ?? loopAdapter(deps);
   return {
     adapterKind: adapter.kind,
+    ...(adapter.handoffGraceMs !== undefined ? { handoffGraceMs: adapter.handoffGraceMs } : {}),
     ready: deps.ready ?? (() => {
       const boundary = probeSandbox();
       return boundary.ok ? probeWorkUnixSockets() : boundary;
@@ -147,15 +154,21 @@ export function createSessionExecutor(deps: ExecutorDeps): SessionExecutor {
   };
 }
 
-/** Share of the session deadline after which the worker is asked to commit and leave a note. */
+/** Turns and extra time for the handoff task (owner, 2026-11-27: "give the agent 10 extra turns; treat the handoff as its own task"). */
+const DEFAULT_HANDOFF_TURNS = 10;
+const DEFAULT_HANDOFF_GRACE_MS = 20 * 60_000;
+
+/** Share of the session deadline after which the worker is told the handoff turns are coming. */
 const WIND_DOWN_FRACTION = 0.8;
 const REMINDER_INTERVAL_MS = 60 * 60_000;
 
 /** Adapter #0: the author's in-process loop, unchanged (identity prompt, work tools, host-mediated publish). */
 export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
   const now = deps.now ?? Date.now;
+  const handoffTurns = Math.max(0, Math.floor(deps.handoffTurns ?? DEFAULT_HANDOFF_TURNS));
   return {
     kind: "loop",
+    ...(handoffTurns > 0 ? { handoffGraceMs: deps.handoffGraceMs ?? DEFAULT_HANDOFF_GRACE_MS } : {}),
     async run(input): Promise<WorkerAdapterResult> {
       const { work, session, signal, workspace: ws } = input;
       const startedAt = input.startedAt ?? now();
@@ -235,14 +248,23 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
             if (deadlineNotice) deadlineReminderSent = true;
             if (iterationNotice) iterationReminderSent = true;
             if (hourly) nextReminder = (Math.floor((work.execMsUsed + elapsed) / REMINDER_INTERVAL_MS) + 1) * REMINDER_INTERVAL_MS;
-            const reason = deadlineNotice
-              ? "[time] This session is nearly out of time."
-              : iterationNotice ? "[limit] This session is approaching its iteration limit."
-              : "[progress] About an hour of work has passed.";
-            return `${reason} Over the next 5-10 turns if available, finish your current step, commit your progress on the work branch ` +
-              `and save a short handoff of what is done, next and blocked in ../tmp/AGENT_HANDOFF_${session.sessionId}.md. ` +
-              "Keep the note outside Git and omit secrets. Another agent may continue from this note.";
+            if (deadlineNotice || iterationNotice) {
+              const limit = deadlineNotice ? "[time] This session is nearly out of time." : "[limit] This session is approaching its iteration limit.";
+              return `${limit} Keep working and commit finished steps on the work branch as you go. When the limit is reached you will ` +
+                "get separate turns to write the handoff note, so do not stop early to write it.";
+            }
+            return "[progress] About an hour of work has passed. Commit your progress on the work branch if you have not yet.";
           },
+          ...(handoffTurns > 0 ? { handoff: {
+            due: () => now() - startedAt >= input.deadlineMs,
+            turns: handoffTurns,
+            prompt: handoffPrompt(session.sessionId),
+            tools: handoffTools(workTools, work.root, ws.tree, session.sessionId),
+            check: () => {
+              const note = inspectHandoffNote(work.root, session.sessionId);
+              return "text" in note ? null : note.problem;
+            },
+          } } : {}),
           onWorkConversationStarted: (id) => {
             conversationSessionId = id;
             try {
@@ -275,11 +297,48 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
   };
 }
 
+/** The handoff task: what the model is asked once its working time or iterations are spent. */
+function handoffPrompt(sessionId: string): string {
+  const path = `../tmp/${handoffFileName(sessionId)}`;
+  return [
+    "[handoff] The working part of this session is over. Stop the task now: do not read more code or run anything.",
+    "Your only job for the next few turns is the handoff note for whoever continues this work. It may be you, without this conversation.",
+    `Write it with the write tool to ${path} (exactly that path), in plain Markdown, under ${HANDOFF_MAX_CHARS} characters:`,
+    "- Done: what is finished, and whether it is committed, with file paths.",
+    "- Findings: what you learned that the next session should not have to re-read, with file:line references.",
+    "- Next: the concrete next steps, in order.",
+    "- Blocked: anything that blocks the work, or \"none\".",
+    "Keep secrets out of it. When the note is written, end your answer with <LOOP reason=\"the next step, in one line\" />.",
+  ].join("\n");
+}
+
+/** During the handoff only `write` is offered, and only for this session's note: no reading, running or publishing. */
+function handoffTools(work: { definitions: ProviderToolDefinition[]; execute: LoopHostTools["execute"] }, root: string, tree: string, sessionId: string): LoopHostTools {
+  const note = join(root, "tmp", handoffFileName(sessionId));
+  const shown = `../tmp/${handoffFileName(sessionId)}`;
+  const write = work.definitions.find((d) => d.name === "write");
+  return {
+    definitions: write ? [{ ...write, description: `Write the handoff note. The only path accepted is ${shown}.` }] : [],
+    async execute(call, signal) {
+      if (call.name !== "write") return `Error: during the handoff only write is available, for ${shown}`;
+      let args: Record<string, unknown>;
+      try {
+        args = JSON.parse(call.arguments) as Record<string, unknown>;
+      } catch {
+        return "Error: invalid arguments for write: expected a JSON object";
+      }
+      if (typeof args.path !== "string" || resolve(tree, args.path) !== note) return `Error: the handoff note goes to ${shown} only`;
+      return work.execute({ ...call, arguments: JSON.stringify({ path: note, content: args.content }) }, signal);
+    },
+  };
+}
+
 function classify(result: { exitReason: string; checkpoint?: { stopReason: string } }, lastError: string): StopCause {
   switch (result.exitReason) {
     case "done": return "done";
     case "blocked": return "blocked";
     case "max_reached": return "max_reached";
+    case "deadline": return "deadline";
     case "interrupted": return "interrupted";
     default: {
       const reason = result.checkpoint?.stopReason;

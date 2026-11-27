@@ -41,6 +41,11 @@ export interface SessionResult {
 export interface SessionExecutor {
   /** The adapter that builds the sessions (`loop` for adapter #0); recorded with each session. */
   readonly adapterKind?: string;
+  /**
+   * Extra time after the deadline before the session is hard-stopped. Only an executor that stops its own work at the
+   * deadline and then spends this time on the handoff task may declare it; it reports such an end as `deadline`.
+   */
+  readonly handoffGraceMs?: number;
   /** Whether the write boundary holds on this host. Checked before every session. */
   ready(): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Runs one session to a stop. Must stop and prove cessation when `signal` aborts. */
@@ -314,7 +319,7 @@ export function createWorkHandler(deps: WorkHandlerDeps): WorkJobHandler {
         deadlineAborted = true;
         controller.abort();
       }
-    }, reserved.deadlineMs);
+    }, reserved.deadlineMs + Math.max(0, executor.handoffGraceMs ?? 0));
 
     let result: SessionResult;
     try {
