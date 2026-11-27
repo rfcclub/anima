@@ -1,0 +1,37 @@
+scenarios:
+  - scenario: progress-aware-observation-unchanged-repeat
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > classifies unchanged repeats without storing raw arguments or results"
+  - scenario: progress-aware-observation-changed-result-or-state
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > changed result and changed observable state reset the unchanged streak"
+  - scenario: progress-aware-observation-across-sessions
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > compares the same work across distinct sessions"
+  - scenario: progress-aware-observation-unavailable-observation
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > unknown observations never assert an intervention"
+  - scenario: allowed-polling-and-ownership-telemetry-polling-false-positive
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > designated polling records a prospective false positive without enforcement"
+  - scenario: allowed-polling-and-ownership-telemetry-stale-and-duplicate-worker
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > stale and duplicate owners are distinct and cannot change current history"
+  - scenario: phased-intervention-observe-only
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > observe-only records would-be interventions without warning or stop"
+  - scenario: phased-intervention-explicit-enforcement
+    test: __tests__/agents/loop-tools.test.ts
+    assertion: "host tools > a progress warning reaches the next model turn before a later completed tool stops the loop"
+  - scenario: phased-intervention-same-turn-repeats
+    test: __tests__/agents/loop-tools.test.ts
+    assertion: "host tools > same-turn repeats do not stop before the warning can reach the model"
+  - scenario: phased-intervention-policy-ordering
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > enforcement warns before a stop on a later turn"
+  - scenario: phased-intervention-same-turn-policy
+    test: __tests__/work/progress-guard.test.ts
+    assertion: "progress-aware repeat guard > repeats in a single turn cannot stop before the warning is delivered"
+  - scenario: existing-work-safety-regression-suite
+    test: __tests__/agents/loop-tools.test.ts
+    assertion: "host tools > progress observation leaves an uncertain tool marker open"

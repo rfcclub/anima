@@ -24,6 +24,8 @@ import { isDirty, prepareWorkspace, WorkspacePreparationStopped, type Workspace 
 import type { WorkerAdapter, WorkerAdapterResult } from "./adapter";
 import type { WorkRecord, WorkStore } from "./store";
 import { HANDOFF_MAX_CHARS } from "./work-order";
+import { createProgressGuard } from "./progress-guard";
+import { fingerprintWorkState } from "./progress-state";
 
 export interface WorkIssue { title: string; body: string }
 
@@ -50,6 +52,9 @@ export interface ExecutorDeps {
   publish?: (work: WorkRecord, args: Record<string, unknown>, guard?: () => void) => Promise<string>;
   denyReadRoots?: string[];
   perToolCallMs?: number;
+  progressGuardEnforce?: boolean;
+  progressPollingReadPaths?: readonly string[];
+  progressPollingCommands?: readonly string[];
   parentEnv?: Record<string, string | undefined>;
   log?: ConsumerLog;
   /** Defaults to the real seatbelt probe. */
@@ -141,6 +146,13 @@ export function createSessionExecutor(deps: ExecutorDeps): SessionExecutor {
         // A stop that races a completed preparation has no accompanying process sweep.
         return { stopCause: "interrupted", iterations: 0, execMs: Math.max(0, now() - started), cessation: "unproven", cessationCheck: "workspace-preparation" };
       }
+      if (adapter.kind !== "loop") {
+        try {
+          deps.store.appendEvent(work.workId, "progress-guard", { classification: "unavailable", reason: "external_adapter" });
+        } catch {
+          // Advisory telemetry must not change an adapter's work result.
+        }
+      }
       const result = await adapter.run({ ...input, workspace: ws, startedAt: started });
       return { ...result, execMs: Math.max(0, now() - started) };
     },
@@ -186,6 +198,14 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
                 : workTools.execute(call, s),
           }
         : { definitions: workTools.definitions, execute: workTools.execute };
+      const progress = createProgressGuard({
+        store: deps.store, workId: work.workId, sessionId: session.sessionId, claimId: input.claim.id,
+        generation: session.generation, signal, enforce: deps.progressGuardEnforce,
+        pollingReadPaths: deps.progressPollingReadPaths, pollingCommands: deps.progressPollingCommands,
+        state: (snapshotSignal) => fingerprintWorkState({
+          workspace: ws, denyReadRoots: deps.denyReadRoots ?? [], signal: snapshotSignal, parentEnv: deps.parentEnv ?? process.env,
+        }),
+      });
 
       let lastError = "";
       let conversationSessionId: string | undefined;
@@ -220,6 +240,14 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
           ...createLoopHost(deps.store, work.workId, reconcile, { workSessionId: session.sessionId }),
           link: { workId: work.workId, jobId: input.claim.jobId, claimId: input.claim.id, sessionNo: session.no },
           tools,
+          observeTool: async (entry: Parameters<typeof progress.observe>[0]) => {
+            const sample = await progress.observe(entry);
+            return {
+              ...(sample.action === "warn" ? { warning: "Progress guard: this tool call has repeated without an observed result or worktree change. Reassess the next step before repeating it.", warningKey: sample.callHash } : {}),
+              ...(["first", "changed", "unknown"].includes(sample.classification) ? { clearWarningKey: sample.callHash } : {}),
+              ...(sample.action === "stop" ? { stop: true } : {}),
+            };
+          },
         };
         const profile = input.kind === "revise" ? "work-revise" : "work-engineer";
         const cleanWorkPrompt = buildHeadlessPromptParts({ ...identity, repo: work.repo, profile: input.kind === "revise" ? "revise" : "work" });

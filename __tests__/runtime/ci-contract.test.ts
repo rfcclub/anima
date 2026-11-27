@@ -1,8 +1,21 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 const file = resolve(import.meta.dir, "../../.github/workflows/ci.yml");
 function workflow(): any { return Bun.YAML.parse(readFileSync(file, "utf8")); }
+test("review-ci: the macOS sandbox check requires and exercises the real sandbox", () => {
+  const script = resolve(import.meta.dir, "../../scripts/check-progress-sandbox.sh");
+  const result = Bun.spawnSync(["bash", script], { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const output = result.stdout.toString() + result.stderr.toString();
+  if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
+    expect(result.exitCode).toBe(0);
+    expect(output).toContain("detects same-size changes to tracked and nonignored untracked files");
+    expect(output).toContain("0 fail");
+  } else {
+    expect(result.exitCode).not.toBe(0);
+    expect(output).toContain("macOS sandbox is unavailable");
+  }
+}, 20_000);
 test("CI-1 PR/master workflow uses a clean container and one committed Bun pin", () => {
   const ci = workflow();
   expect(ci.on.pull_request).toBeDefined(); expect(ci.on.push.branches).toEqual(["master"]);

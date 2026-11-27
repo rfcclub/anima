@@ -81,6 +81,8 @@ export interface LoopHost {
   endStep(id: string, outcome: "completed" | "unknown"): void;
   /** Tools the host runs for the model. Without them no tools are offered. */
   tools?: LoopHostTools;
+  /** Optional advisory observation after a tool marker has been closed. */
+  observeTool?(entry: { call: ProviderToolCall; result: string; iteration: number; completed: boolean }): Promise<{ warning?: string; warningKey?: string; clearWarningKey?: string; stop?: boolean }>;
   /** Markers still open from earlier sessions of this work, oldest first. */
   openSteps(): LoopHostStep[];
   /** Check what the open steps left behind and mark them verified; returns text for the model's first message. */
@@ -243,6 +245,7 @@ export async function runLoopMode(
     return { iterations, exitReason, checkpoint, ...(interruptionSource ? { interruptionSource } : {}) };
   };
 
+  let warnedAtIteration: number | undefined;
   for (let i = first; i <= last; i++) {
     const turns = sessionManager.getTurns(sessionId);
 
@@ -298,6 +301,8 @@ export async function runLoopMode(
 
     // Host-run tools: each call has its own marker, runs one after another, and its result goes into the next message.
     let toolResults = "";
+    const progressWarnings = new Map<string, string>();
+    let progressStop = false;
     const hostTools = options.host?.tools;
     if (hostTools && toolCalls.length > 0) {
       const sections: string[] = [];
@@ -305,10 +310,14 @@ export async function runLoopMode(
         if (interrupted) break;
         let toolStep: string | undefined;
         let text: string;
+        let rawResult: string | undefined;
+        let completed = false;
         try {
           toolStep = options.host!.beginStep({ seq: i, kind: "tool", sessionId, toolName: toolCall.name });
-          text = capToolResult(await hostTools.execute(toolCall, options.signal));
+          rawResult = await hostTools.execute(toolCall, options.signal);
+          text = capToolResult(rawResult);
           options.host!.endStep(toolStep, "completed");
+          completed = true;
         } catch (error) {
           text = `Error: ${error instanceof Error ? error.message : String(error)}`;
           if (toolStep) {
@@ -316,6 +325,21 @@ export async function runLoopMode(
           }
         }
         sections.push(`#${toolCall.id} ${toolCall.name} ${toolCall.arguments.slice(0, 300)}\n${text}`);
+        try {
+          const progress = await options.host?.observeTool?.({ call: toolCall, result: rawResult ?? text, iteration: i, completed });
+          if (progress?.clearWarningKey !== undefined) progressWarnings.delete(progress.clearWarningKey);
+          if (progress?.warning) {
+            progressWarnings.set(progress.warningKey ?? "", progress.warning);
+            warnedAtIteration ??= i;
+          }
+          // Never stop until the warning appeared in the message for a subsequent provider turn.
+          if (progress?.stop && warnedAtIteration !== undefined && i > warnedAtIteration) {
+            progressStop = true;
+            break;
+          }
+        } catch {
+          // Telemetry is advisory and must not turn a completed tool into a failure.
+        }
       }
       toolResults = sections.join("\n\n");
     }
@@ -331,6 +355,10 @@ export async function runLoopMode(
 
     if (interrupted) {
       return finish("interrupted", i, { reason: "interrupted", outcome: "completed" });
+    }
+    if (progressStop) {
+      remaining = "repeated unchanged tool call after progress warning";
+      return finish("blocked", i, { reason: "blocked", outcome: "completed" });
     }
 
     // A done signal that came with tool calls is not final: the results have not been seen yet.
@@ -376,6 +404,7 @@ export async function runLoopMode(
     currentMessage = toolResults
       ? `[loop:${i}/${last}] Tool results:\n${toolResults}\n\nContinue. Previous step: ${reason}`
       : `[loop:${i}/${last}] Continue. Previous step: ${reason}`;
+    if (progressWarnings.size) currentMessage += `\n\n${[...progressWarnings.values()].join("\n\n")}`;
     const hint = options.windDown?.(i, last);
     if (hint) currentMessage += `\n\n${hint}`;
   }

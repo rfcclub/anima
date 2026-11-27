@@ -14,6 +14,9 @@ import type { Provider, ProviderRequest, ProviderResponse, ProviderToolCall } fr
 import { SessionStore } from "../../src/memory/session-store";
 import { SessionManager } from "../../src/session/manager";
 import { NullMemoryAdapter } from "../../src/memory/null-adapter";
+import { WorkStore } from "../../src/work/store";
+import { loadWorkConfig } from "../../src/work/config";
+import { createProgressGuard } from "../../src/work/progress-guard";
 
 let dir: string;
 let store: SessionStore;
@@ -167,6 +170,110 @@ describe("host tools", () => {
     const r = await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, checkpoints: true, host: h });
     expect(p.requests.length).toBe(5);
     expect(r.exitReason).toBe("max_reached");
+  });
+
+  test("a progress warning reaches the next model turn before a later completed tool stops the loop", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "same" };
+    const { h, log } = host(tools);
+    let observed = 0;
+    (h as LoopHost & { observeTool: unknown }).observeTool = async () =>
+      ++observed === 1 ? { warning: "Progress guard: repeated unchanged call", stop: false } : { stop: true };
+    const p = provider([
+      { text: "first", tools: [call("a", "bash", { command: "x" })] },
+      { text: "second", tools: [call("b", "bash", { command: "x" })] },
+      { text: '<DONE reason="should not run" />' },
+    ]);
+    const r = await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, checkpoints: true, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("Progress guard: repeated unchanged call");
+    expect(r.exitReason).toBe("blocked");
+    expect(p.requests.length).toBe(2);
+    expect(log).toEqual(["begin:provider", "end:st1:completed", "begin:tool", "end:st2:completed", "begin:provider", "end:st3:completed", "begin:tool", "end:st4:completed"]);
+  });
+
+  test("same-turn repeats do not stop before the warning can reach the model", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "same" };
+    const { h } = host(tools);
+    let observed = 0;
+    (h as LoopHost & { observeTool: unknown }).observeTool = async () =>
+      ++observed === 1 ? { warning: "Progress guard: repeated unchanged call", stop: false } : { stop: true };
+    const p = provider([
+      { text: "first", tools: [call("a", "bash", { command: "x" }), call("b", "bash", { command: "x" })] },
+      { text: '<DONE reason="ok" />' },
+    ]);
+    const r = await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, checkpoints: true, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("Progress guard: repeated unchanged call");
+    expect(r.exitReason).toBe("done");
+  });
+
+  test("review-stale-warning: a later turn rebuilds its current prompt without an old warning", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "same" };
+    const { h } = host(tools); let observed = 0;
+    h.observeTool = async () => ++observed === 1 ? { warning: "warning-sentinel" } : {};
+    const p = provider([
+      { text: "first", tools: [call("a", "bash", { command: "x" })] },
+      { text: "second", tools: [call("b", "bash", { command: "x" })] },
+      { text: '<DONE reason="ok" />' },
+    ]);
+    await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("warning-sentinel");
+    expect(lastUser(p.requests[2]!)).not.toContain("warning-sentinel");
+    expect(JSON.stringify(p.requests[2]!.messages)).toContain("warning-sentinel");
+  });
+
+  test("review-stale-warning: a changed result in the same batch clears that call's pending warning", async () => {
+    const workStore = WorkStore.open(":memory:");
+    try {
+      const work = workStore.createWork({ repo: "example/project", issue: 1, approvedDigest: "123456789abc", config: loadWorkConfig({}) }).work;
+      const reserved = workStore.reserveSession(work.workId, { jobId: "job", claimId: "lease" });
+      if (!reserved.ok) throw new Error("reservation failed");
+      const signal = new AbortController().signal;
+      const guard = createProgressGuard({ store: workStore, workId: work.workId, sessionId: reserved.session.sessionId,
+        claimId: "lease", generation: reserved.session.generation, signal, enforce: true, state: async () => "a".repeat(64) });
+      const sameCall = call("a", "bash", { command: "status" });
+      for (let i = 0; i < 2; i++) await guard.observe({ call: sameCall, result: "same", iteration: 1, completed: true });
+      let executions = 0;
+      const tools: LoopHostTools = { definitions, execute: async () => ++executions === 1 ? "same" : "changed" };
+      const { h } = host(tools);
+      h.observeTool = async (entry) => {
+        const sample = await guard.observe(entry);
+        const key = `${entry.call.name}:${entry.call.arguments}`;
+        return {
+          ...(sample.action === "warn" ? { warning: "warning-sentinel", warningKey: key } : {}),
+          ...(["changed", "unknown"].includes(sample.classification) ? { clearWarningKey: key } : {}),
+        };
+      };
+      const p = provider([{ text: "both", tools: [sameCall, { ...sameCall, id: "b" }] }, { text: '<DONE reason="ok" />' }]);
+      await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, host: h });
+      expect(lastUser(p.requests[1]!)).not.toContain("warning-sentinel");
+    } finally { workStore.close(); }
+  });
+
+  test("review-stale-warning: resetting one call preserves another call's pending warning", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "result" };
+    const { h } = host(tools); let observed = 0;
+    h.observeTool = async () => [
+      { warning: "first-warning", warningKey: "a" },
+      { warning: "second-warning", warningKey: "b" },
+      { clearWarningKey: "b" },
+    ][observed++]!;
+    const p = provider([{ text: "batch", tools: [call("a", "bash", { command: "a" }), call("b", "bash", { command: "b" }), call("c", "bash", { command: "b" })] }, { text: '<DONE reason="ok" />' }]);
+    await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("first-warning");
+    expect(lastUser(p.requests[1]!)).not.toContain("second-warning");
+  });
+
+  test("progress observation leaves an uncertain tool marker open", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => { throw new Error("uncertain"); } };
+    const { h, log } = host(tools);
+    const observed: boolean[] = [];
+    (h as LoopHost & { observeTool: unknown }).observeTool = async (entry: { completed: boolean }) => {
+      observed.push(entry.completed);
+      return {};
+    };
+    const p = provider([{ text: "go", tools: [call("a", "bash", { command: "x" })] }, { text: '<DONE reason="ok" />' }]);
+    await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, host: h });
+    expect(observed).toEqual([false]);
+    expect(log).toContain("end:st2:unknown");
   });
 
   test("without host tools no tools are offered and a response with tool calls changes nothing", async () => {

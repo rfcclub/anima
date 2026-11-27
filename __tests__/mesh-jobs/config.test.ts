@@ -33,6 +33,44 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("loadMeshJobsConfig", () => {
+  describe("work progress guard", () => {
+    const work = (extra: Record<string, unknown> = {}) => valid({
+      workers: [{ agent: "finn" }],
+      work: {
+        enabled: true, author: "finn", authorActor: "finn-bot", authorMeshId: "finn@host",
+        enqueuer: "bruno", base: "master",
+        reviewers: [{ agent: "cleo", meshId: "cleo@host", login: "cleo-bot" }], ...extra,
+      },
+    });
+
+    test("enforcement defaults off and accepts explicitly enabled polling paths", () => {
+      write(work());
+      expect((loadMeshJobsConfig(path)!.work as any).progressGuardEnforce).toBe(false);
+      write(work({ progressGuardEnforce: true, progressPollingReadPaths: ["ci/status.txt"] }));
+      expect(loadMeshJobsConfig(path)!.work).toMatchObject({ progressGuardEnforce: true, progressPollingReadPaths: ["ci/status.txt"] });
+    });
+
+    test("explicit CI polling commands are preserved exactly", () => {
+      write(work({ progressGuardEnforce: true, progressPollingCommands: ["gh pr checks 123"] }));
+      expect(loadMeshJobsConfig(path)!.work).toMatchObject({
+        progressGuardEnforce: true, progressPollingCommands: ["gh pr checks 123"],
+      });
+    });
+
+    test("invalid enforcement and polling paths are rejected", () => {
+      for (const extra of [
+        { progressGuardEnforce: "true" },
+        { progressPollingReadPaths: ["../secret"] },
+        { progressPollingReadPaths: ["/absolute"] },
+        { progressPollingReadPaths: ["file\nname"] },
+        { progressPollingCommands: ["gh pr checks\nrm -rf ."] },
+        { progressPollingCommands: [""] },
+      ]) {
+        write(work(extra));
+        expect(() => loadMeshJobsConfig(path)).toThrow(/work\.progress/);
+      }
+    });
+  });
   test("no config file → null", () => {
     expect(loadMeshJobsConfig(path)).toBeNull();
   });

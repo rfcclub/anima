@@ -239,6 +239,9 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
     publish: publisher,
     denyReadRoots: defaultDenyReadRoots(),
     perToolCallMs: config.perToolCallMs,
+    progressGuardEnforce: config.progressGuardEnforce ?? false,
+    progressPollingReadPaths: config.progressPollingReadPaths ?? [],
+    progressPollingCommands: config.progressPollingCommands ?? [],
     parentEnv: process.env,
     ...(adapter ? { adapter: {
       kind: adapter.kind,
