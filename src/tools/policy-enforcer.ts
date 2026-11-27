@@ -156,6 +156,8 @@ interface ScannerSpec {
   findSyntax?: boolean;
   /** With no path operand it reads piped input instead of walking the cwd (rg, ag; recursive grep still walks). */
   readsPipedInput?: boolean;
+  /** -e/-f may carry the pattern attached (-efoo), as in grep and rg. */
+  attachedPatternFlags?: boolean;
 }
 
 const always = () => true;
@@ -166,6 +168,7 @@ const GREP_SPEC: ScannerSpec = {
   recursive: shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"]),
   valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label"]),
   patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
+  attachedPatternFlags: true,
 };
 const SCANNERS: Record<string, ScannerSpec> = {
   find: { recursive: always, valueFlags: new Set(), findSyntax: true },
@@ -177,6 +180,7 @@ const SCANNERS: Record<string, ScannerSpec> = {
     valueFlags: new Set(["-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-j", "-M", "-E", "-r", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--max-count", "--max-depth", "--threads", "--max-columns", "--context", "--after-context", "--before-context", "--type-add", "--sort", "--sortr", "--pre", "--encoding", "--engine", "--replace", "--colors"]),
     patternFirst: new Set(["-e", "-f", "--regexp", "--file", "--files", "--type-list"]),
     readsPipedInput: true,
+    attachedPatternFlags: true,
   },
   ag: {
     recursive: always,
@@ -284,7 +288,8 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
     const depth = args.lastIndexOf("-maxdepth"); // find honours the last one
     if (depth !== -1 && Number(args[depth + 1]) <= 1) return undefined;
   }
-  const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
+  // grep and rg also take the pattern attached to -e/-f (-efoo); for fd, -e is an extension filter
+  const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || (spec.attachedPatternFlags === true && /^-[ef].+/.test(f)));
   const paths = [...flagPaths, ...(spec.patternFirst && !patternSupplied ? operands.slice(1) : operands)];
   // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
   if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;

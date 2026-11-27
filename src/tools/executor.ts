@@ -108,8 +108,10 @@ export function redactCommand(command: string): string {
     .replace(/(\s--password[= ])("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
     // curl -b with a cookie string (name=value); a cookie file name stays readable
     // every curl -b/--cookie with a cookie string (name=value, escaped spaces included); a cookie file name stays readable
-    .replace(/\bcurl\b[^\n;|&]*/g, (curl) =>
-      curl.replace(/(\s(?:-b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|(?:[^\s"'\\]|\\.)*=(?:[^\s"'\\]|\\.)*)/g, "$1[redacted]"))
+    // a quoted cookie string may hold ; so the whole command is searched once curl appears in it
+    .replace(/[\s\S]*/, (all) => (/\bcurl\b/.test(all)
+      ? all.replace(/(\s(?:-b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|(?:[^\s"'\\]|\\.)*=(?:[^\s"'\\]|\\.)*)/g, "$1[redacted]")
+      : all))
     // SQL that sets a password (ALTER USER x PASSWORD '...', IDENTIFIED BY '...')
     .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s+)('[^']*'|\\?"[^"\\]*\\?")/gi, "$1'[redacted]'")
     // a credential set by name and value (aws configure set aws_secret_access_key VALUE, git config ... token VALUE)
