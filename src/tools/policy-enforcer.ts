@@ -7,7 +7,7 @@ export type PolicyDecision =
   | { allowed: true }
   | { allowed: false; rule: PolicyRule; reason: string; target: string };
 
-export type PolicyRule = "outside-roots" | "read-only-root" | "denied-pattern" | "cwd-outside-roots" | "secrets-path";
+export type PolicyRule = "outside-roots" | "read-only-root" | "denied-pattern" | "cwd-outside-roots" | "secrets-path" | "broad-scan";
 
 export interface PolicyCheckInput {
   tool: string;
@@ -140,6 +140,395 @@ export function checkSecretsPath(input: { tool: string; args: Record<string, unk
   const ancestor = RECURSIVE_TOOLS.has(tool) && isPathInside(target, secrets);
   if (inside || ancestor) {
     return { allowed: false, rule: "secrets-path", reason: `${tool} reaches the secrets directory`, target };
+  }
+  return { allowed: true };
+}
+
+
+interface ScannerSpec {
+  /** True when the command walks a tree with these flags (always, for tree walkers). */
+  recursive: (flags: string[]) => boolean;
+  /** Flags that take the next word as their value. */
+  valueFlags: Set<string>;
+  /** The first operand is a search pattern, not a path, unless one of these flags supplies the pattern. */
+  patternFirst?: Set<string>;
+  /** find: leading option letters before the paths, and operands end at the first expression word. */
+  findSyntax?: boolean;
+  /** With no path operand it reads piped input instead of walking the cwd (rg, ag; recursive grep still walks). */
+  readsPipedInput?: boolean;
+  /** -e/-f may carry the pattern attached (-efoo), as in grep and rg. */
+  attachedPatternFlags?: boolean;
+  /** Short flags that take a value, so a cluster such as -rnetoken or -rne ends at them. */
+  shortValueLetters?: string;
+}
+
+const always = () => true;
+const shortFlagHas = (letters: RegExp, longs: string[]) => (flags: string[]) =>
+  flags.some((f) => (/^-[A-Za-z0-9]+$/.test(f) && letters.test(f.slice(1))) || longs.includes(f.split("=")[0]!));
+
+const GREP_SPEC: ScannerSpec = {
+  recursive: (flags) =>
+    shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"])(flags) ||
+    flags.some((f, k) => f === "--directories=recurse" || ((f === "-d" || f === "--directories") && flags[k + 1] === "recurse") || f === "-drecurse"),
+  valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label", "--directories", "--devices"]),
+  patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
+  attachedPatternFlags: true,
+  shortValueLetters: "efmABCdD",
+};
+const SCANNERS: Record<string, ScannerSpec> = {
+  find: { recursive: always, valueFlags: new Set(), findSyntax: true },
+  grep: GREP_SPEC,
+  egrep: GREP_SPEC,
+  fgrep: GREP_SPEC,
+  rg: {
+    recursive: always,
+    valueFlags: new Set(["-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-j", "-M", "-E", "-r", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--max-count", "--max-depth", "--threads", "--max-columns", "--context", "--after-context", "--before-context", "--type-add", "--sort", "--sortr", "--pre", "--encoding", "--engine", "--replace", "--colors"]),
+    patternFirst: new Set(["-e", "-f", "--regexp", "--file", "--files", "--type-list"]),
+    readsPipedInput: true,
+    attachedPatternFlags: true,
+    shortValueLetters: "efgtTmABCjMEr",
+  },
+  ag: {
+    recursive: always,
+    valueFlags: new Set(["-A", "-B", "-C", "-m", "-G", "-g", "--ignore", "--file-search-regex", "--context", "--max-count"]),
+    patternFirst: new Set([]),
+    readsPipedInput: true,
+  },
+  fd: {
+    recursive: always,
+    valueFlags: new Set(["-e", "-t", "-E", "-d", "-x", "-X", "-j", "-S", "-o", "-c", "--extension", "--type", "--exclude", "--max-depth", "--min-depth", "--exact-depth", "--exec", "--exec-batch", "--threads", "--size", "--changed-within", "--changed-before", "--owner", "--color", "--base-directory", "--search-path"]),
+    patternFirst: new Set([]),
+  },
+  du: { recursive: always, valueFlags: new Set(["-d", "-B", "-t", "-I", "--max-depth", "--exclude"]) },
+  tree: { recursive: always, valueFlags: new Set(["-L", "-I", "-P", "-o", "-H", "--filelimit"]) },
+  ls: { recursive: shortFlagHas(/R/, ["--recursive"]), valueFlags: new Set(["-w", "-I", "--ignore", "--hide", "--width"]) },
+};
+/** Shell words that can stand before a command (then cd, do cd, ...). */
+const SHELL_KEYWORDS = new Set(["then", "do", "else", "{", "!", "builtin"]);
+
+function homeDir(): string {
+  return process.env.HOME || homedir();
+}
+
+/** A scan rooted here walks the whole machine or another application's data, which makes macOS
+ *  ask the owner for access on behalf of the server. Resolved per call from $HOME like the secrets rule. */
+function isBroadScanRoot(path: string): boolean {
+  const home = canonicalize(homeDir());
+  const target = canonicalize(path);
+  if (["/", "/Users", "/Volumes", "/System", "/private", dirname(home), home].includes(target)) return true;
+  // launchd job definitions are ordinary configuration that agents read; nothing behind a privacy prompt lives there
+  if (isPathInside(join(home, "Library", "LaunchAgents"), target)) return false;
+  return isPathInside(join(home, "Library"), target);
+}
+
+/** Expand brace alternatives ({a,b}, nested left to right) the way bash does before tilde expansion.
+ *  Past the cap it fails closed: "/" is added, so an over-long expansion is refused rather than half checked. */
+function expandBraces(word: string, limit = 64): string[] {
+  const out: string[] = [];
+  const walk = (w: string): boolean => {
+    const m = /\{([^{}]*,[^{}]*)\}/.exec(w);
+    if (!m) {
+      if (out.length >= limit) return false;
+      out.push(w);
+      return true;
+    }
+    for (const alt of m[1]!.split(",")) if (!walk(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length))) return false;
+    return true;
+  };
+  if (!walk(word)) out.push("/");
+  return out;
+}
+
+function unquote(word: string): string {
+  return word.replace(/^["']+|["']+$/g, "");
+}
+
+/** The directory a path operand walks: ~ and $HOME expanded, trailing glob segments dropped, relative words resolved against cwd. */
+function operandDir(word: string, cwd: string): string {
+  // ~, $HOME and ${HOME} with a default or check (${HOME:?}, ${HOME:-/}) all name the home directory
+  const w = unquote(word).replace(/^(?:~|\$\{HOME(?:[:%#][^}]*)?\}|\$HOME)(?=\/|$)/, homeDir());
+  const parts = w.split("/");
+  const glob = parts.findIndex((p) => /[*?[]/.test(p));
+  const kept = glob === -1 ? w : parts.slice(0, glob).join("/");
+  if (kept === "") return w.startsWith("/") ? "/" : cwd;
+  return isAbsolute(kept) ? resolve(kept) : resolve(cwd, kept);
+}
+
+/** The path operands of one scanner call, or the cwd when it names none. Undefined when the call is not a recursive scan. */
+function scanRoots(name: string, args: string[], cwd: string, stdinFed = false): string[] | undefined {
+  // own keys only: a word such as "constructor" must not reach Object.prototype
+  const spec = Object.hasOwn(SCANNERS, name) ? SCANNERS[name] : undefined;
+  if (!spec) return undefined;
+  const flags: string[] = [];
+  const operands: string[] = [];
+  // directories given through a flag (fd --base-directory, --search-path), in either form
+  const flagPaths: string[] = [];
+  let i = 0;
+  if (spec.findSyntax) {
+    // leading options before the paths: BSD -E -H -L -P -X -d -s -x, GNU -O<level> and -D <debugopts>
+    for (;;) {
+      const a = args[i];
+      if (a === undefined) break;
+      if (/^-[EHLPXdsx]+$/.test(a) || /^-O\d*$/.test(a)) { flags.push(args[i++]!); continue; }
+      if (a === "-D") { i += 2; continue; }
+      break;
+    }
+    if (args[i] === "--") i++;
+    // BSD find -f <path> names a path that may look like an option
+    while (args[i] === "-f" && i + 1 < args.length) { operands.push(args[i + 1]!); i += 2; }
+    while (i < args.length && !/^[-(!]/.test(args[i]!)) operands.push(args[i++]!);
+  } else {
+    let endOfFlags = false;
+    for (; i < args.length; i++) {
+      const word = args[i]!;
+      if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
+      if (!endOfFlags && word.startsWith("-") && word.length > 1) {
+        flags.push(word);
+        // a short-flag cluster ends at its first value-taking letter: the rest, or else the next word, is the value
+        if (spec.shortValueLetters && /^-[A-Za-z0-9]{2,}$/.test(word)) {
+          const letters = word.slice(1);
+          const at = [...letters].findIndex((c) => spec.shortValueLetters!.includes(c));
+          if (at !== -1) {
+            const letter = letters[at]!;
+            const attached = letters.slice(at + 1);
+            if (letter === "e" || letter === "f") flags.push("-" + letter);
+            if (letter === "d" && (attached === "recurse" || (attached === "" && args[i + 1] === "recurse"))) flags.push("-d", "recurse");
+            if (attached === "") i++;
+            continue;
+          }
+        }
+        const [flagName, inlineValue] = word.split(/=(.*)/s);
+        const pathFlag = flagName === "--search-path" || flagName === "--base-directory";
+        if (inlineValue !== undefined) { if (pathFlag) flagPaths.push(inlineValue); continue; }
+        if (spec.valueFlags.has(word)) {
+          const value = args[++i];
+          if (value !== undefined && pathFlag) flagPaths.push(value);
+          // grep -d recurse walks like -r
+          if ((word === "-d" || word === "--directories") && value === "recurse") flags.push("recurse");
+        }
+        continue;
+      }
+      operands.push(word);
+    }
+  }
+  if (!spec.recursive(flags)) return undefined;
+  // find -maxdepth 0 or 1 lists one directory, like ls
+  if (spec.findSyntax) {
+    const depth = args.lastIndexOf("-maxdepth"); // find honours the last one
+    if (depth !== -1 && Number(args[depth + 1]) <= 1) return undefined;
+  }
+  // grep and rg also take the pattern attached to -e/-f (-efoo); for fd, -e is an extension filter
+  const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || (spec.attachedPatternFlags === true && /^-[ef].+/.test(f)));
+  const paths = [...flagPaths, ...(spec.patternFirst && !patternSupplied ? operands.slice(1) : operands)];
+  // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
+  if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;
+  return (paths.length ? paths : ["."]).flatMap((p) => expandBraces(p)).map((p) => operandDir(p, cwd));
+}
+
+type ShellToken = { kind: "word"; text: string } | { kind: "sep"; text: string };
+
+/** Split a command line into words and separators. Quotes group words and are removed; separators
+ *  (newline ; && || | & ( ) $( and backtick) count only outside quotes. Comments, heredoc bodies and
+ *  (( )) arithmetic are recognized well enough for agent commands; this is not a shell parser, and an
+ *  unrecognized form errs towards scanning (an unterminated heredoc is scanned, not skipped). */
+function shellTokens(command: string): ShellToken[] {
+  const out: ShellToken[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | null = null;
+  // the word after an unquoted redirection operator is its target (a file, or a heredoc delimiter), not an argument
+  let dropNext = false;
+  // $( ) and backticks inside double quotes still run: leave the quote, and resume it when the substitution closes
+  let depth = 0;
+  const resumeAt: number[] = [];
+  let backtickResumes = false;
+  // heredoc delimiters waiting for the end of the current line; their bodies are data, not commands
+  const heredocs: Array<{ delim: string; stripTabs: boolean }> = [];
+  // unquoted (( )) / $(( )) nesting, and whether the current simple command is a let: << there is a shift
+  let arith = 0;
+  let segmentStart = 0;
+  const flush = () => {
+    if (inWord) {
+      if (dropNext) dropNext = false;
+      else out.push({ kind: "word", text: word });
+    }
+    word = "";
+    inWord = false;
+  };
+  const sep = (text: string) => {
+    flush();
+    dropNext = false;
+    out.push({ kind: "sep", text });
+    segmentStart = out.length;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === '"' && command.startsWith("$(", i)) {
+      quote = null;
+      if (command.startsWith("$((", i)) arith++;
+      sep("$(");
+      depth++;
+      resumeAt.push(depth);
+      i++;
+      continue;
+    }
+    if (quote === '"' && ch === "`") {
+      quote = null;
+      sep("`");
+      backtickResumes = true;
+      continue;
+    }
+    // a backslash-newline joins two lines (outside single quotes)
+    if (ch === "\\" && command[i + 1] === "\n" && quote !== "'") { i++; continue; }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === "\\" && quote === '"' && i + 1 < command.length) word += command[++i];
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
+    if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
+    // (( )) and $(( )) only change how << reads (a shift); their contents are still tokenized, so a $( ) inside runs through the checks
+    if (command.startsWith("$((", i) || (command.startsWith("((", i) && !inWord)) arith++;
+    else if (arith > 0 && command.startsWith("))", i)) arith--;
+    if (ch === "#" && !inWord && (i === 0 || /[\s;&|(]/.test(command[i - 1]!))) {
+      // a comment runs to the end of the line
+      const end = command.indexOf("\n", i);
+      i = (end === -1 ? command.length : end) - 1;
+      continue;
+    }
+    if (ch === "<" || ch === ">") {
+      // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
+      if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
+      const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;|&<>()]+))/.exec(command.slice(i));
+      // << in a let statement or with a numeric delimiter is a shift ((( )) is read above as arithmetic)
+      const letStatement = out[segmentStart]?.kind === "word" && out[segmentStart]!.text === "let";
+      if (heredoc && !command.startsWith("<<<", i) && arith === 0 && !letStatement && !/^\d+$/.test(heredoc[4] ?? "")) {
+        heredocs.push({ delim: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, stripTabs: heredoc[1] === "-" });
+        i += heredoc[0].length - 1;
+        continue;
+      }
+      let j = i;
+      while (j + 1 < command.length && "<>".includes(command[j + 1]!)) j++;
+      const dup = /^&\d*-?/.exec(command.slice(j + 1))?.[0] ?? "";
+      i = j + dup.length;
+      // <(...) and >(...) are process substitutions: the parenthesis opens a command, nothing to drop
+      if (dup === "" && command[i + 1] !== "(") { dropNext = true; if (command[i + 1] === "-") i++; }
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||" || two === "$(") {
+      sep(two);
+      if (two === "$(") depth++;
+      i++;
+      continue;
+    }
+    if (ch === "(") { sep(ch); depth++; continue; }
+    if (ch === ")") {
+      sep(ch);
+      if (resumeAt[resumeAt.length - 1] === depth) { resumeAt.pop(); quote = '"'; inWord = true; }
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === "`") {
+      sep(ch);
+      if (backtickResumes) { backtickResumes = false; quote = '"'; inWord = true; }
+      continue;
+    }
+    if (ch === "\n" && heredocs.length > 0) {
+      sep(ch);
+      // skip each pending heredoc body up to its delimiter line; a body whose delimiter never comes is scanned as commands
+      let pos = i + 1;
+      for (const { delim, stripTabs } of heredocs.splice(0)) {
+        let p = pos;
+        let found = false;
+        while (p < command.length) {
+          const end = command.indexOf("\n", p);
+          const line = command.slice(p, end === -1 ? command.length : end);
+          p = end === -1 ? command.length : end + 1;
+          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delim) { found = true; break; }
+        }
+        if (!found) break;
+        pos = p;
+      }
+      i = pos - 1;
+      continue;
+    }
+    if ("\n;|&".includes(ch)) { sep(ch); continue; }
+    if (/\s/.test(ch)) { flush(); continue; }
+    word += ch;
+    inWord = true;
+  }
+  flush();
+  return out;
+}
+
+/** Agent tools must not walk the home directory, the filesystem root or ~/Library: those scans reach
+ *  other applications' data and make macOS prompt the owner. Unconditional, like the secrets rule.
+ *  Scope: it catches accidental broad scans by cooperative agents. It is word matching on the command line
+ *  (cd between segments is tracked), not a sandbox: shell indirection is out of scope (bash -c / sh -c / eval
+ *  strings, variables other than HOME, aliases and functions; heredoc bodies are skipped as data). The target is the refused
+ *  directory, never the command, so a refusal record carries no command text. */
+export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
+  const { tool, args } = input;
+  const startCwd = input.cwd ?? process.cwd();
+  if (tool === "bash") {
+    let cwd = startCwd;
+    // A cd inside a subshell or command substitution only moves the cwd until it closes.
+    const saved: string[] = [];
+    let inBacktick = false;
+    let words: string[] = [];
+    let piped = false;
+    const checkSegment = (): PolicyDecision | undefined => {
+      const segment = words;
+      words = [];
+      let i = 0;
+      while (i < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i]!) || SHELL_KEYWORDS.has(segment[i]!))) i++;
+      if (segment[i] === "cd" || segment[i] === "pushd") {
+        let k = i + 1;
+        while (segment[k] !== undefined && /^-[LPe@]+$|^--$/.test(segment[k]!)) k++;
+        const dest = segment[k];
+        // bare cd goes home; bare pushd swaps the stack top, and -N/+N pick a stack entry: unknown, so keep the cwd
+        if (dest === undefined) { if (segment[i] === "cd") cwd = homeDir(); }
+        else if (dest !== "-" && !/^[-+]\d+$/.test(dest)) cwd = operandDir(dest, cwd);
+        return undefined;
+      }
+      // Any word naming a scanner starts a scan, wherever it sits (after sudo, env -i, xargs -P 4, then, ...).
+      // A bare scanner name used as plain text (echo find ~) is refused too; the message says what to do instead.
+      for (let j = 0; j < segment.length; j++) {
+        const name = segment[j]!.split("/").pop() ?? "";
+        const roots = scanRoots(name, segment.slice(j + 1), cwd, piped || segment[j - 1] === "xargs");
+        const broad = roots?.find((r) => isBroadScanRoot(r));
+        if (broad !== undefined) {
+          return { allowed: false, rule: "broad-scan", reason: `${name} scans ${broad}, which reaches the home directory, the filesystem root or Library; scan a project directory instead`, target: broad };
+        }
+      }
+      return undefined;
+    };
+    for (const token of shellTokens(String(args.command ?? ""))) {
+      if (token.kind === "word") { words.push(token.text); continue; }
+      const refused = checkSegment();
+      if (refused) return refused;
+      piped = token.text === "|";
+      if (token.text === "(" || token.text === "$(") saved.push(cwd);
+      else if (token.text === ")") cwd = saved.pop() ?? cwd;
+      else if (token.text === "`") {
+        if (inBacktick) cwd = saved.pop() ?? cwd;
+        else saved.push(cwd);
+        inBacktick = !inBacktick;
+      }
+    }
+    return checkSegment() ?? { allowed: true };
+  }
+  if (!RECURSIVE_TOOLS.has(tool)) return { allowed: true };
+  const raw = targetPath(tool, args, startCwd);
+  if (raw === undefined) return { allowed: true };
+  const expanded = raw.replace(/^~(?=\/|$)/, homeDir());
+  let target = canonicalize(expanded || startCwd, startCwd);
+  // a glob pattern can climb out of its cwd (../../**/*.plist): its fixed leading directories are where the walk starts
+  if (tool === "glob" && typeof args.pattern === "string") target = canonicalize(operandDir(args.pattern, target));
+  if (isBroadScanRoot(target)) {
+    return { allowed: false, rule: "broad-scan", reason: `${tool} over ${target} scans too broadly; use a project directory`, target };
   }
   return { allowed: true };
 }
