@@ -63,7 +63,15 @@ async function readStdin(timeoutMs: number): Promise<string> {
 /** The wrap-up text, or an `error` the caller reports: stdin is bounded like the retain itself. */
 async function readContent(): Promise<{ content: string } | { error: string }> {
   const file = arg("file");
-  if (file) return { content: readFileSync(file, "utf-8") };
+  if (file) {
+    // A missing or unreadable file is reported like every other outcome: the CLI prints one JSON
+    // line, so an unwound ENOENT would give the caller a stack trace instead of a reason.
+    try {
+      return { content: readFileSync(file, "utf-8") };
+    } catch {
+      return { error: "file-unreadable" };
+    }
+  }
   try {
     return { content: await readStdin(stdinTimeoutMs()) };
   } catch (error) {
@@ -74,7 +82,7 @@ async function readContent(): Promise<{ content: string } | { error: string }> {
 const read = await readContent();
 if ("error" in read) {
   console.log(JSON.stringify({ outcome: "error", reason: read.error }));
-  console.error(`no wrap-up on stdin (${read.error}); pass --file or close stdin`);
+  console.error(`no wrap-up read (${read.error}); pass a readable --file or close stdin`);
   process.exitCode = 1;
 } else {
   // retainWrapup never throws: an incomplete wrap-up or a failed write is an `error` outcome.

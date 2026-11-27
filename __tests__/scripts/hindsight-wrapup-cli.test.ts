@@ -42,6 +42,17 @@ describe("hindsight-wrapup CLI", () => {
     expect(result.stderr).toContain("missing or empty section");
   });
 
+  test("an unreadable --file is a structured outcome, not an uncaught throw", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wrapup-doc-"));
+    const missing = join(dir, "absent.md");
+    const result = run(["--bank", "b", "--session", "s", "--file", missing]);
+    expect(result.status).toBe(1);
+    // The CLI documents one JSON outcome per run: no stack trace on stderr.
+    expect(result.stderr).not.toContain("ENOENT");
+    expect(result.stderr).not.toContain("    at ");
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({ outcome: "error", reason: "file-unreadable" });
+  });
+
   test("reports config-unavailable rather than throwing when no Hindsight config exists", () => {
     const dir = mkdtempSync(join(tmpdir(), "wrapup-doc-"));
     const file = join(dir, "wrapup.md");

@@ -94,7 +94,8 @@ describe("retainWrapup", () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const fetchFn = (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
-      return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+      // The body a live Hindsight 1.2.0 sync retain returns, not a mocked `status: "ok"`.
+      return new Response(JSON.stringify({ success: true, bank_id: "anima-cleo", items_count: 1, async: false, operation_id: null }), { status: 200 });
     }) as unknown as typeof fetch;
 
     const first = await retainWrapup({ bank: "anima-cleo", sessionId: "sess-1", content: complete, configPath: configFile(), fetchFn });
@@ -261,6 +262,61 @@ describe("retainWrapup: an unconfirmed or unreadable body is never `ok`", () => 
     });
     expect(result.outcome).toBe("error");
     expect(result.reason).toBe("unreadable-body");
+  });
+
+  test("a live sync retain body (`success` + `items_count`, no `status`) is retained", async () => {
+    // Hindsight 1.2.0 answers a sync retain with
+    // `{"success":true,"bank_id":"b","items_count":1,"async":false,"operation_id":null}`: no
+    // `status` at all. Treating a status-less body as unconfirmed reported every stored wrap-up
+    // as a failure, and the CLI exited 1 on a write that had landed.
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(
+          JSON.stringify({ success: true, bank_id: "b", items_count: 1, async: false, operation_id: null }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("ok");
+    expect(result.documentId).toBe("wrapup-s");
+  });
+
+  test("a legacy body carrying `status: \"ok\"` still counts as retained", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("ok");
+  });
+
+  test("a body that says success: false or stored no item is not retained", async () => {
+    const failed = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ success: false, items_count: 0 }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(failed.outcome).toBe("error");
+    expect(failed.reason).toBe("success-false");
+
+    const empty = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ success: true, items_count: 0 }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(empty.outcome).toBe("error");
+    expect(empty.reason).toBe("no-items");
   });
 
   test("a 200 whose body states no status is an error, not a retained document", async () => {

@@ -114,10 +114,12 @@ export interface RetainWrapupOptions extends WrapupInput {
 }
 
 /**
- * `ok` means the server answered the retain itself, with a body saying it processed the document.
+ * `ok` means the server answered the retain itself, with a body saying it processed the document:
+ * a success status, or Hindsight 1.2.0's sync body (`success: true` with a non-null `items_count`).
  * `queued` means it accepted the write without confirming it (a 202, an operation id, a pending
  * status): the document is not yet known to exist, so it must not be counted as retained until
- * that operation reports success. An unreadable or status-less body is neither, so it is `error`.
+ * that operation reports success. A body that cannot be read, or that confirms neither way, is
+ * `error`: it is no evidence of a stored document.
  */
 export interface RetainWrapupResult {
   outcome: "ok" | "queued" | "error";
@@ -142,6 +144,8 @@ interface RetainResponse {
   operation_id?: unknown;
   operationId?: unknown;
   status?: unknown;
+  success?: unknown;
+  items_count?: unknown;
 }
 
 const QUEUED_STATUSES = new Set(["queued", "pending", "processing", "in_progress", "in-progress", "running"]);
@@ -161,8 +165,10 @@ function operationIdOf(body: RetainResponse | null): string {
  * It asks for completion-aware retention (`async: false`) and bounds the wait, so `ok` means the
  * server processed the document rather than merely queueing it. A 202, or any answer naming an
  * operation or a pending status, yields `queued` (with the id when there is one), never `ok`. A
- * body that cannot be read, or that states no status, is `error`: it is no evidence of a stored
- * document, and a count of retained wrap-ups must not include one that may not exist.
+ * body that cannot be read, that says `success: false`, or that confirms neither way is `error`: it
+ * is no evidence of a stored document, and a count of retained wrap-ups must not include one that
+ * may not exist. Hindsight 1.2.0's sync body (`success: true`, non-null `items_count`, no `status`)
+ * is `ok`.
  *
  * Never throws: the caller is an agent ending a session, and a failed or malformed memory write
  * must not fail the session. A wrap-up that cannot be built comes back as `outcome: "error"` with
@@ -259,6 +265,17 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
     if (status && status !== "ok" && status !== "completed" && status !== "succeeded" && status !== "success") {
       return done("error", { documentId, reason: `status-${status}` });
     }
+    // Hindsight 1.2.0 answers a synchronous retain with
+    // `{"success":true,"bank_id":…,"items_count":1,"async":false,"operation_id":null}`: no
+    // `status` at all. `success: true` is the server stating it processed the document, so that
+    // body is `ok`; a count of zero says it stored nothing, which is not.
+    if (body.success === true) {
+      if (typeof body.items_count === "number" && body.items_count < 1) {
+        return done("error", { documentId, reason: "no-items" });
+      }
+      return done("ok", { documentId });
+    }
+    if (body.success === false) return done("error", { documentId, reason: "success-false" });
     if (!status) return done("error", { documentId, reason: "unconfirmed" });
     return done("ok", { documentId });
   } catch (error) {
