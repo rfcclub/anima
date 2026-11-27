@@ -1,8 +1,9 @@
 import type { AgentMemoryEntry, MemoryScope } from "../../../src/memory/contract.ts";
-import { RoomCommitRejectedError } from "../../../src/identity-runtime/contract/remote-continuity.ts";
+import { ConsolidateRejectedError, RoomCommitRejectedError } from "../../../src/identity-runtime/contract/remote-continuity.ts";
 import {
   TenantIdentityRuntime,
   RuntimeDrainingError,
+  type TenantConsolidateInput,
   type TenantRecallInput,
   type TenantRememberInput,
 } from "./tenant-runtime.ts";
@@ -91,6 +92,13 @@ export function startTenantIdentityRuntimeHttp(
             return Response.json({ error: "agentId is not accepted after join" }, { status: 400 });
           }
           return Response.json(await runtime.remember(rememberInput(body)));
+        }
+        if (url.pathname === "/identity-runtime/continuity/consolidate") {
+          const allowed = ["leaseId", "clientId", "sessionToken", "stateHash", "idempotencyKey", "batch"];
+          if (body.agentId !== undefined || Object.keys(body).some(key => !allowed.includes(key))) {
+            return Response.json({ error: "identity runtime consolidate input is invalid" }, { status: 400 });
+          }
+          return Response.json(await runtime.consolidate(consolidateInput(body)));
         }
         if (url.pathname === "/identity-runtime/continuity/recall") {
           if (body.agentId !== undefined) {
@@ -209,6 +217,34 @@ function memoryScopeField(body: Record<string, unknown>, name: string): AgentMem
   return value as MemoryScope;
 }
 
+function consolidateInput(body: Record<string, unknown>): TenantConsolidateInput {
+  const batch = body.batch;
+  if (!isRecord(batch)) throw new ConsolidateRejectedError("remote consolidate batch is invalid");
+  const candidates = batch.candidates;
+  if (candidates !== undefined && !Array.isArray(candidates)) {
+    throw new ConsolidateRejectedError("remote consolidate candidates are invalid");
+  }
+  return {
+    leaseId: stringField(body, "leaseId"),
+    clientId: stringField(body, "clientId"),
+    sessionToken: stringField(body, "sessionToken"),
+    stateHash: stringField(body, "stateHash"),
+    idempotencyKey: stringField(body, "idempotencyKey"),
+    batch: {
+      sessionId: typeof batch.sessionId === "string" ? batch.sessionId : "",
+      sequence: typeof batch.sequence === "number" ? batch.sequence : Number.NaN,
+      summary: typeof batch.summary === "string" ? batch.summary : "",
+      ...(candidates !== undefined ? {
+        candidates: (candidates as unknown[]).map((candidate) => isRecord(candidate) ? {
+          claim: typeof candidate.claim === "string" ? candidate.claim : "",
+          evidence: typeof candidate.evidence === "string" ? candidate.evidence : "",
+          confidence: typeof candidate.confidence === "number" ? candidate.confidence : Number.NaN,
+        } : { claim: "", evidence: "", confidence: Number.NaN }),
+      } : {}),
+    },
+  };
+}
+
 function recallInput(body: Record<string, unknown>): TenantRecallInput {
   return {
     leaseId: stringField(body, "leaseId"),
@@ -258,6 +294,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function statusFor(error: unknown): number {
   if (error instanceof RuntimeDrainingError) return 503;
+  // A proven pre-write refusal (bad batch, over the cap, out of scope, stale
+  // state) wrote nothing, so it is the client's to fix; a dead session or
+  // expired lease is an admission failure.
+  if (error instanceof ConsolidateRejectedError) {
+    return error.message.includes("unavailable") ? 401 : 400;
+  }
   if (!(error instanceof Error)) return 409;
   if (error.message.endsWith(" is invalid")) return 400;
   if (error.message === "sessionToken is required") return 401;

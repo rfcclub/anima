@@ -14,6 +14,10 @@ import {
   type RemoteRecallResult,
   type RemoteRememberRequest,
   type RemoteRememberResult,
+  assertRemoteConsolidateRequest,
+  ConsolidateRejectedError,
+  type RemoteConsolidateRequest,
+  type RemoteConsolidateResult,
   assertRoomCommitInput, RoomCommitRejectedError,
   type RemoteRoomReadRequest, type SharedRoomReadResult,
   type RemoteRoomCommitRequest, type SharedRoomCommitInput, type SharedRoomCommitResult,
@@ -40,6 +44,11 @@ export interface AnimaContinuityServiceOptions {
   recall(request: RemoteRecallRequest, scopes: readonly MemoryScope[]): Promise<AgentMemoryEntry[]>;
   /** Free-text recall over this identity's own store; absent means the identity has none to offer. */
   directRecall?(request: { query: string }): Promise<RemoteDirectRecallResult>;
+  /** Applies one remote session-end batch (summary -> episode, learnings -> inbox) when a tenant accepts one. */
+  consolidate?(
+    request: RemoteConsolidateRequest,
+    context: { surfaceId: string },
+  ): Promise<RemoteConsolidateResult>;
   readRoom?(callerId: string, placeId: string, conversationId: string): SharedRoomReadResult;
   commitRoom?(callerId: string, input: SharedRoomCommitInput, signal?: AbortSignal,
     authorizeGrant?: () => void): Promise<SharedRoomCommitResult>;
@@ -130,6 +139,30 @@ export class AnimaContinuityService implements RemoteContinuityPort {
     if (request.stateHash !== grant.stateHash) throw new Error("remote direct-recall stateHash is stale");
     if (!this.options.directRecall) throw new Error("direct recall is not configured for this identity");
     return this.options.directRecall({ query: request.query });
+  }
+
+  /**
+   * Remote session-end sync. Every refusal made before the batch is applied is
+   * a typed "nothing landed"; a failure after delegation is an unknown outcome
+   * (the runtime keeps its outbox row pending and the client retries).
+   */
+  async consolidate(input: RemoteConsolidateRequest): Promise<RemoteConsolidateResult> {
+    let request: RemoteConsolidateRequest;
+    let surfaceId: string;
+    try {
+      request = assertRemoteConsolidateRequest(input);
+      const grant = this.options.grantStore.getActive(request.grantId, this.now());
+      if (!grant || grant.identity !== this.options.identity) throw new Error("projection grant is unavailable");
+      if (request.stateHash !== grant.stateHash) throw new Error("remote consolidate stateHash is stale");
+      if (!grant.writeScopes.includes("episode")) {
+        throw new Error("remote consolidate summary scope is not granted by lease");
+      }
+      if (!this.options.consolidate) throw new Error("remote consolidate is unavailable");
+      surfaceId = grant.surfaceId;
+    } catch (error) {
+      throw new ConsolidateRejectedError(error instanceof Error ? error.message : "remote consolidate rejected");
+    }
+    return this.options.consolidate(request, { surfaceId });
   }
 
   async readRoom(input: RemoteRoomReadRequest): Promise<SharedRoomReadResult> {

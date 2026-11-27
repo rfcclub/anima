@@ -125,6 +125,8 @@ export interface RemoteContinuityPort {
   directRecall?(request: RemoteDirectRecallRequest): Promise<RemoteDirectRecallResult>;
   readRoom?(request: RemoteRoomReadRequest): Promise<SharedRoomReadResult>;
   commitRoom?(request: RemoteRoomCommitRequest, signal?: AbortSignal): Promise<SharedRoomCommitResult>;
+  /** Optional: identities that accept a remote session-end batch answer here. */
+  consolidate?(request: RemoteConsolidateRequest): Promise<RemoteConsolidateResult>;
 }
 
 export function assertActiveJoinIntent(input: ActiveJoinIntent): ActiveJoinIntent {
@@ -157,5 +159,99 @@ export function assertRemoteRecallRequest(input: RemoteRecallRequest): RemoteRec
   if (!input.stateHash) throw new Error("remote recall stateHash is required");
   if (!input.query?.trim()) throw new Error("remote recall query is required");
   if (!input.substrateScope) throw new Error("remote recall substrateScope is required");
+  return input;
+}
+
+/**
+ * A remote session's end-of-session report. The agent writes the summary
+ * itself; nothing here is a raw transcript, and candidate learnings are only
+ * ever proposals — the agent's own reflection decides what reaches its
+ * substrate (never this request).
+ */
+export interface RemoteConsolidateCandidate {
+  claim: string;
+  evidence: string;
+  confidence: number;
+}
+
+export interface RemoteConsolidateBatch {
+  sessionId: string;
+  /** Monotonic per-session sequence, so a retried batch is a no-op. */
+  sequence: number;
+  summary: string;
+  candidates?: RemoteConsolidateCandidate[];
+}
+
+export interface RemoteConsolidateRequest {
+  grantId: string;
+  stateHash: string;
+  idempotencyKey: string;
+  batch: RemoteConsolidateBatch;
+}
+
+export interface RemoteConsolidateResult {
+  episodeId: string;
+  /** Proposals appended to the agent's inbox, never substrate writes. */
+  proposals: number;
+  duplicates: number;
+}
+
+/** Upper bounds on one remote batch. Summaries only: no transcript is accepted. */
+export const REMOTE_CONSOLIDATE_LIMITS = {
+  summaryChars: 2000,
+  maxCandidates: 12,
+  claimChars: 280,
+  evidenceChars: 500,
+} as const;
+
+/**
+ * The continuity boundary refused a consolidate BEFORE touching the store or
+ * the inbox, so nothing landed. Any other failure is an unknown outcome and
+ * stays pending (mutation recovery), exactly like remember.
+ */
+export class ConsolidateRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsolidateRejectedError";
+  }
+}
+
+export function assertRemoteConsolidateRequest(input: RemoteConsolidateRequest): RemoteConsolidateRequest {
+  if (!input.grantId) throw new Error("remote consolidate grantId is required");
+  if (!input.stateHash) throw new Error("remote consolidate stateHash is required");
+  if (!input.idempotencyKey) throw new Error("remote consolidate idempotencyKey is required");
+  const batch = input.batch;
+  if (!batch || typeof batch.sessionId !== "string" || !batch.sessionId.trim() || batch.sessionId.length > 256) {
+    throw new Error("remote consolidate sessionId is required");
+  }
+  if (!Number.isInteger(batch.sequence) || batch.sequence < 0) {
+    throw new Error("remote consolidate sequence is invalid");
+  }
+  if (typeof batch.summary !== "string" || !batch.summary.trim()) {
+    throw new Error("remote consolidate summary is required");
+  }
+  if (batch.summary.length > REMOTE_CONSOLIDATE_LIMITS.summaryChars) {
+    throw new Error("remote consolidate summary is invalid");
+  }
+  const candidates = batch.candidates ?? [];
+  if (!Array.isArray(candidates)) throw new Error("remote consolidate candidates are invalid");
+  if (candidates.length > REMOTE_CONSOLIDATE_LIMITS.maxCandidates) {
+    throw new Error("remote consolidate candidates are invalid");
+  }
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") throw new Error("remote consolidate candidates are invalid");
+    if (typeof candidate.claim !== "string" || !candidate.claim.trim()
+      || candidate.claim.length > REMOTE_CONSOLIDATE_LIMITS.claimChars) {
+      throw new Error("remote consolidate candidates are invalid");
+    }
+    if (typeof candidate.evidence !== "string" || !candidate.evidence.trim()
+      || candidate.evidence.length > REMOTE_CONSOLIDATE_LIMITS.evidenceChars) {
+      throw new Error("remote consolidate candidates are invalid");
+    }
+    if (typeof candidate.confidence !== "number" || !Number.isFinite(candidate.confidence)
+      || candidate.confidence < 0 || candidate.confidence > 1) {
+      throw new Error("remote consolidate candidates are invalid");
+    }
+  }
   return input;
 }

@@ -6,12 +6,16 @@ import type { IncarnationLease } from "@anima/continuity-core";
 import { narrowProjectionGrant } from "../../../src/identity-runtime/contract/projection-grant.ts";
 import { tagProvenance } from "./remember-provenance.ts";
 import {
+  ConsolidateRejectedError,
+  assertRemoteConsolidateRequest,
   RememberRejectedError,
   RoomCommitRejectedError,
   assertRoomCommitInput,
   type SharedRoomCommitResult,
   type ActiveJoinIntent,
   type RemoteContinuityPort,
+  type RemoteConsolidateRequest,
+  type RemoteConsolidateResult,
   type RemoteRecallResult,
   type RemoteRememberResult,
 } from "../../../src/identity-runtime/contract/remote-continuity.ts";
@@ -164,6 +168,15 @@ export interface TenantRoomReadInput extends Omit<TenantDirectRecallInput, "quer
 export interface TenantRoomCommitInput extends TenantRoomReadInput {
   requestKey: string;
   text: string;
+}
+
+export interface TenantConsolidateInput {
+  leaseId: string;
+  clientId: string;
+  sessionToken: string;
+  stateHash: string;
+  idempotencyKey: string;
+  batch: RemoteConsolidateRequest["batch"];
 }
 
 interface TenantSession {
@@ -407,6 +420,66 @@ export class TenantIdentityRuntime {
       input.idempotencyKey,
       { ...result },
     );
+    return result;
+  }
+
+  /**
+   * End-of-session sync from a remote host. The summary is stored as an
+   * episode and every candidate learning becomes an inbox proposal; nothing a
+   * remote host sends ever reaches the substrate directly.
+   */
+  async consolidate(input: TenantConsolidateInput): Promise<RemoteConsolidateResult> {
+    return this.logged("consolidate", { agentId: this.agentIdForLease(input.leaseId), leaseId: input.leaseId, clientId: input.clientId }, () => this.consolidateInternal(input));
+  }
+
+  private async consolidateInternal(input: TenantConsolidateInput): Promise<RemoteConsolidateResult> {
+    let authorized: ReturnType<TenantIdentityRuntime["authorize"]>;
+    try {
+      assertRemoteConsolidateRequest({
+        grantId: "runtime-session",
+        stateHash: input.stateHash,
+        idempotencyKey: input.idempotencyKey,
+        batch: input.batch,
+      });
+      authorized = this.authorize(input);
+      if (input.stateHash !== authorized.lease.baseManifest.stateHash) {
+        throw new Error("consolidate stateHash is stale");
+      }
+      // The lease must be allowed to write an episode; a batch that only
+      // proposes learnings still needs it, because the summary is a write.
+      if (!authorized.lease.writeScopes.includes("episode")) {
+        throw new Error("consolidate summary scope is not granted by lease");
+      }
+      if (!authorized.tenant.continuity.consolidate) {
+        throw new Error("remote consolidate is unavailable");
+      }
+    } catch (error) {
+      // Every refusal above happened before the outbox row was claimed, so
+      // nothing was written anywhere.
+      throw new ConsolidateRejectedError(error instanceof Error ? error.message : "remote consolidate rejected");
+    }
+    const { lease, session, tenant } = authorized;
+    const claim = this.outbox.claim(session.agentId, lease.leaseId, "consolidate", input.idempotencyKey, this.now());
+    if (claim === "pending") throw new Error("identity runtime mutation recovery required");
+    if (claim !== "claimed") return claim.result as unknown as RemoteConsolidateResult;
+    let result: RemoteConsolidateResult;
+    try {
+      result = await tenant.continuity.consolidate({
+        grantId: session.grantId,
+        stateHash: input.stateHash,
+        // The session id plus the batch sequence is the durable identity of a
+        // batch, so a retried batch is one write even under a new client key.
+        idempotencyKey: input.idempotencyKey,
+        batch: input.batch,
+      });
+    } catch (error) {
+      // As with remember: only a proven pre-write refusal releases the row.
+      if (error instanceof ConsolidateRejectedError) {
+        this.outbox.abandon(session.agentId, lease.leaseId, "consolidate", input.idempotencyKey);
+      }
+      throw error;
+    }
+    this.outbox.complete(session.agentId, lease.leaseId, "consolidate", input.idempotencyKey, { ...result });
     return result;
   }
 
