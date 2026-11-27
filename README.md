@@ -293,6 +293,8 @@ Only the optional graph report remains tracked. Package installation uses Bun lo
 
 The identity-client recall hook has [bounded per-session recall deduplication](docs/recall-session-dedup.md), including its privacy limits and decision budget.
 
+A session can write its wrap-up to Hindsight as [one structured document](docs/hindsight-wrapup.md) instead of leaving the record to transcript extraction, with the comparison that decides whether transcript retention is still needed.
+
 ### Native identity watcher integration tests
 
 `bun test` always runs the watcher subscription, debounce and shutdown contracts
