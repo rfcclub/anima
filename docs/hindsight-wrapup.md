@@ -59,9 +59,12 @@ bun scripts/hindsight-wrapup.ts --bank <bank> --session <session-id> --file wrap
 # or pipe it on stdin
 ```
 
-This is the same write the plugin's `hindsight_ingest_document` performs: `POST
-/v1/default/banks/<bank>/memories` with `context: "ingested document"`, `strategy: "document"` and
-the `wrapup` tag. The client config is `~/.hindsight/coding-agent.json` (`apiUrl`, `apiToken`).
+This targets the same write the plugin's `hindsight_ingest_document` is documented to perform:
+`POST /v1/default/banks/<bank>/memories` with `context: "ingested document"`, `strategy:
+"document"` and the `wrapup` tag. The equivalence itself is **not** verified from this repository —
+the plugin source is not here and no mock can show what it sends — so it rests on the plugin's
+documentation and on the bank accepting the document. The client config is
+`~/.hindsight/coding-agent.json` (`apiUrl`, `apiToken`).
 
 The **document id is `wrapup-<session-id>`**, keeping the session id verbatim. Writing the wrap-up
 again for the same session addresses the same document instead of adding a second one; whether the

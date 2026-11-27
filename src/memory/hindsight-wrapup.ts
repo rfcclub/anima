@@ -162,8 +162,9 @@ function operationIdOf(body: RetainResponse | null): string {
 }
 
 /**
- * Ingest the wrap-up through the bank's memories endpoint, the same write the plugin's
- * `hindsight_ingest_document` performs (`context: "ingested document"`, `strategy: "document"`).
+ * Ingest the wrap-up through the bank's memories endpoint, targeting the write the plugin's
+ * `hindsight_ingest_document` documents (`context: "ingested document"`, `strategy: "document"`).
+ * The plugin is not in this repository, so that equivalence is asserted from its docs, not shown.
  *
  * It asks for completion-aware retention (`async: false`) and bounds the wait, so `ok` means the
  * server processed the document rather than merely queueing it. A 202, or any answer naming an
