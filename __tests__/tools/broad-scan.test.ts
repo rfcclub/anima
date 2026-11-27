@@ -56,6 +56,11 @@ describe("checkBroadScan: bash", () => {
       'echo "$(find ~ -name x)"',
       'X="$(grep -rn token /)"; echo $X',
       'echo "result: `find ~ -name x`"',
+      "cd -P ~ && find . -name x",
+      "cd -L ~ && find . -name x",
+      "cd -- ~ && find . -name x",
+      "pushd ~ && find . -name x",
+      "cat <<EOF > notes.md\nsome text\nEOF\nfind ~ -name x",
       "ls -1R ~",
       "ls -a1R ~/Library",
       "grep -1r x ~",
@@ -126,6 +131,10 @@ describe("checkBroadScan: bash", () => {
       'echo "$(pwd) has $(ls | wc -l) files"',
       'git commit -m "fix (find ~) wording"',
       'echo "a (b) c"; find src -name x',
+      "git commit -F - <<'EOF'\nfix: refuse find ~ scans\n\nRun find / -name x to reproduce.\nEOF",
+      "cat > docs.md <<EOF\nRun find ~ -name x.\nEOF\nls",
+      "cat <<-EOF\n\tgrep -rn x ~\n\tEOF\necho done",
+      "grep -c x <<< 'find ~'",
       'grep -rn "cd ~" src',
       'rg "a / b" src',
       'git commit -m "refuse find ~ scans"',
@@ -232,6 +241,9 @@ describe("redactCommand", () => {
       [String.raw`curl -d "{\"password\":\"ab\\\"cd5678\"}" https://example.test`, "cd5678"],
       ["redis-cli -h host -a s3cretpw ping", "s3cretpw"],
       ["aws configure set aws_secret_access_key s3cretkey", "s3cretkey"],
+      ["docker login -p hunter2pw registry.example.test", "hunter2pw"],
+      ["curl -b 'sid=abc123def456' https://example.test", "abc123def456"],
+      [`psql -c "ALTER USER app PASSWORD 'hunter2pw'"`, "hunter2pw"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);

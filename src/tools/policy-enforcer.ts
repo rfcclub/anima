@@ -283,6 +283,8 @@ function shellTokens(command: string): ShellToken[] {
   let depth = 0;
   const resumeAt: number[] = [];
   let backtickResumes = false;
+  // heredoc delimiters waiting for the end of the current line; their bodies are data, not commands
+  const heredocs: Array<{ delim: string; stripTabs: boolean }> = [];
   const flush = () => {
     if (inWord) {
       if (dropNext) dropNext = false;
@@ -323,6 +325,12 @@ function shellTokens(command: string): ShellToken[] {
     if (ch === "<" || ch === ">") {
       // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
       if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
+      const heredoc = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;|&<>()]+))/.exec(command.slice(i));
+      if (heredoc && !command.startsWith("<<<", i)) {
+        heredocs.push({ delim: heredoc[2] ?? heredoc[3] ?? heredoc[4]!, stripTabs: heredoc[1] === "-" });
+        i += heredoc[0].length - 1;
+        continue;
+      }
       let j = i;
       while (j + 1 < command.length && "<>".includes(command[j + 1]!)) j++;
       const dup = /^&\d*-?/.exec(command.slice(j + 1))?.[0] ?? "";
@@ -350,6 +358,21 @@ function shellTokens(command: string): ShellToken[] {
       if (backtickResumes) { backtickResumes = false; quote = '"'; inWord = true; }
       continue;
     }
+    if (ch === "\n" && heredocs.length > 0) {
+      sep(ch);
+      // skip each pending heredoc body up to its delimiter line
+      let pos = i + 1;
+      for (const { delim, stripTabs } of heredocs.splice(0)) {
+        for (;;) {
+          const end = command.indexOf("\n", pos);
+          const line = command.slice(pos, end === -1 ? command.length : end);
+          pos = end === -1 ? command.length : end + 1;
+          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delim || end === -1) break;
+        }
+      }
+      i = pos - 1;
+      continue;
+    }
     if ("\n;|&".includes(ch)) { sep(ch); continue; }
     if (/\s/.test(ch)) { flush(); continue; }
     word += ch;
@@ -363,7 +386,7 @@ function shellTokens(command: string): ShellToken[] {
  *  other applications' data and make macOS prompt the owner. Unconditional, like the secrets rule.
  *  Scope: it catches accidental broad scans by cooperative agents. It is word matching on the command line
  *  (cd between segments is tracked), not a sandbox: shell indirection is out of scope (bash -c / sh -c / eval
- *  strings, variables other than HOME, aliases and functions, heredoc bodies). The target is the refused
+ *  strings, variables other than HOME, aliases and functions; heredoc bodies are skipped as data). The target is the refused
  *  directory, never the command, so a refusal record carries no command text. */
 export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
   const { tool, args } = input;
@@ -380,8 +403,10 @@ export function checkBroadScan(input: { tool: string; args: Record<string, unkno
       words = [];
       let i = 0;
       while (i < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i]!) || SHELL_KEYWORDS.has(segment[i]!))) i++;
-      if (segment[i] === "cd") {
-        const dest = segment[i + 1];
+      if (segment[i] === "cd" || segment[i] === "pushd") {
+        let k = i + 1;
+        while (segment[k] !== undefined && /^-[LPe@]+$|^--$/.test(segment[k]!)) k++;
+        const dest = segment[k];
         if (dest === undefined) cwd = homeDir();
         else if (dest !== "-") cwd = operandDir(dest, cwd);
         return undefined;

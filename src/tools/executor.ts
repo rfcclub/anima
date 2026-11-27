@@ -102,6 +102,10 @@ export function redactCommand(command: string): string {
     .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
     .replace(/(--(?:password|passwd|pass|token|api-key|apikey|secret|auth)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
     .replace(/(\bredis-cli\b[^\n;|&]*?\s-a\s+)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\b(?:docker|podman|helm|nerdctl)\b[^\n;|&]*?\s(?:-p|--password)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\bcurl\b[^\n;|&]*?\s(?:-b|--cookie)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    // SQL that sets a password (ALTER USER x PASSWORD '...', IDENTIFIED BY '...')
+    .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s+)('[^']*'|\\?"[^"\\]*\\?")/gi, "$1'[redacted]'")
     // a credential set by name and value (aws configure set aws_secret_access_key VALUE, git config ... token VALUE)
     .replace(/(\b(?:set|config)\s+)([A-Za-z0-9_.-]+)(\s+)("[^"]*"|'[^']*'|\S+)/g, (m, pre: string, name: string, sp: string) =>
       isCredentialName(name) ? pre + name + sp + "[redacted]" : m)
