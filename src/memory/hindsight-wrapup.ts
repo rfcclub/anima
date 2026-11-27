@@ -117,9 +117,10 @@ export interface RetainWrapupOptions extends WrapupInput {
  * `ok` means the server answered the retain itself, with a body saying it processed the document:
  * a success status, or Hindsight 1.2.0's sync body (`success: true` with a non-null `items_count`).
  * `queued` means it accepted the write without confirming it (a 202, an operation id, a pending
- * status): the document is not yet known to exist, so it must not be counted as retained until
- * that operation reports success. A body that cannot be read, or that confirms neither way, is
- * `error`: it is no evidence of a stored document.
+ * status, `async: true`): the document is not yet known to exist, so it must not be counted as
+ * retained until that operation reports success. A body that cannot be read, that does not count
+ * the stored item, or that confirms neither way is `error`: it is no evidence of a stored
+ * document.
  */
 export interface RetainWrapupResult {
   outcome: "ok" | "queued" | "error";
@@ -145,6 +146,8 @@ interface RetainResponse {
   operationId?: unknown;
   status?: unknown;
   success?: unknown;
+  /** True when the server accepted the work instead of processing it in this request. */
+  async?: unknown;
   items_count?: unknown;
 }
 
@@ -164,11 +167,12 @@ function operationIdOf(body: RetainResponse | null): string {
  *
  * It asks for completion-aware retention (`async: false`) and bounds the wait, so `ok` means the
  * server processed the document rather than merely queueing it. A 202, or any answer naming an
- * operation or a pending status, yields `queued` (with the id when there is one), never `ok`. A
- * body that cannot be read, that says `success: false`, or that confirms neither way is `error`: it
- * is no evidence of a stored document, and a count of retained wrap-ups must not include one that
- * may not exist. Hindsight 1.2.0's sync body (`success: true`, non-null `items_count`, no `status`)
- * is `ok`.
+ * operation, a pending status or `async: true`, yields `queued` (with the id when there is one),
+ * never `ok`. A body that cannot be read, that says `success: false`, or that confirms neither way
+ * is `error`: it is no evidence of a stored document, and a count of retained wrap-ups must not
+ * include one that may not exist. `ok` needs a stored item, so `success: true` alone is not enough:
+ * Hindsight 1.2.0's sync body names one (`success: true`, `items_count: 1`, no `status`), and a
+ * numeric `items_count` of at least one is what makes it `ok`.
  *
  * Never throws: the caller is an agent ending a session, and a failed or malformed memory write
  * must not fail the session. A wrap-up that cannot be built comes back as `outcome: "error"` with
@@ -255,8 +259,10 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
     const operationId = operationIdOf(body);
     const status = typeof body?.status === "string" ? body.status.toLowerCase() : "";
     // A 202 is the server saying "accepted, not done", whatever its body holds (including none):
-    // that is `queued`, never `ok`. So is any body that names an operation or a pending status.
-    if (res.status === 202 || operationId || QUEUED_STATUSES.has(status)) {
+    // that is `queued`, never `ok`. So is any body that names an operation, a pending status or
+    // `async: true` — the server took the work and did not report it done, and `success: true`
+    // alongside it says only that the request was accepted, not that an item was stored.
+    if (res.status === 202 || operationId || QUEUED_STATUSES.has(status) || body?.async === true) {
       return done("queued", { documentId, ...(operationId ? { operationId } : {}), reason: "not-confirmed" });
     }
     // Without a readable body carrying a status there is no evidence the document was processed,
@@ -267,12 +273,13 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
     }
     // Hindsight 1.2.0 answers a synchronous retain with
     // `{"success":true,"bank_id":…,"items_count":1,"async":false,"operation_id":null}`: no
-    // `status` at all. `success: true` is the server stating it processed the document, so that
-    // body is `ok`; a count of zero says it stored nothing, which is not.
+    // `status` at all. That body names the item it stored, so it is `ok`. Without a numeric
+    // `items_count` of at least one there is no evidence anything was stored: `{"success":true}`
+    // alone says the request succeeded, not that the document exists, so it is `error`.
     if (body.success === true) {
-      if (typeof body.items_count === "number" && body.items_count < 1) {
-        return done("error", { documentId, reason: "no-items" });
-      }
+      const stored = typeof body.items_count === "number" ? body.items_count : Number.NaN;
+      if (!Number.isFinite(stored)) return done("error", { documentId, reason: "no-item-count" });
+      if (stored < 1) return done("error", { documentId, reason: "no-items" });
       return done("ok", { documentId });
     }
     if (body.success === false) return done("error", { documentId, reason: "success-false" });

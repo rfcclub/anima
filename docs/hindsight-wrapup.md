@@ -24,7 +24,9 @@ Still to gather, and **not** evidenced by this change:
   scheduled refresh;
 - the 20-session comparison and the retain cost per session.
 
-#674 stays open until those exist. The table below is the shape of the evidence, not the evidence.
+Those are measurements, not code: the writer here is the part of #674 that can land as a change.
+The table below is the shape of the evidence, not the evidence, and transcript retention stays on
+(`retainSessions` unchanged) until the counts that *The experiment* asks for exist.
 
 ## The document
 
@@ -78,17 +80,21 @@ The retain requests completion (`async: false`) and the call is bounded by a fin
 |---------|---------|
 | `ok` | the server answered the retain itself: the document was processed |
 | `queued` | the server accepted the write and returned an operation id: the document is **not** yet known to exist, so it must not be counted until that operation reports success |
-| `error` | an incomplete wrap-up, a missing config, a non-2xx status, an absent or unreadable body (`reason: "unreadable-body"`), a body that states no status and no success (`reason: "unconfirmed"`), `success: false` (`reason: "success-false"`), `success: true` that stored no item (`reason: "no-items"`), a stalled request (`reason: "timeout"`) or a connection failure |
+| `error` | an incomplete wrap-up, a missing config, a non-2xx status, an absent or unreadable body (`reason: "unreadable-body"`), a body that states no status and no success (`reason: "unconfirmed"`), `success: false` (`reason: "success-false"`), `success: true` with no numeric `items_count` (`reason: "no-item-count"`), `success: true` that stored no item (`reason: "no-items"`), a stalled request (`reason: "timeout"`) or a connection failure |
 
-A 202, or any response carrying `operation_id`, is `queued` with that id — never `ok`.
+A 202, any response carrying `operation_id`, any pending `status`, and any body with `async: true` is
+`queued` — with the operation id when there is one — never `ok`. `{"success":true,"async":true,
+"operation_id":null}` is the shape a live bank returned for an accepted-but-not-processed write: the
+server took the work and did not report it done, and the `success` alongside it says only that the
+request was accepted.
 
 Hindsight 1.2.0 answers a synchronous retain with no `status` at all:
 `{"success":true,"bank_id":…,"items_count":1,"async":false,"operation_id":null}`. That is the body the
-live server returns for a stored document, so `success: true` with a non-null `items_count` (at least
-one item stored) is `ok`. A body that cannot be read (empty, non-JSON, or stalled past the deadline),
-or that says neither `status` nor `success`, is **not** evidence that the document was stored, so it is
-`error`, never `ok`: a count of retained wrap-ups must not include a document that may not exist. The
-CLI exits 0 only on `ok`, and prints the reason otherwise.
+live server returns for a stored document, so `success: true` with a numeric `items_count` of at least
+one is `ok`. `success: true` alone, or with `items_count: null`, says nothing about what was stored, so
+it is **not** `ok`: a wrap-up that may not exist must not be counted as retained. A body that cannot be
+read (empty, non-JSON, or stalled past the deadline), or that says neither `status` nor `success`, is
+`error` too. The CLI exits 0 only on `ok`, and prints the reason otherwise.
 
 A `--file` that cannot be read is reported as `{"outcome":"error","reason":"file-unreadable"}` and
 exit 1, like every other failure: the CLI prints one JSON outcome per run, so it never unwinds an

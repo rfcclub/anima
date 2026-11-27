@@ -360,3 +360,51 @@ describe("retainWrapup: an unconfirmed or unreadable body is never `ok`", () => 
     expect(result.documentId).toBe("wrapup-s");
   });
 });
+
+describe("retainWrapup: `ok` needs a counted item", () => {
+  test("`success: true` with no items_count is an error, not a retained document", async () => {
+    // `{"success":true}` says nothing about what was stored: counting it as retained would make
+    // a wrap-up that may not exist look like one that landed.
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.documentId).toBe("wrapup-s");
+  });
+
+  test("`success: true` with a null items_count is an error, not a retained document", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ success: true, items_count: null, operation_id: null }), {
+          status: 200,
+        })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+  });
+
+  test("an async retain is queued even when it also says `success: true`", async () => {
+    // Reproduced on a live bank: `{"success":true,"async":true,"operation_id":null}`. The server
+    // accepted the work and did not report it done, so the document is not yet known to exist.
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ success: true, async: true, operation_id: null }), {
+          status: 200,
+        })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("queued");
+    expect(result.outcome).not.toBe("ok");
+    expect(result.documentId).toBe("wrapup-s");
+  });
+});
