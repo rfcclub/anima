@@ -106,6 +106,8 @@ interface RoomConfig {
     compactThreshold: number;     // token threshold for compaction (default: 60000)
     idleTimeoutMs?: number;       // auto-sleep timeout
     maxTokens?: number;           // response token cap
+    resetAfterDream?: boolean;    // reset idle sessions after the nightly consolidation (default true)
+    resetIdleMs?: number;         // idle threshold for that reset (default 30 minutes)
   };
   boot: {
     soul: string;                 // canonical identity file (e.g., "SOUL.md")

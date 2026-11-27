@@ -338,6 +338,14 @@ export class SessionStore {
     return this.mapSession(row);
   }
 
+  /** Every open session of an agent, newest first (used by the post-consolidation reset, #669). */
+  getOpenSessions(agent: string): SessionRecord[] {
+    const rows = this.db
+      .query("SELECT * FROM sessions WHERE agent = ? AND ended IS NULL ORDER BY started DESC, rowid DESC")
+      .all(agent) as Record<string, unknown>[];
+    return rows.map((row) => this.mapSession(row));
+  }
+
   createSharedConversation(input: CreateSharedConversationInput): SharedConversationRecord {
     const readerIds = this.normalizeIds(input.readerIds, "readerIds");
     if (!input.placeId) throw new Error("shared conversation requires placeId");

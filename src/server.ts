@@ -53,7 +53,11 @@ import { createLogStream } from "./api/logs-stream";
 import { AgentSessionChannel } from "./channels/agent-session-channel";
 import { loadReflectionAgents } from "./continuity/reflection-config";
 import { SessionManager } from "./session/manager";
-import { getSessionStore as getTownSessionStore } from "./ui/services/session-store";
+import { getSessionStore as getTownSessionStore, defaultStateDir } from "./ui/services/session-store";
+import { JsonlStore } from "./memory/jsonl-store";
+import { AgentSession } from "./agents/session";
+import { resetAfterDream } from "./session/reset-after-dream";
+import { createSessionHandoffTurn } from "./session/handoff-runner";
 import { closeOpenSessions, resolveSessionStore } from "./session/close-open-sessions";
 import { parseActivationMode } from "./continuity/activation-config";
 import { MeshActivationRuntime } from "./continuity/mesh-activation-runtime";
@@ -900,19 +904,34 @@ export async function startServer(gateway?: TelegramGateway, agoraClient?: Agora
       const deepDream = new DeepDream();
       await deepDream.run(roomsDir());
       log("info", "deep dream completed", {});
-      // After the dream, agents start a fresh session.
+      // After the dream, agents start a fresh session (rfcclub/anima#669): each agent's idle
+      // conversational sessions (talk, ui, ambient:*) end through the same path as newSession —
+      // a handoff turn first, then onEnd, so the summary reaches memory before the context is dropped.
       const { agents: colonyAgents } = await loadColonyData();
-      const fresh = closeOpenSessions({
-        store: getTownSessionStore(),
-        agents: colonyAgents.map((a) => a.name),
-        channel: "ui",
+      const agentNames = colonyAgents.map((a) => a.name);
+      const townStore = getTownSessionStore();
+      const fresh = await resetAfterDream({
+        store: townStore,
+        agents: agentNames,
+        readConfig: async (agent) => {
+          const path = join(roomsDir(), agent, "config.yaml");
+          if (!existsSync(path)) return undefined;
+          return loadRoomConfig(readFileSync(path, "utf-8"));
+        },
+        handoff: createSessionHandoffTurn({
+          sessionStore: townStore,
+          roomsDir: roomsDir(),
+          resolveProvider: (roomDir) => resolveAgentProvider(roomDir),
+          createSession: (provider) => new AgentSession({ store: new JsonlStore(defaultStateDir()), provider }),
+        }),
         onEnd: postDreamSessionEnd,
+        log: (level, msg, fields) => log(level === "warn" ? "error" : level, msg, fields),
       });
       for (const f of fresh.failed) {
-        log("error", "post-dream session close failed for agent", { agent: f.agent, error: f.error });
+        log("error", "post-dream session reset failed for agent", { agent: f.agent, error: f.error });
       }
-      if (fresh.endHandlerMissing) log("error", "post-dream sessions closed without an end handler (no summary written)", {});
-      log("info", "post-dream sessions closed", { closed: fresh.closed.length });
+      if (fresh.handoffMissing.length > 0) log("error", "post-dream reset ended sessions without a handoff", { agents: fresh.handoffMissing });
+      log("info", "post-dream sessions reset", { reset: fresh.reset.length, skipped: fresh.skipped.length });
     } catch (err) {
       log("error", "deep dream cron failed", { error: String(err) });
     }

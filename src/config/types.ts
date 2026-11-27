@@ -75,6 +75,10 @@ export interface SessionConfig {
   compactThreshold: number;
   idleTimeoutMs?: number;
   maxTokens?: number;
+  /** End this agent's idle conversational sessions after the nightly consolidation. Default true. */
+  resetAfterDream?: boolean;
+  /** Idle threshold for that reset; a session with a newer turn is left alone. Default 30 minutes. */
+  resetIdleMs?: number;
 }
 
 export interface BootConfig {
@@ -232,6 +236,8 @@ export function loadRoomConfig(yamlText: string): RoomConfig {
       compactThreshold: readNumber(session, "session.compactThreshold") ?? 60000,
       idleTimeoutMs: readNumber(session, "session.idleTimeoutMs"),
       maxTokens: readNumber(session, "session.maxTokens"),
+      resetAfterDream: readOptionalBoolean(session, "session.resetAfterDream"),
+      resetIdleMs: readNumber(session, "session.resetIdleMs"),
     },
     boot: {
       gene,

@@ -21,6 +21,7 @@ import { createBunContextEngine, type BunContextEngine } from "../memory/context
 import { loadInvariants, type InvariantsFile } from "../evaluation/invariants";
 import { CartridgeRegistry } from "../cartridge/registry";
 import { CARTRIDGE_CATEGORIES } from "../cartridge/loader";
+import { withHandoffContext } from "../session/handoff";
 import { MappedFilesystemAdapter } from "../substrate/mapped-filesystem-adapter";
 import { DefaultSubstrateViewLayer } from "../substrate/default-view-layer";
 import type { SubstrateAdapter, SubstrateViewLayer } from "../substrate/substrate-adapter";
@@ -152,9 +153,12 @@ export class AgentLoader {
     const soulContent = config.boot.soul
       ? await this.readBootFile(name, roomDir, config.boot.soul)
       : undefined;
-    const sessionContextFiles = await Promise.all(
+    const bootContextFiles = await Promise.all(
       (config.boot.sessionContext ?? []).map((item) => this.readSessionContextFile(name, roomDir, item)),
     );
+    // rfcclub/anima#669: after a session reset the agent wrote HANDOFF.md instead of keeping the old
+    // conversation; it comes first so continuity survives the truncation of the boot context.
+    const sessionContextFiles = await withHandoffContext(roomDir, bootContextFiles);
     const additionalSessionContext = await this.readAdditionalSessionContext(name, roomDir, config);
     const extraActionResults = await this.runExtraActions(config, roomDir);
     const additionalContent = await Promise.all(
