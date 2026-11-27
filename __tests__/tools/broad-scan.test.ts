@@ -40,6 +40,12 @@ describe("checkBroadScan: bash", () => {
       "env -i find ~ -name x",
       "sudo -u someone find / -name x",
       "nice -n 5 rg token ~",
+      "xargs -P 4 find ~ -name x",
+      "xargs -I {} find ~ -name x",
+      "if true; then find ~ -name x; fi",
+      "for d in a; do grep -rn x ~; done",
+      "find ~ -maxdepth 3 -name x",
+      "cd ~ && rg token | head",
       "du -sh ~/Library/*",
       "echo start; find /Users -name x",
       "cd ~/work && find ~ -name x | head",
@@ -96,6 +102,17 @@ describe("checkBroadScan: bash", () => {
       "rg token",
       "cd ~/work/proj && find . -name x",
       "cd ~ && ls -la",
+      'grep -rn "cd ~" src',
+      'rg "a / b" src',
+      'git commit -m "refuse find ~ scans"',
+      "rg token src > ~/out.txt",
+      "find src -name x 2>/dev/null",
+      "echo constructor toString __proto__ hasOwnProperty ~",
+      "grep -rn token ~/Library/LaunchAgents",
+      "cd ~ && launchctl list | rg -i anima",
+      "cd ~ && ps aux | grep -r x",
+      "cd ~ && find .claude -name '*.jsonl' | xargs rg -l token",
+      "find ~ -maxdepth 1 -name '.zshrc'",
       "(cd ~ && ls); find . -name x",
       "echo $(cd / && pwd); grep -rn token .",
     ]) {
@@ -112,6 +129,8 @@ describe("checkBroadScan: grep and glob tools", () => {
       ["grep", { pattern: "x", path: "~/Library/Containers" }],
       ["grep", { pattern: "x", path: "/" }],
       ["glob", { pattern: "**/*.md", cwd: home }],
+      ["glob", { pattern: "../../**/*.plist" }],
+      ["glob", { pattern: "../../Library/**/*.plist" }],
     ] as const) {
       const d = checkBroadScan({ tool, args: args as Record<string, unknown>, cwd: project });
       expect({ tool, args, allowed: d.allowed }).toEqual({ tool, args, allowed: false });
@@ -122,6 +141,7 @@ describe("checkBroadScan: grep and glob tools", () => {
     expect(checkBroadScan({ tool: "grep", args: { pattern: "x" }, cwd: home }).allowed).toBe(false);
     expect(checkBroadScan({ tool: "grep", args: { pattern: "x", path: project }, cwd: home }).allowed).toBe(true);
     expect(checkBroadScan({ tool: "glob", args: { pattern: "*.ts" }, cwd: project }).allowed).toBe(true);
+    expect(checkBroadScan({ tool: "glob", args: { pattern: "src/**/*.ts" }, cwd: project }).allowed).toBe(true);
     expect(checkBroadScan({ tool: "read", args: { path: join(home, ".zshrc") }, cwd: project }).allowed).toBe(true);
   });
 });
@@ -172,6 +192,10 @@ describe("redactCommand", () => {
       ["curl -H 'X-Api-Key: abcd1234efgh' https://example.test", "abcd1234efgh"],
       ["curl -H 'x-auth-token: abcdef12345' https://example.test", "abcdef12345"],
       ["sshpass -p hunter2pw ssh host", "hunter2pw"],
+      ["PASSWORD=hunter2 mysql -u root db", "hunter2"],
+      ["SECRET=letmein run", "letmein"],
+      ["curl -u admin:hunter2 https://example.test", "hunter2"],
+      ["curl -H 'Cookie: sid=abc123; csrf=zzz999secret' https://example.test", "zzz999secret"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);

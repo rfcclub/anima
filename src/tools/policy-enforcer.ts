@@ -189,10 +189,8 @@ const SCANNERS: Record<string, ScannerSpec> = {
   tree: { recursive: always, valueFlags: new Set(["-L", "-I", "-P", "-o", "-H", "--filelimit"]) },
   ls: { recursive: shortFlagHas(/R/, ["--recursive"]), valueFlags: new Set(["-w", "-I", "--ignore", "--hide", "--width"]) },
 };
-/** Words that run the next word as the command. */
-const COMMAND_PREFIXES = new Set(["sudo", "command", "exec", "nice", "time", "xargs", "nohup", "env"]);
-/** Prefix options that take the next word as their value. */
-const PREFIX_VALUE_FLAGS = new Set(["-u", "-n", "-g", "-C"]);
+/** Shell words that can stand before a command (then cd, do cd, ...). */
+const SHELL_KEYWORDS = new Set(["then", "do", "else", "{", "!", "builtin"]);
 
 function homeDir(): string {
   return process.env.HOME || homedir();
@@ -204,6 +202,8 @@ function isBroadScanRoot(path: string): boolean {
   const home = canonicalize(homeDir());
   const target = canonicalize(path);
   if (["/", "/Users", "/Volumes", "/System", "/private", dirname(home), home].includes(target)) return true;
+  // launchd job definitions are ordinary configuration that agents read; nothing behind a privacy prompt lives there
+  if (isPathInside(join(home, "Library", "LaunchAgents"), target)) return false;
   return isPathInside(join(home, "Library"), target);
 }
 
@@ -222,8 +222,9 @@ function operandDir(word: string, cwd: string): string {
 }
 
 /** The path operands of one scanner call, or the cwd when it names none. Undefined when the call is not a recursive scan. */
-function scanRoots(name: string, args: string[], cwd: string): string[] | undefined {
-  const spec = SCANNERS[name];
+function scanRoots(name: string, args: string[], cwd: string, stdinFed = false): string[] | undefined {
+  // own keys only: a word such as "constructor" must not reach Object.prototype
+  const spec = Object.hasOwn(SCANNERS, name) ? SCANNERS[name] : undefined;
   if (!spec) return undefined;
   const flags: string[] = [];
   const operands: string[] = [];
@@ -235,6 +236,7 @@ function scanRoots(name: string, args: string[], cwd: string): string[] | undefi
     let endOfFlags = false;
     for (; i < args.length; i++) {
       const word = args[i]!;
+      if (/^\d*[<>]/.test(word)) { if (/^\d*[<>]+&?$/.test(word)) i++; continue; }
       if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
       if (!endOfFlags && word.startsWith("-") && word.length > 1) {
         flags.push(word);
@@ -248,64 +250,114 @@ function scanRoots(name: string, args: string[], cwd: string): string[] | undefi
     }
   }
   if (!spec.recursive(flags)) return undefined;
+  // find -maxdepth 0 or 1 lists one directory, like ls
+  if (spec.findSyntax) {
+    const depth = args.indexOf("-maxdepth");
+    if (depth !== -1 && Number(args[depth + 1]) <= 1) return undefined;
+  }
   const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
   const paths = spec.patternFirst && !patternSupplied ? operands.slice(1) : operands;
+  // a searcher with no path operand reads its input when fed by a pipe or xargs, instead of walking the cwd
+  if (paths.length === 0 && stdinFed && spec.patternFirst) return undefined;
   return (paths.length ? paths : ["."]).map((p) => operandDir(p, cwd));
+}
+
+type ShellToken = { kind: "word"; text: string } | { kind: "sep"; text: string };
+
+/** Split a command line into words and separators. Quotes group words and are removed; separators
+ *  (newline ; && || | & ( ) $( and backtick) count only outside quotes. Not a shell parser. */
+function shellTokens(command: string): ShellToken[] {
+  const out: ShellToken[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | null = null;
+  const flush = () => {
+    if (inWord) out.push({ kind: "word", text: word });
+    word = "";
+    inWord = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === "\\" && quote === '"' && i + 1 < command.length) word += command[++i];
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
+    if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||" || two === "$(") { flush(); out.push({ kind: "sep", text: two }); i++; continue; }
+    if ("\n;|&()`".includes(ch)) { flush(); out.push({ kind: "sep", text: ch }); continue; }
+    if (/\s/.test(ch)) { flush(); continue; }
+    word += ch;
+    inWord = true;
+  }
+  flush();
+  return out;
 }
 
 /** Agent tools must not walk the home directory, the filesystem root or ~/Library: those scans reach
  *  other applications' data and make macOS prompt the owner. Unconditional, like the secrets rule.
- *  Best-effort word matching on bash (tracks cd between segments), not a sandbox. The target is the
- *  refused directory, never the command, so a refusal record carries no command text. */
+ *  Scope: it catches accidental broad scans by cooperative agents. It is word matching on the command line
+ *  (cd between segments is tracked), not a sandbox: shell indirection is out of scope (bash -c / sh -c / eval
+ *  strings, variables other than HOME, aliases and functions, heredoc bodies). The target is the refused
+ *  directory, never the command, so a refusal record carries no command text. */
 export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
   const { tool, args } = input;
   const startCwd = input.cwd ?? process.cwd();
   if (tool === "bash") {
-    const command = String(args.command ?? "");
     let cwd = startCwd;
     // A cd inside a subshell or command substitution only moves the cwd until it closes.
     const saved: string[] = [];
     let inBacktick = false;
-    for (const segment of command.split(/(\n|;|&&|\|\||\||&|\$\(|`|\(|\))/)) {
-      if (segment === "(" || segment === "$(") { saved.push(cwd); continue; }
-      if (segment === ")") { cwd = saved.pop() ?? cwd; continue; }
-      if (segment === "`") {
+    let words: string[] = [];
+    let piped = false;
+    const checkSegment = (): PolicyDecision | undefined => {
+      const segment = words;
+      words = [];
+      let i = 0;
+      while (i < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i]!) || SHELL_KEYWORDS.has(segment[i]!))) i++;
+      if (segment[i] === "cd") {
+        const dest = segment[i + 1];
+        if (dest === undefined) cwd = homeDir();
+        else if (dest !== "-") cwd = operandDir(dest, cwd);
+        return undefined;
+      }
+      // Any word naming a scanner starts a scan, wherever it sits (after sudo, env -i, xargs -P 4, then, ...).
+      // A bare scanner name used as plain text (echo find ~) is refused too; the message says what to do instead.
+      for (let j = 0; j < segment.length; j++) {
+        const name = segment[j]!.split("/").pop() ?? "";
+        const roots = scanRoots(name, segment.slice(j + 1), cwd, piped || segment[j - 1] === "xargs");
+        const broad = roots?.find((r) => isBroadScanRoot(r));
+        if (broad !== undefined) {
+          return { allowed: false, rule: "broad-scan", reason: `${name} scans ${broad}, which reaches the home directory, the filesystem root or Library; scan a project directory instead`, target: broad };
+        }
+      }
+      return undefined;
+    };
+    for (const token of shellTokens(String(args.command ?? ""))) {
+      if (token.kind === "word") { words.push(token.text); continue; }
+      const refused = checkSegment();
+      if (refused) return refused;
+      piped = token.text === "|";
+      if (token.text === "(" || token.text === "$(") saved.push(cwd);
+      else if (token.text === ")") cwd = saved.pop() ?? cwd;
+      else if (token.text === "`") {
         if (inBacktick) cwd = saved.pop() ?? cwd;
         else saved.push(cwd);
         inBacktick = !inBacktick;
-        continue;
-      }
-      const words = segment.trim().split(/\s+/).filter(Boolean);
-      let i = 0;
-      let afterPrefix = false;
-      while (i < words.length) {
-        const word = words[i]!;
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) { i++; continue; }
-        if (COMMAND_PREFIXES.has(word)) { afterPrefix = true; i++; continue; }
-        // options of a prefix (env -i, nice -n 5, sudo -u user) are skipped with their value
-        if (afterPrefix && word.startsWith("-")) { i += PREFIX_VALUE_FLAGS.has(word) ? 2 : 1; continue; }
-        break;
-      }
-      const name = words[i]?.split("/").pop() ?? "";
-      if (name === "cd") {
-        const dest = words[i + 1];
-        if (dest === undefined) cwd = homeDir();
-        else if (dest !== "-") cwd = operandDir(dest, cwd);
-        continue;
-      }
-      const roots = scanRoots(name, words.slice(i + 1), cwd);
-      const broad = roots?.find((r) => isBroadScanRoot(r));
-      if (broad !== undefined) {
-        return { allowed: false, rule: "broad-scan", reason: `${name} scans ${broad}, which reaches the home directory, the filesystem root or Library; scan a project directory instead`, target: broad };
       }
     }
-    return { allowed: true };
+    return checkSegment() ?? { allowed: true };
   }
   if (!RECURSIVE_TOOLS.has(tool)) return { allowed: true };
   const raw = targetPath(tool, args, startCwd);
   if (raw === undefined) return { allowed: true };
   const expanded = raw.replace(/^~(?=\/|$)/, homeDir());
-  const target = canonicalize(expanded || startCwd, startCwd);
+  let target = canonicalize(expanded || startCwd, startCwd);
+  // a glob pattern can climb out of its cwd (../../**/*.plist): its fixed leading directories are where the walk starts
+  if (tool === "glob" && typeof args.pattern === "string") target = canonicalize(operandDir(args.pattern, target));
   if (isBroadScanRoot(target)) {
     return { allowed: false, rule: "broad-scan", reason: `${tool} over ${target} scans too broadly; use a project directory`, target };
   }
