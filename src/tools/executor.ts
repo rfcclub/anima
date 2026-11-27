@@ -12,6 +12,7 @@ import { handleWebChatTool } from "../web-chat/tool";
 import type { WebChatClient } from "../web-chat/client";
 import { currentToolBoundary, sandboxToolCommand, sandboxToolEnvironment } from "../web-chat/tool-boundary";
 import { handleGithubTool } from "./github-app";
+import { redactSecrets } from "../work/publish-secrets";
 
 const MAX_OUTPUT_CHARS = 110_000;
 /** Default limit for a bash or grep tool call; `ANIMA_TOOL_COMMAND_TIMEOUT_MS` overrides it. */
@@ -35,7 +36,7 @@ export interface ToolCommandRecord {
   agent: string | undefined;
   tool: "bash";
   cwd: string | undefined;
-  /** The command, cut to MAX_LOGGED_COMMAND_CHARS. */
+  /** The command with inline credentials masked, cut to MAX_LOGGED_COMMAND_CHARS. */
   command: string;
 }
 
@@ -73,6 +74,18 @@ function defaultLogViolation(record: PolicyViolationRecord): void {
   console.warn(JSON.stringify(record));
 }
 
+/** Mask credentials a command may carry inline before it reaches a log line. */
+export function redactCommand(command: string): string {
+  const masked = command
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?|AUTH)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[redacted]")
+    .replace(/(authorization\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, "$1[redacted]")
+    .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
+    .replace(/(--(?:password|passwd|token|api-key|secret)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
+    .replace(/(\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]*?\s-p)(\S+)/g, "$1[redacted]")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@");
+  return redactSecrets(masked);
+}
+
 function defaultLogCommand(record: ToolCommandRecord): void {
   console.info(JSON.stringify(record));
 }
@@ -102,7 +115,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
       agent: agentName,
       tool: "bash",
       cwd,
-      command: String(args.command ?? "").slice(0, MAX_LOGGED_COMMAND_CHARS),
+      command: redactCommand(String(args.command ?? "")).slice(0, MAX_LOGGED_COMMAND_CHARS),
     });
   }
 
@@ -115,7 +128,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
       event: "policy_violation",
       agent: agentName,
       tool: call.name,
-      target: secrets.target,
+      target: call.name === "bash" ? redactCommand(secrets.target) : secrets.target,
       rule: secrets.rule,
       reason: secrets.reason,
       mode: "block",
@@ -131,7 +144,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
         event: "policy_violation",
         agent: agentName,
         tool: call.name,
-        target: decision.target,
+        target: call.name === "bash" ? redactCommand(decision.target) : decision.target,
         rule: decision.rule,
         reason: decision.reason,
         mode,

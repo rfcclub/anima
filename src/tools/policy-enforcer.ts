@@ -144,21 +144,64 @@ export function checkSecretsPath(input: { tool: string; args: Record<string, unk
   return { allowed: true };
 }
 
-/** Commands that walk a directory tree on their own. */
-const TREE_SCANNERS = new Set(["find", "fd", "rg", "ag", "du", "tree", "mdfind"]);
-/** Commands that walk a tree only with a recursive flag. */
-const FLAG_SCANNERS = new Set(["grep", "egrep", "fgrep", "ls"]);
-const RECURSIVE_FLAG = /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--dereference-recursive)$/;
+
+interface ScannerSpec {
+  /** True when the command walks a tree with these flags (always, for tree walkers). */
+  recursive: (flags: string[]) => boolean;
+  /** Flags that take the next word as their value. */
+  valueFlags: Set<string>;
+  /** The first operand is a search pattern, not a path, unless one of these flags supplies the pattern. */
+  patternFirst?: Set<string>;
+  /** find: leading option letters before the paths, and operands end at the first expression word. */
+  findSyntax?: boolean;
+}
+
+const always = () => true;
+const shortFlagHas = (letters: RegExp, longs: string[]) => (flags: string[]) =>
+  flags.some((f) => (/^-[A-Za-z]+$/.test(f) && letters.test(f.slice(1))) || longs.includes(f.split("=")[0]!));
+
+const GREP_SPEC: ScannerSpec = {
+  recursive: shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"]),
+  valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label"]),
+  patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
+};
+const SCANNERS: Record<string, ScannerSpec> = {
+  find: { recursive: always, valueFlags: new Set(["-f"]), findSyntax: true },
+  grep: GREP_SPEC,
+  egrep: GREP_SPEC,
+  fgrep: GREP_SPEC,
+  rg: {
+    recursive: always,
+    valueFlags: new Set(["-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-j", "-M", "-E", "-r", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--max-count", "--max-depth", "--threads", "--max-columns", "--context", "--after-context", "--before-context", "--type-add", "--sort", "--sortr", "--pre", "--encoding", "--engine", "--replace", "--colors"]),
+    patternFirst: new Set(["-e", "-f", "--regexp", "--file", "--files", "--type-list"]),
+  },
+  ag: {
+    recursive: always,
+    valueFlags: new Set(["-A", "-B", "-C", "-m", "-G", "-g", "--ignore", "--file-search-regex", "--context", "--max-count"]),
+    patternFirst: new Set([]),
+  },
+  fd: {
+    recursive: always,
+    valueFlags: new Set(["-e", "-t", "-E", "-d", "-x", "-X", "-j", "-S", "-o", "-c", "--extension", "--type", "--exclude", "--max-depth", "--min-depth", "--exact-depth", "--exec", "--exec-batch", "--threads", "--size", "--changed-within", "--changed-before", "--owner", "--color", "--base-directory", "--search-path"]),
+    patternFirst: new Set(["--search-path"]),
+  },
+  du: { recursive: always, valueFlags: new Set(["-d", "-B", "-t", "-I", "--max-depth", "--exclude"]) },
+  tree: { recursive: always, valueFlags: new Set(["-L", "-I", "-P", "-o", "-H", "--filelimit"]) },
+  ls: { recursive: shortFlagHas(/R/, ["--recursive"]), valueFlags: new Set(["-w", "-I", "--ignore", "--hide", "--width"]) },
+};
 /** Words that run the next word as the command. */
-const COMMAND_PREFIXES = new Set(["sudo", "command", "exec", "nice", "time", "xargs", "nohup"]);
+const COMMAND_PREFIXES = new Set(["sudo", "command", "exec", "nice", "time", "xargs", "nohup", "env"]);
+
+function homeDir(): string {
+  return process.env.HOME || homedir();
+}
 
 /** A scan rooted here walks the whole machine or another application's data, which makes macOS
  *  ask the owner for access on behalf of the server. Resolved per call from $HOME like the secrets rule. */
 function isBroadScanRoot(path: string): boolean {
-  const home = canonicalize(process.env.HOME || homedir());
+  const home = canonicalize(homeDir());
   const target = canonicalize(path);
-  if (["/", "/Users", "/Volumes", "/System", "/private", dirname(home)].includes(target)) return true;
-  if (target === home) return true;
+  if (["/", "/Users", "/Volumes", "/System", "/private", dirname(home), home].includes(target)) return true;
   return isPathInside(join(home, "Library"), target);
 }
 
@@ -166,53 +209,82 @@ function unquote(word: string): string {
   return word.replace(/^["']+|["']+$/g, "");
 }
 
-/** Expand a leading ~ or $HOME; resolve dot paths against cwd. Undefined when the word is not a path. */
-function pathWord(word: string, cwd?: string): string | undefined {
-  const home = process.env.HOME || homedir();
-  const w = unquote(word).replace(/\/\*+$/, "/");
-  const expanded = w.replace(/^(?:~|\$\{HOME\}|\$HOME)(?=\/|$)/, home);
-  if (expanded.startsWith("/")) return expanded;
-  if (expanded === "." || expanded === ".." || expanded.startsWith("./") || expanded.startsWith("../")) {
-    return resolve(cwd ?? process.cwd(), expanded);
-  }
-  return undefined;
+/** The directory a path operand walks: ~ and $HOME expanded, trailing glob segments dropped, relative words resolved against cwd. */
+function operandDir(word: string, cwd: string): string {
+  const w = unquote(word).replace(/^(?:~|\$\{HOME\}|\$HOME)(?=\/|$)/, homeDir());
+  const parts = w.split("/");
+  const glob = parts.findIndex((p) => /[*?[]/.test(p));
+  const kept = glob === -1 ? w : parts.slice(0, glob).join("/");
+  if (kept === "") return w.startsWith("/") ? "/" : cwd;
+  return isAbsolute(kept) ? resolve(kept) : resolve(cwd, kept);
 }
 
-/** True when one simple command (already split into words) is a recursive scan of a broad root. */
-function segmentScansBroadly(words: string[], cwd?: string): boolean {
+/** The path operands of one scanner call, or the cwd when it names none. Undefined when the call is not a recursive scan. */
+function scanRoots(name: string, args: string[], cwd: string): string[] | undefined {
+  const spec = SCANNERS[name];
+  if (!spec) return undefined;
+  const flags: string[] = [];
+  const operands: string[] = [];
   let i = 0;
-  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || COMMAND_PREFIXES.has(words[i]!))) i++;
-  const name = words[i]?.split("/").pop() ?? "";
-  const rest = words.slice(i + 1);
-  const scanning = TREE_SCANNERS.has(name) || (FLAG_SCANNERS.has(name) && rest.some((w) => RECURSIVE_FLAG.test(w)));
-  if (!scanning) return false;
-  return rest.some((w) => {
-    const path = pathWord(w, cwd);
-    return path !== undefined && isBroadScanRoot(path);
-  });
+  if (spec.findSyntax) {
+    while (i < args.length && /^-[EHLPXdsx]+$/.test(args[i]!)) flags.push(args[i++]!);
+    while (i < args.length && !/^[-(!]/.test(args[i]!)) operands.push(args[i++]!);
+  } else {
+    let endOfFlags = false;
+    for (; i < args.length; i++) {
+      const word = args[i]!;
+      if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
+      if (!endOfFlags && word.startsWith("-") && word.length > 1) {
+        flags.push(word);
+        if (spec.valueFlags.has(word)) {
+          const value = args[++i];
+          if (value !== undefined && (word === "--search-path" || word === "--base-directory")) operands.push(value);
+        }
+        continue;
+      }
+      operands.push(word);
+    }
+  }
+  if (!spec.recursive(flags)) return undefined;
+  const patternSupplied = spec.patternFirst && flags.some((f) => spec.patternFirst!.has(f.split("=")[0]!) || /^-[ef].+/.test(f));
+  const paths = spec.patternFirst && !patternSupplied ? operands.slice(1) : operands;
+  return (paths.length ? paths : ["."]).map((p) => operandDir(p, cwd));
 }
 
 /** Agent tools must not walk the home directory, the filesystem root or ~/Library: those scans reach
  *  other applications' data and make macOS prompt the owner. Unconditional, like the secrets rule.
- *  Best-effort pattern matching on bash, not a sandbox. */
+ *  Best-effort word matching on bash (tracks cd between segments), not a sandbox. The target is the
+ *  refused directory, never the command, so a refusal record carries no command text. */
 export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
-  const { tool, args, cwd } = input;
+  const { tool, args } = input;
+  const startCwd = input.cwd ?? process.cwd();
   if (tool === "bash") {
     const command = String(args.command ?? "");
-    const segments = command.split(/\n|;|&&|\|\||\||&|\$\(|`|\(|\)/);
-    for (const segment of segments) {
+    let cwd = startCwd;
+    for (const segment of command.split(/\n|;|&&|\|\||\||&|\$\(|`|\(|\)/)) {
       const words = segment.trim().split(/\s+/).filter(Boolean);
-      if (segmentScansBroadly(words, cwd)) {
-        return { allowed: false, rule: "broad-scan", reason: "command scans the home directory, the filesystem root or Library; scan a project directory instead", target: command };
+      let i = 0;
+      while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || COMMAND_PREFIXES.has(words[i]!))) i++;
+      const name = words[i]?.split("/").pop() ?? "";
+      if (name === "cd") {
+        const dest = words[i + 1];
+        if (dest === undefined) cwd = homeDir();
+        else if (dest !== "-") cwd = operandDir(dest, cwd);
+        continue;
+      }
+      const roots = scanRoots(name, words.slice(i + 1), cwd);
+      const broad = roots?.find((r) => isBroadScanRoot(r));
+      if (broad !== undefined) {
+        return { allowed: false, rule: "broad-scan", reason: `${name} scans ${broad}, which reaches the home directory, the filesystem root or Library; scan a project directory instead`, target: broad };
       }
     }
     return { allowed: true };
   }
   if (!RECURSIVE_TOOLS.has(tool)) return { allowed: true };
-  const raw = targetPath(tool, args, cwd);
+  const raw = targetPath(tool, args, startCwd);
   if (raw === undefined) return { allowed: true };
-  const expanded = raw.replace(/^~(?=\/|$)/, process.env.HOME || homedir());
-  const target = canonicalize(expanded || (cwd ?? process.cwd()), cwd);
+  const expanded = raw.replace(/^~(?=\/|$)/, homeDir());
+  const target = canonicalize(expanded || startCwd, startCwd);
   if (isBroadScanRoot(target)) {
     return { allowed: false, rule: "broad-scan", reason: `${tool} over ${target} scans too broadly; use a project directory`, target };
   }
