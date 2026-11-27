@@ -7,7 +7,7 @@ export type PolicyDecision =
   | { allowed: true }
   | { allowed: false; rule: PolicyRule; reason: string; target: string };
 
-export type PolicyRule = "outside-roots" | "read-only-root" | "denied-pattern" | "cwd-outside-roots" | "secrets-path";
+export type PolicyRule = "outside-roots" | "read-only-root" | "denied-pattern" | "cwd-outside-roots" | "secrets-path" | "broad-scan";
 
 export interface PolicyCheckInput {
   tool: string;
@@ -140,6 +140,81 @@ export function checkSecretsPath(input: { tool: string; args: Record<string, unk
   const ancestor = RECURSIVE_TOOLS.has(tool) && isPathInside(target, secrets);
   if (inside || ancestor) {
     return { allowed: false, rule: "secrets-path", reason: `${tool} reaches the secrets directory`, target };
+  }
+  return { allowed: true };
+}
+
+/** Commands that walk a directory tree on their own. */
+const TREE_SCANNERS = new Set(["find", "fd", "rg", "ag", "du", "tree", "mdfind"]);
+/** Commands that walk a tree only with a recursive flag. */
+const FLAG_SCANNERS = new Set(["grep", "egrep", "fgrep", "ls"]);
+const RECURSIVE_FLAG = /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--dereference-recursive)$/;
+/** Words that run the next word as the command. */
+const COMMAND_PREFIXES = new Set(["sudo", "command", "exec", "nice", "time", "xargs", "nohup"]);
+
+/** A scan rooted here walks the whole machine or another application's data, which makes macOS
+ *  ask the owner for access on behalf of the server. Resolved per call from $HOME like the secrets rule. */
+function isBroadScanRoot(path: string): boolean {
+  const home = canonicalize(process.env.HOME || homedir());
+  const target = canonicalize(path);
+  if (["/", "/Users", "/Volumes", "/System", "/private", dirname(home)].includes(target)) return true;
+  if (target === home) return true;
+  return isPathInside(join(home, "Library"), target);
+}
+
+function unquote(word: string): string {
+  return word.replace(/^["']+|["']+$/g, "");
+}
+
+/** Expand a leading ~ or $HOME; resolve dot paths against cwd. Undefined when the word is not a path. */
+function pathWord(word: string, cwd?: string): string | undefined {
+  const home = process.env.HOME || homedir();
+  const w = unquote(word).replace(/\/\*+$/, "/");
+  const expanded = w.replace(/^(?:~|\$\{HOME\}|\$HOME)(?=\/|$)/, home);
+  if (expanded.startsWith("/")) return expanded;
+  if (expanded === "." || expanded === ".." || expanded.startsWith("./") || expanded.startsWith("../")) {
+    return resolve(cwd ?? process.cwd(), expanded);
+  }
+  return undefined;
+}
+
+/** True when one simple command (already split into words) is a recursive scan of a broad root. */
+function segmentScansBroadly(words: string[], cwd?: string): boolean {
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || COMMAND_PREFIXES.has(words[i]!))) i++;
+  const name = words[i]?.split("/").pop() ?? "";
+  const rest = words.slice(i + 1);
+  const scanning = TREE_SCANNERS.has(name) || (FLAG_SCANNERS.has(name) && rest.some((w) => RECURSIVE_FLAG.test(w)));
+  if (!scanning) return false;
+  return rest.some((w) => {
+    const path = pathWord(w, cwd);
+    return path !== undefined && isBroadScanRoot(path);
+  });
+}
+
+/** Agent tools must not walk the home directory, the filesystem root or ~/Library: those scans reach
+ *  other applications' data and make macOS prompt the owner. Unconditional, like the secrets rule.
+ *  Best-effort pattern matching on bash, not a sandbox. */
+export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
+  const { tool, args, cwd } = input;
+  if (tool === "bash") {
+    const command = String(args.command ?? "");
+    const segments = command.split(/\n|;|&&|\|\||\||&|\$\(|`|\(|\)/);
+    for (const segment of segments) {
+      const words = segment.trim().split(/\s+/).filter(Boolean);
+      if (segmentScansBroadly(words, cwd)) {
+        return { allowed: false, rule: "broad-scan", reason: "command scans the home directory, the filesystem root or Library; scan a project directory instead", target: command };
+      }
+    }
+    return { allowed: true };
+  }
+  if (!RECURSIVE_TOOLS.has(tool)) return { allowed: true };
+  const raw = targetPath(tool, args, cwd);
+  if (raw === undefined) return { allowed: true };
+  const expanded = raw.replace(/^~(?=\/|$)/, process.env.HOME || homedir());
+  const target = canonicalize(expanded || (cwd ?? process.cwd()), cwd);
+  if (isBroadScanRoot(target)) {
+    return { allowed: false, rule: "broad-scan", reason: `${tool} over ${target} scans too broadly; use a project directory`, target };
   }
   return { allowed: true };
 }

@@ -7,7 +7,7 @@ import type { AgentMemoryStore } from "../memory/contract";
 import type { AnimaEntityStore } from "../memory/anima-entity-store";
 import type { ContextEngine } from "@anima/context-engine";
 import type { ToolPolicy } from "../config/types";
-import { checkPolicy, checkSecretsPath, type PolicyRule } from "./policy-enforcer";
+import { checkBroadScan, checkPolicy, checkSecretsPath, type PolicyRule } from "./policy-enforcer";
 import { handleWebChatTool } from "../web-chat/tool";
 import type { WebChatClient } from "../web-chat/client";
 import { currentToolBoundary, sandboxToolCommand, sandboxToolEnvironment } from "../web-chat/tool-boundary";
@@ -29,6 +29,18 @@ export interface PolicyViolationRecord {
   mode: "warn" | "block";
 }
 
+/** One line per bash call, so a log reader can tell which agent ran which command. */
+export interface ToolCommandRecord {
+  event: "tool_command";
+  agent: string | undefined;
+  tool: "bash";
+  cwd: string | undefined;
+  /** The command, cut to MAX_LOGGED_COMMAND_CHARS. */
+  command: string;
+}
+
+const MAX_LOGGED_COMMAND_CHARS = 500;
+
 export interface ExecuteToolOptions {
   cwd?: string;
   sessionId?: string;
@@ -43,6 +55,8 @@ export interface ExecuteToolOptions {
   policy: ToolPolicy | null;
   /** Receives one record per violation. Defaults to a single JSON line on console.warn. */
   logViolation?: (record: PolicyViolationRecord) => void;
+  /** Receives one record per bash call. Defaults to a single JSON line on console.info. */
+  logCommand?: (record: ToolCommandRecord) => void;
   /** Limit for a bash or grep call, after which the command and everything it started are stopped. */
   commandTimeoutMs?: number;
 }
@@ -57,6 +71,10 @@ function commandTimeout(option: number | undefined): number {
 
 function defaultLogViolation(record: PolicyViolationRecord): void {
   console.warn(JSON.stringify(record));
+}
+
+function defaultLogCommand(record: ToolCommandRecord): void {
+  console.info(JSON.stringify(record));
 }
 
 /** Execute a single tool call and return its string result. */
@@ -78,8 +96,20 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
     }
   }
 
-  // Hard rule: agent tools never reach the GitHub App keys, whatever the room's enforce mode.
-  const secrets = checkSecretsPath({ tool: call.name, args, cwd });
+  if (call.name === "bash") {
+    (opts.logCommand ?? defaultLogCommand)({
+      event: "tool_command",
+      agent: agentName,
+      tool: "bash",
+      cwd,
+      command: String(args.command ?? "").slice(0, MAX_LOGGED_COMMAND_CHARS),
+    });
+  }
+
+  // Hard rules: agent tools never reach the GitHub App keys and never scan the whole home directory,
+  // whatever the room's enforce mode.
+  const secretsDecision = checkSecretsPath({ tool: call.name, args, cwd });
+  const secrets = secretsDecision.allowed ? checkBroadScan({ tool: call.name, args, cwd }) : secretsDecision;
   if (!secrets.allowed) {
     (opts.logViolation ?? defaultLogViolation)({
       event: "policy_violation",
