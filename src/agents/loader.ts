@@ -219,6 +219,17 @@ export class AgentLoader {
     };
   }
 
+  /**
+   * The agent's substrate adapter and view layer, when it has a substrate map (rfcclub/anima#420). A caller that
+   * needs the author's view for an activity (a work session's lane) uses this rather than the private load path.
+   */
+  async substrate(
+    name: string,
+  ): Promise<{ substrateAdapter?: SubstrateAdapter; substrateViewLayer?: SubstrateViewLayer }> {
+    const roomDir = join(this.roomsDir, name);
+    return this.loadSubstrate(name, roomDir);
+  }
+
   private async loadSubstrate(
     name: string,
     roomDir: string,

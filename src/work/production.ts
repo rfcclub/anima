@@ -20,6 +20,7 @@ import { defaultRoomsDir, defaultStateDir } from "../ui/services/session-store";
 import { createSessionExecutor } from "./executor";
 import type { WorkerAdapter } from "./adapter";
 import { createLowAdapter } from "./adapter-low";
+import { buildLaneView } from "./lane";
 import { createContainerRunner } from "./container-runner";
 import { ghWorkGitHub } from "./gh-adapter";
 import { createPublisher, type Publisher } from "./publish";
@@ -148,6 +149,13 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
     // exactly the pinned provider and model: no router fallback chain
     createProvider: (work) => createProviderForType({ type: work.provider, model: work.model } as never),
     loadIdentity: (name) => loader.loadIdentity(name),
+    // The author's programming view, loaded in the session's lane (rfcclub/anima#420): a map is required for a
+    // comparison with the external adapter, and a map that will not load stops the session with a named reason.
+    substrateView: async (author) => {
+      const { substrateAdapter, substrateViewLayer } = await loader.substrate(author);
+      if (!substrateAdapter || !substrateViewLayer) throw new Error(`no substrate map for ${author}`);
+      return buildLaneView({ layer: substrateViewLayer, adapter: substrateAdapter, agentId: author });
+    },
     issue: (work) => github.issue(work.repo, work.issue),
     reviewFeedback: reviewFeedback(workGithub, config, store),
     cloneSource: (work) => config.cloneUrl.replace("{repo}", work.repo),
