@@ -279,6 +279,10 @@ function shellTokens(command: string): ShellToken[] {
   let quote: string | null = null;
   // the word after an unquoted redirection operator is its target (a file, or a heredoc delimiter), not an argument
   let dropNext = false;
+  // $( ) and backticks inside double quotes still run: leave the quote, and resume it when the substitution closes
+  let depth = 0;
+  const resumeAt: number[] = [];
+  let backtickResumes = false;
   const flush = () => {
     if (inWord) {
       if (dropNext) dropNext = false;
@@ -287,8 +291,27 @@ function shellTokens(command: string): ShellToken[] {
     word = "";
     inWord = false;
   };
+  const sep = (text: string) => {
+    flush();
+    dropNext = false;
+    out.push({ kind: "sep", text });
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
+    if (quote === '"' && command.startsWith("$(", i)) {
+      quote = null;
+      sep("$(");
+      depth++;
+      resumeAt.push(depth);
+      i++;
+      continue;
+    }
+    if (quote === '"' && ch === "`") {
+      quote = null;
+      sep("`");
+      backtickResumes = true;
+      continue;
+    }
     if (quote) {
       if (ch === quote) quote = null;
       else if (ch === "\\" && quote === '"' && i + 1 < command.length) word += command[++i];
@@ -297,8 +320,6 @@ function shellTokens(command: string): ShellToken[] {
     }
     if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
     if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
-    const two = command.slice(i, i + 2);
-    if (two === "&&" || two === "||" || two === "$(") { flush(); dropNext = false; out.push({ kind: "sep", text: two }); i++; continue; }
     if (ch === "<" || ch === ">") {
       // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
       if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
@@ -310,7 +331,26 @@ function shellTokens(command: string): ShellToken[] {
       if (dup === "" && command[i + 1] !== "(") { dropNext = true; if (command[i + 1] === "-") i++; }
       continue;
     }
-    if ("\n;|&()`".includes(ch)) { flush(); dropNext = false; out.push({ kind: "sep", text: ch }); continue; }
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||" || two === "$(") {
+      sep(two);
+      if (two === "$(") depth++;
+      i++;
+      continue;
+    }
+    if (ch === "(") { sep(ch); depth++; continue; }
+    if (ch === ")") {
+      sep(ch);
+      if (resumeAt[resumeAt.length - 1] === depth) { resumeAt.pop(); quote = '"'; inWord = true; }
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === "`") {
+      sep(ch);
+      if (backtickResumes) { backtickResumes = false; quote = '"'; inWord = true; }
+      continue;
+    }
+    if ("\n;|&".includes(ch)) { sep(ch); continue; }
     if (/\s/.test(ch)) { flush(); continue; }
     word += ch;
     inWord = true;

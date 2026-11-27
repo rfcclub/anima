@@ -53,6 +53,9 @@ describe("checkBroadScan: bash", () => {
       "find -- ~ -name x",
       "find -L -- / -name hosts",
       "find -f ~ -name x",
+      'echo "$(find ~ -name x)"',
+      'X="$(grep -rn token /)"; echo $X',
+      'echo "result: `find ~ -name x`"',
       "ls -1R ~",
       "ls -a1R ~/Library",
       "grep -1r x ~",
@@ -120,6 +123,9 @@ describe("checkBroadScan: bash", () => {
       "rg token",
       "cd ~/work/proj && find . -name x",
       "cd ~ && ls -la",
+      'echo "$(pwd) has $(ls | wc -l) files"',
+      'git commit -m "fix (find ~) wording"',
+      'echo "a (b) c"; find src -name x',
       'grep -rn "cd ~" src',
       'rg "a / b" src',
       'git commit -m "refuse find ~ scans"',
@@ -223,6 +229,9 @@ describe("redactCommand", () => {
       [`curl -d '{"pin_token":12345}' https://example.test`, "12345"],
       [`curl -d '{"password":true}' https://example.test`, "true"],
       [String.raw`curl -d '{"password":"ab\"cd1234"}' https://example.test`, "cd1234"],
+      [String.raw`curl -d "{\"password\":\"ab\\\"cd5678\"}" https://example.test`, "cd5678"],
+      ["redis-cli -h host -a s3cretpw ping", "s3cretpw"],
+      ["aws configure set aws_secret_access_key s3cretkey", "s3cretkey"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);
