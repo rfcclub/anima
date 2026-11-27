@@ -14,6 +14,7 @@ import { buildSessionEndHandler } from "../../../../session/cross-session-memory
 import { SessionManager } from "../../../../session/manager";
 import type { SessionStore, TurnRecord } from "../../../../memory/session-store";
 import { startCastleCompaction } from "../../../../session/castle-compaction";
+import { talkCompactionPlan } from "../../../../session/talk-compaction";
 import { JsonlStore } from "../../../../memory/jsonl-store";
 import { CartridgeLoader } from "../../../../cartridge/loader";
 import { CartridgeRegistry } from "../../../../cartridge/registry";
@@ -28,6 +29,23 @@ import type { UIServerDeps } from "../../../types";
 import type { PermissionMode } from "../../../../config/types";
 import type { ContextEngine } from "@anima/context-engine";
 import type { Provider, ProviderChunk, ProviderRequest, ProviderMessage, ProviderResponse } from "../../../../providers/interface";
+
+/**
+ * The talk path's compaction trigger for one session: T = 50% of min(window, 256,000) (the room's
+ * `session.maxTokens` names its window when it has one) and a prior-history budget of T, so a turn whose
+ * compaction is skipped or fails still sends a bounded prompt.
+ */
+function talkCompaction(sessionStore: SessionStore, input: {
+  sessionId: string; incomingMessage: string; contextWindow?: number; override?: number;
+}) {
+  return talkCompactionPlan({
+    turns: sessionStore.getTurns(input.sessionId),
+    summary: sessionStore.getSummary(input.sessionId)?.summary,
+    incomingMessage: input.incomingMessage,
+    contextWindow: input.contextWindow,
+    override: input.override,
+  });
+}
 
 // ── "All" — bounded abeleat sequential turn-taking ──────────────────
 // The room owner's pipeline runs to
@@ -118,9 +136,14 @@ async function runAllBeats(p: AllBeatsParams): Promise<LockedRun> {
 
       // The owner speaks this beat: compact its session if a trigger fires, then read its turns.
       const ownerBranching = p.ownerAgent.config.contextManagement?.mode === "branching";
+      const ownerPlan = talkCompaction(p.sessionStore, {
+        sessionId: p.ownerSessionId, incomingMessage: p.userMessage,
+        contextWindow: p.ownerAgent.config.session.maxTokens, override: p.ownerAgent.config.session.compactThreshold,
+      });
       const ownerHistory = startCastleCompaction({
         store: p.sessionStore, sessionId: p.ownerSessionId, agent: p.ownerId, branching: ownerBranching,
         provider: p.ownerProvider, model: p.ownerAgent.config.provider.model, incomingMessage: p.userMessage,
+        thresholdTokens: ownerPlan.threshold, preTurnTokens: ownerPlan.preTurnTokens, replyEstimateTokens: ownerPlan.replyEstimateTokens, priorHistoryBudget: ownerPlan.budget,
       });
       const ownerTurns = ownerBranching
         ? p.sessionManager.getActiveBranchTurns(p.ownerSessionId)
@@ -172,9 +195,14 @@ async function runAllBeats(p: AllBeatsParams): Promise<LockedRun> {
       const guestAgent = await guestLoader.load(p.guestId);
       const guestSessionMeta = p.sessionManager.openSession(p.guestId, "ui");
       const guestUseBranching = guestAgent.config.contextManagement?.mode === "branching";
+      const guestPlan = talkCompaction(p.sessionStore, {
+        sessionId: guestSessionMeta.id, incomingMessage: p.userMessage,
+        contextWindow: guestAgent.config.session.maxTokens, override: guestAgent.config.session.compactThreshold,
+      });
       const guestHistory = startCastleCompaction({
         store: p.sessionStore, sessionId: guestSessionMeta.id, agent: p.guestId, branching: guestUseBranching,
         provider: guestProvider, model: guestAgent.config.provider.model, incomingMessage: p.userMessage,
+        thresholdTokens: guestPlan.threshold, preTurnTokens: guestPlan.preTurnTokens, replyEstimateTokens: guestPlan.replyEstimateTokens, priorHistoryBudget: guestPlan.budget,
       });
       const guestTurns = guestUseBranching
         ? p.sessionManager.getActiveBranchTurns(guestSessionMeta.id)
@@ -322,9 +350,14 @@ async function runOrderedBeats(p: OrderedBeatsParams): Promise<LockedRun> {
 
         const sessionMeta = p.sessionManager.openSession(speakerId, "ui");
         const useBranching = loaded.agent.config.contextManagement?.mode === "branching";
+        const speakerPlan = talkCompaction(p.sessionStore, {
+          sessionId: sessionMeta.id, incomingMessage: p.userMessage,
+          contextWindow: loaded.agent.config.session.maxTokens, override: loaded.agent.config.session.compactThreshold,
+        });
         const history = startCastleCompaction({
           store: p.sessionStore, sessionId: sessionMeta.id, agent: speakerId, branching: useBranching,
           provider: loaded.provider, model: loaded.agent.config.provider.model, incomingMessage: p.userMessage,
+          thresholdTokens: speakerPlan.threshold, preTurnTokens: speakerPlan.preTurnTokens, replyEstimateTokens: speakerPlan.replyEstimateTokens, priorHistoryBudget: speakerPlan.budget,
         });
         const priorTurns = useBranching
           ? p.sessionManager.getActiveBranchTurns(sessionMeta.id)
@@ -604,7 +637,6 @@ export async function handleTalk(
     return withRoomLock(agentName, () => json({ error: `agent_load_failed: ${agentName}`, detail: String(err) }, 500));
   }
 
-  const compactThreshold = agent.config.session.compactThreshold;
   let agentMemoryStore = agent.memoryStore;
   let agentModel = agent.config.provider.model;
   let agentContextEngine = agent.contextEngine;
@@ -614,7 +646,9 @@ export async function handleTalk(
   const onEnd = agentMemoryStore
     ? buildSessionEndHandler(agentMemoryStore, provider, sessionStore, agentModel, agent.roomDir)
     : undefined;
-  const sessionManager = new SessionManager({ store: sessionStore, onEnd });
+  // The room's own context window, when it names one: the manager's ratio is never acted on here (the talk
+  // trigger decides), but it should not judge a larger model against the 200,000 default.
+  const sessionManager = new SessionManager({ store: sessionStore, onEnd, maxTokens: agent.config.session.maxTokens });
   const session = sessionManager.openSession(agentName, "ui");
   let sessionId = session.id;
 
@@ -881,9 +915,14 @@ export async function handleTalk(
   // that one has finished, and the compaction runs under the lock too. Speaker resolution above is done first,
   // so an absent owner or an empty room never triggers a compaction.
   const makeRunStream = (signal: AbortSignal) => {
+    const plan = talkCompaction(sessionStore, {
+      sessionId, incomingMessage: body.message ?? "",
+      contextWindow: agent?.config.session.maxTokens, override: agent?.config.session.compactThreshold,
+    });
     const history = startCastleCompaction({
       store: sessionStore, sessionId, agent: talkAgent, branching: useBranching,
       provider: provider!, model: agentModel, incomingMessage: body.message ?? "",
+      thresholdTokens: plan.threshold, preTurnTokens: plan.preTurnTokens, replyEstimateTokens: plan.replyEstimateTokens, priorHistoryBudget: plan.budget,
     });
     turns = useBranching
       ? sessionManager.getActiveBranchTurns(sessionId)
@@ -1039,13 +1078,20 @@ export async function agentStream(
   const onEnd = agent.memoryStore
     ? buildSessionEndHandler(agent.memoryStore, provider, sessionStore, agent.config.provider.model, agent.roomDir)
     : undefined;
-  const sessionManager = new SessionManager({ store: sessionStore, onEnd });
+  // The room's own context window, when it names one: the manager's ratio is never acted on here (the talk
+  // trigger decides), but it should not judge a larger model against the 200,000 default.
+  const sessionManager = new SessionManager({ store: sessionStore, onEnd, maxTokens: agent.config.session.maxTokens });
   const session = sessionManager.openSession(agentName, "ui");
   let sessionId = session.id;
   const useBranching = agent.config.contextManagement?.mode === "branching";
+  const streamPlan = talkCompaction(sessionStore, {
+    sessionId, incomingMessage: userMessage,
+    contextWindow: agent.config.session.maxTokens, override: agent.config.session.compactThreshold,
+  });
   const history = startCastleCompaction({
     store: sessionStore, sessionId, agent: agentName, branching: useBranching,
     provider, model: agent.config.provider.model, incomingMessage: userMessage,
+    thresholdTokens: streamPlan.threshold, preTurnTokens: streamPlan.preTurnTokens, replyEstimateTokens: streamPlan.replyEstimateTokens, priorHistoryBudget: streamPlan.budget,
   });
   let turns = useBranching
     ? sessionManager.getActiveBranchTurns(sessionId)

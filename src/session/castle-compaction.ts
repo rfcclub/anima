@@ -66,20 +66,39 @@ export function keptTailStart(turns: TurnRecord[]): number {
 }
 
 /** Idle wins when both triggers fire. Size counts the summary, every message and the incoming message. */
-export function decideCompaction(input: { turns: TurnRecord[]; summary?: string; incomingMessage: string; now: number }): { reason?: "size" | "idle"; eligible: TurnRecord[] } {
+export function decideCompaction(input: {
+  turns: TurnRecord[];
+  summary?: string;
+  incomingMessage: string;
+  now: number;
+  thresholdTokens?: number;
+  replyEstimateTokens?: number;
+  /** The talk path's own pre-turn estimate (pinned summary + live history + system content): when given, the size
+   *  trigger asks whether the context before the turn and the context predicted after it both cross T. */
+  preTurnTokens?: number;
+}): { reason?: "size" | "idle"; eligible: TurnRecord[] } {
   const eligible = input.turns.slice(0, keptTailStart(input.turns));
   const last = input.turns.at(-1);
   if (last && input.now - Date.parse(last.ts) > COMPACT_IDLE_MS && eligible.length >= IDLE_MIN_ELIGIBLE) return { reason: "idle", eligible };
+  // The talk path replaces the size threshold with its own window-derived T (session/talk-compaction.ts);
+  // every other caller keeps COMPACT_SIZE_TOKENS.
+  const threshold = input.thresholdTokens ?? COMPACT_SIZE_TOKENS;
   const size = estimateTokens(input.summary ?? "") + estimateTokens(input.incomingMessage)
     + input.turns.reduce((sum, turn) => sum + estimateTokens(turn.content), 0);
-  if (size > COMPACT_SIZE_TOKENS && eligible.length > 0) return { reason: "size", eligible };
+  // The talk path supplies its own pre-turn estimate and its reply estimate, so the predicted post-turn size is
+  // pre-turn + incoming message + reply. Other callers keep the legacy single-estimate rule.
+  const pre = input.preTurnTokens ?? size;
+  const predicted = input.preTurnTokens === undefined
+    ? size + Math.max(0, input.replyEstimateTokens ?? 0)
+    : pre + estimateTokens(input.incomingMessage) + Math.max(0, input.replyEstimateTokens ?? 0);
+  if (pre > threshold && predicted > threshold && eligible.length > 0) return { reason: "size", eligible };
   return { eligible };
 }
 
 /** Compact when a trigger fires. Branching rooms are skipped (logged only when a trigger would have fired). */
 export async function compactIfNeeded(
   deps: CompactionDeps,
-  input: { sessionId: string; agent: string; incomingMessage: string; branching?: boolean },
+  input: { sessionId: string; agent: string; incomingMessage: string; branching?: boolean; thresholdTokens?: number; replyEstimateTokens?: number; preTurnTokens?: number },
 ): Promise<CompactionResult> {
   const now = deps.now?.() ?? Date.now();
   const failures = deps.failures ?? recentFailures;
@@ -90,6 +109,9 @@ export async function compactIfNeeded(
     summary: deps.store.getSummary(input.sessionId)?.summary,
     incomingMessage: input.incomingMessage,
     now,
+    thresholdTokens: input.thresholdTokens,
+    replyEstimateTokens: input.replyEstimateTokens,
+    preTurnTokens: input.preTurnTokens,
   });
   if (!decision.reason) return { status: "nothing" };
   if (input.branching) {
@@ -258,30 +280,48 @@ export function startCastleCompaction(input: {
   incomingMessage: string;
   now?: number;
   failures?: Map<string, number>;
+  /** The talk path's own trigger T (session/talk-compaction.ts) and the reply estimate for the predicted post-turn size. */
+  thresholdTokens?: number;
+  replyEstimateTokens?: number;
+  /** Prior-history budget for a turn that does not compact; the talk path sets it to T so a prompt is always bounded. */
+  priorHistoryBudget?: number;
+  /** The talk path's pre-turn estimate, so the size trigger can ask about the predicted post-turn size. */
+  preTurnTokens?: number;
 }): { summary?: string; budget: number; pending?: Promise<CompactionResult> } {
   // Branching rooms are never compacted and keep the default budget.
   if (input.branching) {
     const turns = input.store.getTurns(input.sessionId);
     const now = input.now ?? Date.now();
-    if (decideCompaction({ turns, incomingMessage: input.incomingMessage, now }).reason) {
+    if (decideCompaction({ turns, incomingMessage: input.incomingMessage, now, thresholdTokens: input.thresholdTokens, replyEstimateTokens: input.replyEstimateTokens, preTurnTokens: input.preTurnTokens }).reason) {
       structuredLog("info", "session compaction skipped", { agent: input.agent, reason: "branching" });
     }
     return { budget: COMPACTING_TURN_BUDGET };
   }
   const summary = input.store.getSummary(input.sessionId)?.summary;
+  // While a compaction runs this turn sends only the recent tail; a caller with a tighter budget keeps its own.
+  const compactingBudget = input.priorHistoryBudget === undefined
+    ? COMPACTING_TURN_BUDGET
+    : Math.min(COMPACTING_TURN_BUDGET, input.priorHistoryBudget);
   const running = inFlight.get(input.sessionId);
-  if (running) return { summary, budget: COMPACTING_TURN_BUDGET, pending: running };
+  if (running) return { summary, budget: compactingBudget, pending: running };
   const now = input.now ?? Date.now();
-  const decision = decideCompaction({ turns: input.store.getTurns(input.sessionId), summary, incomingMessage: input.incomingMessage, now });
-  if (!decision.reason) return { summary, budget: CASTLE_PRIOR_HISTORY_BUDGET };
+  const budget = input.priorHistoryBudget ?? CASTLE_PRIOR_HISTORY_BUDGET;
+  const decision = decideCompaction({
+    turns: input.store.getTurns(input.sessionId), summary, incomingMessage: input.incomingMessage, now,
+    thresholdTokens: input.thresholdTokens, replyEstimateTokens: input.replyEstimateTokens, preTurnTokens: input.preTurnTokens,
+  });
+  if (!decision.reason) return { summary, budget };
   const failures = input.failures ?? recentFailures;
   const failedAt = failures.get(input.sessionId);
-  if (failedAt !== undefined && now - failedAt < COMPACT_RETRY_MS) return { summary, budget: COMPACTING_TURN_BUDGET };
+  if (failedAt !== undefined && now - failedAt < COMPACT_RETRY_MS) return { summary, budget: compactingBudget };
   const pending = track(input.sessionId, input.agent, failures, now, compactIfNeeded(
     { ...castleDeps(input), now: () => now, failures },
-    { sessionId: input.sessionId, agent: input.agent, incomingMessage: input.incomingMessage },
+    {
+      sessionId: input.sessionId, agent: input.agent, incomingMessage: input.incomingMessage,
+      thresholdTokens: input.thresholdTokens, replyEstimateTokens: input.replyEstimateTokens, preTurnTokens: input.preTurnTokens,
+    },
   ));
-  return { summary, budget: COMPACTING_TURN_BUDGET, pending };
+  return { summary, budget: compactingBudget, pending };
 }
 
 /**
