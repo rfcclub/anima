@@ -211,17 +211,21 @@ function isBroadScanRoot(path: string): boolean {
   return isPathInside(join(home, "Library"), target);
 }
 
-/** Expand brace alternatives ({a,b}, nested left to right) the way bash does before tilde expansion. Capped for safety. */
+/** Expand brace alternatives ({a,b}, nested left to right) the way bash does before tilde expansion.
+ *  Past the cap it fails closed: "/" is added, so an over-long expansion is refused rather than half checked. */
 function expandBraces(word: string, limit = 64): string[] {
-  const m = /\{([^{}]*,[^{}]*)\}/.exec(word);
-  if (!m) return [word];
   const out: string[] = [];
-  for (const alt of m[1]!.split(",")) {
-    for (const w of expandBraces(word.slice(0, m.index) + alt + word.slice(m.index + m[0].length), limit)) {
-      if (out.length >= limit) return out;
+  const walk = (w: string): boolean => {
+    const m = /\{([^{}]*,[^{}]*)\}/.exec(w);
+    if (!m) {
+      if (out.length >= limit) return false;
       out.push(w);
+      return true;
     }
-  }
+    for (const alt of m[1]!.split(",")) if (!walk(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length))) return false;
+    return true;
+  };
+  if (!walk(word)) out.push("/");
   return out;
 }
 
