@@ -236,7 +236,6 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
     let endOfFlags = false;
     for (; i < args.length; i++) {
       const word = args[i]!;
-      if (/^\d*[<>]/.test(word)) { if (/^\d*[<>]+&?$/.test(word)) i++; continue; }
       if (!endOfFlags && word === "--") { endOfFlags = true; continue; }
       if (!endOfFlags && word.startsWith("-") && word.length > 1) {
         flags.push(word);
@@ -271,8 +270,13 @@ function shellTokens(command: string): ShellToken[] {
   let word = "";
   let inWord = false;
   let quote: string | null = null;
+  // the word after an unquoted redirection operator is its target (a file, or a heredoc delimiter), not an argument
+  let dropNext = false;
   const flush = () => {
-    if (inWord) out.push({ kind: "word", text: word });
+    if (inWord) {
+      if (dropNext) dropNext = false;
+      else out.push({ kind: "word", text: word });
+    }
     word = "";
     inWord = false;
   };
@@ -288,6 +292,16 @@ function shellTokens(command: string): ShellToken[] {
     if (ch === "\\" && i + 1 < command.length) { word += command[++i]; inWord = true; continue; }
     const two = command.slice(i, i + 2);
     if (two === "&&" || two === "||" || two === "$(") { flush(); out.push({ kind: "sep", text: two }); i++; continue; }
+    if (ch === "<" || ch === ">") {
+      // an unquoted redirection: a leading file-descriptor number belongs to it, then the operator, then its target
+      if (/^\d+$/.test(word)) { word = ""; inWord = false; } else flush();
+      let j = i;
+      while (j + 1 < command.length && "<>".includes(command[j + 1]!)) j++;
+      const dup = /^&\d*-?/.exec(command.slice(j + 1))?.[0] ?? "";
+      i = j + dup.length;
+      if (dup === "") { dropNext = true; if (command[i + 1] === "-") i++; }
+      continue;
+    }
     if ("\n;|&()`".includes(ch)) { flush(); out.push({ kind: "sep", text: ch }); continue; }
     if (/\s/.test(ch)) { flush(); continue; }
     word += ch;
