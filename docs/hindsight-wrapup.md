@@ -9,6 +9,23 @@ what the agent chose to keep.
 `src/memory/hindsight-wrapup.ts` and `scripts/hindsight-wrapup.ts` write the wrap-up as **one**
 document instead, so the project bank gets what the agent decided was worth keeping.
 
+## Status: the writer only
+
+This change is the **manual writer**. It formats and sends the document; it does not yet call
+itself at session end, and it does not decide anything about transcript retention. Nothing is
+turned off here: `retainSessions` stays as it is.
+
+Still to gather, and **not** evidenced by this change:
+
+- a real wrap-up ingested into a live bank and read back;
+- that the server replaces a document written twice with the same `document_id` (the client sends
+  the same id; what the server does with it is the server's behaviour, which no mock can show);
+- that a decision stated only in a wrap-up is cited by the `Key decisions` page after the next
+  scheduled refresh;
+- the 20-session comparison and the retain cost per session.
+
+#674 stays open until those exist. The table below is the shape of the evidence, not the evidence.
+
 ## The document
 
 Written by the agent at the end of a session, in English, with these fixed sections (in this
@@ -28,9 +45,10 @@ order):
 - `Owner corrections` records where the owner corrected the agent.
 - `Claims needing verification` marks what the session asserted but did not check.
 
-A section that is present but empty, or missing, refuses the whole write. A partial record reads as
-"the agent checked and found nothing" when in fact the section was never written, which is worse
-than not writing the wrap-up at all.
+A section that is missing, present but empty, or out of the fixed order refuses the whole write. A
+partial record reads as "the agent checked and found nothing" when in fact the section was never
+written, which is worse than not writing the wrap-up at all; out-of-order sections make two
+sessions' wrap-ups hard to diff.
 
 ## Ingest
 
@@ -44,14 +62,33 @@ This is the same write the plugin's `hindsight_ingest_document` performs: `POST
 the `wrapup` tag. The client config is `~/.hindsight/coding-agent.json` (`apiUrl`, `apiToken`).
 
 The **document id is `wrapup-<session-id>`**, keeping the session id verbatim. Writing the wrap-up
-again for the same session replaces the earlier document instead of adding a second one. The id is
-not folded or lowercased: `sess-a_b` and `sess-a-b` are different sessions, and folding them would
-make one session's wrap-up silently replace the other's. An empty or traversal-shaped session id is
-refused rather than sanitised.
+again for the same session addresses the same document instead of adding a second one; whether the
+server replaces it is the behaviour still to verify (see *Status*). The id is not folded or
+lowercased: `sess-a_b` and `sess-a-b` are different sessions, and folding them would make one
+session's wrap-up silently replace the other's. The runtime's own ids
+(`channel-<channelId>-<agentId>-<uuid>`, with `work:`/`remote:`/`ambient:` channels) carry `.` and
+`:`, so those are allowed; path separators and `..` are refused rather than sanitised.
 
-The write never throws for a session-ending agent: a missing config or a failed request returns
-`{ outcome: "error", reason }` and the CLI exits 1. Log lines carry bank, outcome and reason only:
-never the token.
+### Queued is not retained
+
+The retain requests completion (`async: false`) and the call is bounded by a finite deadline
+(`DEFAULT_RETAIN_TIMEOUT_MS`, overridable per call). There are three outcomes:
+
+| Outcome | Meaning |
+|---------|---------|
+| `ok` | the server answered the retain itself: the document was processed |
+| `queued` | the server accepted the write and returned an operation id: the document is **not** yet known to exist, so it must not be counted until that operation reports success |
+| `error` | an incomplete wrap-up, a missing config, a non-2xx status, a stalled request (`reason: "timeout"`) or a connection failure |
+
+A 202, or any response carrying `operation_id`, is `queued` with that id — never `ok`. The CLI
+exits 0 only on `ok`, and prints the reason otherwise.
+
+### The session-end contract
+
+`retainWrapup` never throws. An incomplete wrap-up, an unusable session id, a missing config, a
+failed request and a stalled service all come back as `outcome: "error"` with a `reason`, so the
+caller can end a session without a try/catch and without hanging on a host that never answers. Log
+lines carry bank, outcome, document id, operation id and reason only: never the token.
 
 ## The experiment before anything is turned off
 
@@ -65,6 +102,7 @@ transcript and its wrap-up side by side and record, per session:
 | `decisionsInTranscript` | decisions the session reached |
 | `decisionsInWrapup` | how many of those the wrap-up states |
 | `retainCost` | what the turn's transcript retain cost for that session |
+| `wrapupOutcome` | `ok`, `queued` (with operation id) or `error`, so a wrap-up that never landed is not counted as one |
 
 Record the **counts**, not a summary: the point is to be able to recount them from the table. The
 share of owner corrections and of decisions that reach the wrap-up is what decides the next step.

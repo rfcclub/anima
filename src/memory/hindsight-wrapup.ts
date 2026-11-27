@@ -11,7 +11,9 @@ import type { HindsightLog } from "./hindsight-adapter";
  * the decisions, their reasons and the open work, and writes them once, with a fixed shape.
  *
  * The document id is derived from the session id, so writing the wrap-up again for the same
- * session replaces the first write instead of adding a second one.
+ * session sends the same id instead of a second one. Whether the server treats that as a replace
+ * is its own behaviour: the client cannot prove it from here, so the docs record it as evidence
+ * still to gather.
  */
 
 /** Fixed section headings, in the order the document states them. */
@@ -27,8 +29,17 @@ export const WRAPUP_SECTIONS = [
 export const WRAPUP_TAG = "wrapup";
 
 const DEFAULT_CONFIG_PATH = join(homedir(), ".hindsight", "coding-agent.json");
-const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const DOC_ID = /^wrapup-[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Session ids the runtime really produces: `channel-<channelId>-<agentId>-<uuid>`, where the
+ * channel can be `work:<workId>`, `remote:<caller>`, `ambient:<placeId>` or a Telegram chat id.
+ * `.` and `:` are part of those ids, so they are allowed; path separators and `..` are not.
+ */
+const SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const DOC_ID = /^wrapup-[A-Za-z0-9_.:-]{1,128}$/;
+
+/** A retain that has not come back by then is treated as failed; session end must not hang. */
+export const DEFAULT_RETAIN_TIMEOUT_MS = 10_000;
 
 interface HindsightConfig {
   apiUrl: string;
@@ -40,11 +51,13 @@ interface HindsightConfig {
  *
  * Folding or lowercasing would collide two real sessions onto one document (`sess-a_b` and
  * `sess-a-b`), so a second session's wrap-up would silently replace the first. The id is
- * refused rather than sanitised when it is not a plain identifier: empty or traversal-shaped
- * text would key a document on something the server cannot keep stable.
+ * refused rather than sanitised when it is traversal-shaped: text like `../../etc/passwd` would
+ * key a document on something the server cannot keep stable.
  */
 export function wrapupDocumentId(sessionId: string): string {
-  if (!SESSION_ID.test(sessionId)) throw new Error(`wrap-up: invalid session id (${SESSION_ID})`);
+  if (!SESSION_ID.test(sessionId) || sessionId.includes("..")) {
+    throw new Error(`wrap-up: invalid session id (${SESSION_ID})`);
+  }
   const id = `wrapup-${sessionId}`;
   if (!DOC_ID.test(id)) throw new Error("wrap-up: session id does not form a document id");
   return id;
@@ -72,13 +85,19 @@ function sectionBody(content: string, heading: string): string {
 }
 
 /**
- * Refuses a wrap-up that does not carry every fixed section with something in it. A partial
- * record is worse than none: it reads as "the agent checked and found nothing" when in fact
- * the section was never written.
+ * Refuses a wrap-up that does not carry every fixed section, in the documented order, with
+ * something in it. A partial record is worse than none: it reads as "the agent checked and found
+ * nothing" when in fact the section was never written. Out-of-order sections break the reading
+ * of a diff between two sessions, so they are refused too.
  */
 export function buildWrapupDocument(input: WrapupInput): WrapupDocument {
   const documentId = wrapupDocumentId(input.sessionId);
+  const lines = input.content.split("\n");
+  let previous = -1;
   for (const heading of WRAPUP_SECTIONS) {
+    const at = lines.findIndex((line) => line.trim() === heading);
+    if (at >= 0 && at < previous) throw new Error(`wrap-up: section "${heading}" is out of order`);
+    if (at >= 0) previous = at;
     if (!sectionBody(input.content, heading)) throw new Error(`wrap-up: missing or empty section "${heading}"`);
   }
   return { documentId, content: input.content.trim(), tags: [WRAPUP_TAG] };
@@ -88,13 +107,21 @@ export interface RetainWrapupOptions extends WrapupInput {
   bank: string;
   /** Hindsight client config holding apiUrl and apiToken. Read on every call. */
   configPath?: string;
+  /** Finite deadline for the write; session end must not wait on a stalled service. */
+  timeoutMs?: number;
   fetchFn?: typeof fetch;
   log?: HindsightLog;
 }
 
+/**
+ * `ok` means the server answered the retain itself. `queued` means it accepted the write and
+ * returned an operation id: the document is not yet known to exist, so it must not be counted as
+ * retained until that operation reports success.
+ */
 export interface RetainWrapupResult {
-  outcome: "ok" | "error";
-  documentId: string;
+  outcome: "ok" | "queued" | "error";
+  documentId?: string;
+  operationId?: string;
   reason?: string;
 }
 
@@ -110,31 +137,81 @@ function readConfig(path: string): HindsightConfig | null {
   }
 }
 
+interface RetainResponse {
+  operation_id?: unknown;
+  operationId?: unknown;
+  status?: unknown;
+}
+
+const QUEUED_STATUSES = new Set(["queued", "pending", "processing", "in_progress", "in-progress", "running"]);
+
+/** Read the operation id out of a retain response; "" when it answered synchronously. */
+function operationIdOf(body: RetainResponse | null): string {
+  const raw = body?.operation_id ?? body?.operationId;
+  if (typeof raw === "string" && raw.length > 0) return raw;
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  return "";
+}
+
 /**
  * Ingest the wrap-up through the bank's memories endpoint, the same write the plugin's
  * `hindsight_ingest_document` performs (`context: "ingested document"`, `strategy: "document"`).
  *
- * Never throws: the caller is an agent ending a session, and a failed memory write must not
- * fail the session. It throws only on a wrap-up that cannot be built at all.
+ * It asks for completion-aware retention (`async: false`) and bounds the wait, so `ok` means the
+ * server processed the document rather than merely queueing it. A server that answers with an
+ * operation id anyway yields `queued` (with that id), never `ok`.
+ *
+ * Never throws: the caller is an agent ending a session, and a failed or malformed memory write
+ * must not fail the session. A wrap-up that cannot be built comes back as `outcome: "error"` with
+ * a `reason`, before any request is made.
  */
 export async function retainWrapup(options: RetainWrapupOptions): Promise<RetainWrapupResult> {
-  const document = buildWrapupDocument(options);
   const log = options.log ?? (() => {});
-  const done = (outcome: "ok" | "error", reason?: string): RetainWrapupResult => {
+  const done = (outcome: "ok" | "queued" | "error", extra: { documentId?: string; operationId?: string; reason?: string } = {}) => {
     log(outcome === "ok" ? "info" : "error", "hindsight wrapup retain", {
       bank: options.bank,
       outcome,
-      ...(reason ? { reason } : {}),
+      ...(extra.documentId ? { documentId: extra.documentId } : {}),
+      ...(extra.operationId ? { operationId: extra.operationId } : {}),
+      ...(extra.reason ? { reason: extra.reason } : {}),
     });
-    return { outcome, documentId: document.documentId, ...(reason ? { reason } : {}) };
+    return {
+      outcome,
+      ...(extra.documentId ? { documentId: extra.documentId } : {}),
+      ...(extra.operationId ? { operationId: extra.operationId } : {}),
+      ...(extra.reason ? { reason: extra.reason } : {}),
+    };
   };
 
+  let document: WrapupDocument;
+  try {
+    document = buildWrapupDocument(options);
+  } catch (error) {
+    return done("error", { reason: `invalid-wrapup: ${error instanceof Error ? error.message : "unknown"}` });
+  }
+  const documentId = document.documentId;
+
   const config = readConfig(options.configPath ?? DEFAULT_CONFIG_PATH);
-  if (!config) return done("error", "config-unavailable");
+  if (!config) return done("error", { documentId, reason: "config-unavailable" });
+
+  const timeoutMs =
+    options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : DEFAULT_RETAIN_TIMEOUT_MS;
 
   const url = `${config.apiUrl.replace(/\/+$/, "")}/v1/default/banks/${encodeURIComponent(options.bank)}/memories`;
+  const controller = new AbortController();
+  // Race the request against the abort so a `fetchFn` that ignores the signal (a stub, or a host
+  // that keeps the socket open) still cannot hold session end past the deadline.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new DOMException("retain deadline exceeded", "AbortError"));
+    }, timeoutMs);
+  });
   try {
-    const res = await (options.fetchFn ?? fetch)(url, {
+    const res = await Promise.race([(options.fetchFn ?? fetch)(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -147,12 +224,31 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
             strategy: "document",
           },
         ],
-        async: true,
+        async: false,
       }),
-    });
-    if (!res.ok) return done("error", `status-${res.status}`);
-    return done("ok");
+      signal: controller.signal,
+    }), deadline]);
+    if (!res.ok) return done("error", { documentId, reason: `status-${res.status}` });
+
+    let body: RetainResponse | null = null;
+    try {
+      body = (await Promise.race([res.json(), deadline])) as RetainResponse;
+    } catch {
+      body = null;
+    }
+    const operationId = operationIdOf(body);
+    const status = typeof body?.status === "string" ? body.status.toLowerCase() : "";
+    if (operationId || QUEUED_STATUSES.has(status)) {
+      return done("queued", { documentId, ...(operationId ? { operationId } : {}), reason: "not-confirmed" });
+    }
+    if (status && status !== "ok" && status !== "completed" && status !== "succeeded" && status !== "success") {
+      return done("error", { documentId, reason: `status-${status}` });
+    }
+    return done("ok", { documentId });
   } catch (error) {
-    return done("error", error instanceof Error ? error.name : "unknown");
+    const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
+    return done("error", { documentId, reason: aborted ? "timeout" : error instanceof Error ? error.name : "unknown" });
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

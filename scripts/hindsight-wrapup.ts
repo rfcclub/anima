@@ -3,10 +3,11 @@
  * Ingest an end-of-session wrap-up into a Hindsight bank as one `wrapup` document.
  *
  * Run: bun scripts/hindsight-wrapup.ts --bank <bank> --session <id> --file <wrapup.md>
- *   or pipe the wrap-up on stdin. Exit 1 when the wrap-up is incomplete or the write failed.
+ *   or pipe the wrap-up on stdin. Exit 0 only when the server retained the document; exit 1 when
+ *   the wrap-up is incomplete, the write failed, or the server only queued it.
  *
- * The document id comes from the session id, so running this again for the same session
- * replaces the earlier document instead of adding a second one.
+ * The document id comes from the session id, so running this again for the same session addresses
+ * the same document instead of adding a second one.
  */
 import { readFileSync } from "node:fs";
 import { retainWrapup, WRAPUP_SECTIONS } from "../src/memory/hindsight-wrapup";
@@ -27,11 +28,11 @@ if (!bank || !sessionId) {
 const file = arg("file");
 const content = file ? readFileSync(file, "utf-8") : await Bun.stdin.text();
 
-try {
-  const result = await retainWrapup({ bank, sessionId, content });
-  console.log(JSON.stringify(result));
-  if (result.outcome !== "ok") process.exitCode = 1;
-} catch (error) {
-  console.error(error instanceof Error ? error.message : "wrap-up failed");
+// retainWrapup never throws: an incomplete wrap-up or a failed write is an `error` outcome.
+const result = await retainWrapup({ bank, sessionId, content });
+console.log(JSON.stringify(result));
+if (result.outcome !== "ok") {
+  // `queued` is not retained: say so, with the operation id to check, rather than claiming a write.
+  console.error(result.reason ?? result.outcome);
   process.exitCode = 1;
 }

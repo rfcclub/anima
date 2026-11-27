@@ -293,7 +293,7 @@ Only the optional graph report remains tracked. Package installation uses Bun lo
 
 The identity-client recall hook has [bounded per-session recall deduplication](docs/recall-session-dedup.md), including its privacy limits and decision budget.
 
-A session can write its wrap-up to Hindsight as [one structured document](docs/hindsight-wrapup.md) instead of leaving the record to transcript extraction, with the comparison that decides whether transcript retention is still needed.
+A session can write its wrap-up to Hindsight as [one structured document](docs/hindsight-wrapup.md) instead of leaving the record to transcript extraction. That is the manual writer only: transcript retention is unchanged, and the 20-session comparison that decides whether it is still needed (#674) is still to gather.
 
 ### Native identity watcher integration tests
 
