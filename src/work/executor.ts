@@ -171,7 +171,7 @@ export function loopAdapter(deps: ExecutorDeps): WorkerAdapter {
 
       const workTools = createWorkTools({
         root: ws.root, tree: ws.tree, tmp: ws.tmp, home: ws.home, denyReadRoots: deps.denyReadRoots ?? [],
-        perCallMs: deps.perToolCallMs ?? 120_000, parentEnv: deps.parentEnv ?? process.env,
+        perCallMs: deps.perToolCallMs ?? 120_000, parentEnv: deps.parentEnv ?? process.env, agent: work.author,
       });
       const tools = deps.publish
         ? {
