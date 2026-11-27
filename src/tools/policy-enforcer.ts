@@ -160,7 +160,7 @@ interface ScannerSpec {
 
 const always = () => true;
 const shortFlagHas = (letters: RegExp, longs: string[]) => (flags: string[]) =>
-  flags.some((f) => (/^-[A-Za-z]+$/.test(f) && letters.test(f.slice(1))) || longs.includes(f.split("=")[0]!));
+  flags.some((f) => (/^-[A-Za-z0-9]+$/.test(f) && letters.test(f.slice(1))) || longs.includes(f.split("=")[0]!));
 
 const GREP_SPEC: ScannerSpec = {
   recursive: shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"]),
@@ -168,7 +168,7 @@ const GREP_SPEC: ScannerSpec = {
   patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
 };
 const SCANNERS: Record<string, ScannerSpec> = {
-  find: { recursive: always, valueFlags: new Set(["-f"]), findSyntax: true },
+  find: { recursive: always, valueFlags: new Set(), findSyntax: true },
   grep: GREP_SPEC,
   egrep: GREP_SPEC,
   fgrep: GREP_SPEC,
@@ -236,6 +236,8 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   if (spec.findSyntax) {
     while (i < args.length && /^-[EHLPXdsx]+$/.test(args[i]!)) flags.push(args[i++]!);
     if (args[i] === "--") i++;
+    // BSD find -f <path> names a path that may look like an option
+    while (args[i] === "-f" && i + 1 < args.length) { operands.push(args[i + 1]!); i += 2; }
     while (i < args.length && !/^[-(!]/.test(args[i]!)) operands.push(args[i++]!);
   } else {
     let endOfFlags = false;

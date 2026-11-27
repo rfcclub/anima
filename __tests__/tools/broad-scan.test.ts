@@ -52,6 +52,9 @@ describe("checkBroadScan: bash", () => {
       "echo hi >; find ~ -name x",
       "find -- ~ -name x",
       "find -L -- / -name hosts",
+      "find -f ~ -name x",
+      "ls -1R ~",
+      "ls -a1R ~/Library",
       'grep -rn ">" ~',
       "grep -rn '<<' ~",
       "find ~ -name x 2>&1 | head",
@@ -213,6 +216,10 @@ describe("redactCommand", () => {
       ["curl -H 'Cookie: sid=abc123; csrf=zzz999secret' https://example.test", "zzz999secret"],
       [`curl -d '{"password":"hunter2"}' https://example.test`, "hunter2"],
       [`curl -d '{"user":"a","api_key":"k-123456"}' https://example.test`, "k-123456"],
+      [`echo '{"token":"abc1"}' > x`, "abc1"],
+      ['curl -d "{\\"password\\":\\"abc9\\"}" https://example.test', "abc9"],
+      [`curl -d '{"pin_token":12345}' https://example.test`, "12345"],
+      [`curl -d '{"password":true}' https://example.test`, "true"],
     ];
     for (const [command, secret] of cases) {
       const out = redactCommand(command);
