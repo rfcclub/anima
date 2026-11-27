@@ -85,6 +85,7 @@ describe("checkBroadScan: bash", () => {
       "echo `true`#x; find / -name x",
       "grep -d recurse -l token ~",
       "grep --directories=recurse -l token /",
+      "grep --directories recurse token /",
       "find ${HOME:?} -name x",
       "find ${HOME:-/} -name x",
       "find -O3 / -name x",

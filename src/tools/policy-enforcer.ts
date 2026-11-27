@@ -170,7 +170,7 @@ const GREP_SPEC: ScannerSpec = {
   recursive: (flags) =>
     shortFlagHas(/[rR]/, ["--recursive", "--dereference-recursive"])(flags) ||
     flags.some((f, k) => f === "--directories=recurse" || ((f === "-d" || f === "--directories") && flags[k + 1] === "recurse") || f === "-drecurse"),
-  valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label"]),
+  valueFlags: new Set(["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir", "--label", "--directories", "--devices"]),
   patternFirst: new Set(["-e", "-f", "--regexp", "--file"]),
   attachedPatternFlags: true,
   shortValueLetters: "efmABCdD",
