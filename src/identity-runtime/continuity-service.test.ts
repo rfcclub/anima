@@ -65,7 +65,15 @@ describe("AnimaContinuityService", () => {
       message: "Review the runtime.",
     });
 
-    expect(result.projection).toEqual(projection);
+    // Every compile carries the bounded core section, exactly once, ahead of the compiled view.
+    expect(result.projection.prompt.startsWith("## Core Identity")).toBe(true);
+    expect(result.projection.prompt.split("## Core Identity").length - 1).toBe(1);
+    expect(result.projection.prompt).toContain("POST /identity-runtime/substrate-load/eli");
+    expect(result.projection).toMatchObject({
+      ...projection,
+      prompt: expect.stringContaining(projection.prompt),
+    });
+    expect(result.projection.promptStaticHash).toBe(projection.promptStaticHash);
     expect(result.grant).toMatchObject({
       grantId: "grant-1",
       identity: "eli",
