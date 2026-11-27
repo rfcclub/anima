@@ -169,6 +169,53 @@ describe("host tools", () => {
     expect(r.exitReason).toBe("max_reached");
   });
 
+  test("a progress warning reaches the next model turn before a later completed tool stops the loop", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "same" };
+    const { h, log } = host(tools);
+    let observed = 0;
+    (h as LoopHost & { observeTool: unknown }).observeTool = async () =>
+      ++observed === 1 ? { warning: "Progress guard: repeated unchanged call", stop: false } : { stop: true };
+    const p = provider([
+      { text: "first", tools: [call("a", "bash", { command: "x" })] },
+      { text: "second", tools: [call("b", "bash", { command: "x" })] },
+      { text: '<DONE reason="should not run" />' },
+    ]);
+    const r = await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, checkpoints: true, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("Progress guard: repeated unchanged call");
+    expect(r.exitReason).toBe("blocked");
+    expect(p.requests.length).toBe(2);
+    expect(log).toEqual(["begin:provider", "end:st1:completed", "begin:tool", "end:st2:completed", "begin:provider", "end:st3:completed", "begin:tool", "end:st4:completed"]);
+  });
+
+  test("same-turn repeats do not stop before the warning can reach the model", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => "same" };
+    const { h } = host(tools);
+    let observed = 0;
+    (h as LoopHost & { observeTool: unknown }).observeTool = async () =>
+      ++observed === 1 ? { warning: "Progress guard: repeated unchanged call", stop: false } : { stop: true };
+    const p = provider([
+      { text: "first", tools: [call("a", "bash", { command: "x" }), call("b", "bash", { command: "x" })] },
+      { text: '<DONE reason="ok" />' },
+    ]);
+    const r = await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, checkpoints: true, host: h });
+    expect(lastUser(p.requests[1]!)).toContain("Progress guard: repeated unchanged call");
+    expect(r.exitReason).toBe("done");
+  });
+
+  test("progress observation leaves an uncertain tool marker open", async () => {
+    const tools: LoopHostTools = { definitions, execute: async () => { throw new Error("uncertain"); } };
+    const { h, log } = host(tools);
+    const observed: boolean[] = [];
+    (h as LoopHost & { observeTool: unknown }).observeTool = async (entry: { completed: boolean }) => {
+      observed.push(entry.completed);
+      return {};
+    };
+    const p = provider([{ text: "go", tools: [call("a", "bash", { command: "x" })] }, { text: '<DONE reason="ok" />' }]);
+    await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5, host: h });
+    expect(observed).toEqual([false]);
+    expect(log).toContain("end:st2:unknown");
+  });
+
   test("without host tools no tools are offered and a response with tool calls changes nothing", async () => {
     const p = provider([{ text: '<DONE reason="ok" />', tools: [call("a", "bash", { command: "x" })] }]);
     await runLoopMode(agent(), "goal", p, manager, store, { maxIterations: 5 });

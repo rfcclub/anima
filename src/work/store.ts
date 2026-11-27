@@ -99,6 +99,18 @@ export interface WorkEvent {
   detail: unknown;
 }
 
+export type ProgressClassification = "first" | "unchanged" | "changed" | "unknown" | "stale" | "duplicate_worker";
+export interface ProgressObservation {
+  workId: string;
+  sessionId: string;
+  claimId: string;
+  generation: number;
+  signal: AbortSignal;
+  callHash: string;
+  resultHash: string | null;
+  stateHash: string | null;
+}
+
 export type StepKind = "provider" | "compaction" | "tool";
 export type StepOutcome = "in-progress" | "completed" | "unknown" | "verified";
 
@@ -352,6 +364,16 @@ export class WorkStore {
       )
     `);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_work_steps_work ON work_steps(work_id, outcome, started_at)");
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS work_progress_observations (
+        work_id TEXT NOT NULL REFERENCES works(work_id),
+        call_hash TEXT NOT NULL,
+        result_hash TEXT,
+        state_hash TEXT,
+        streak INTEGER NOT NULL,
+        PRIMARY KEY (work_id, call_hash)
+      )
+    `);
     // One stop record per session end (rfcclub/anima#238 AC-8): each tree field a value or unknown/unavailable/untrusted.
     this.db.run(`
       CREATE TABLE IF NOT EXISTS work_stops (
@@ -814,6 +836,42 @@ export class WorkStore {
 
   retryOutbox(key: string, retryAtMs: number, error: string): void {
     this.db.run("UPDATE work_outbox SET attempts = attempts + 1, retry_at = ?, last_error = ? WHERE key = ? AND status = 'pending'", [retryAtMs, error.slice(0, 300), key]);
+  }
+
+  // ---- progress observation ----------------------------------------------------
+
+  /** Compare fingerprints only for the current owner; this history is advisory, not a lease fence. */
+  observeProgress(input: ProgressObservation): { classification: ProgressClassification; streak: number } {
+    return this.db.transaction(() => {
+      const work = this.getWork(input.workId);
+      const session = this.getSession(input.sessionId);
+      if (input.signal.aborted || !work || work.state !== "running" || work.generation !== input.generation ||
+          !session || session.workId !== input.workId || session.endedAt !== null || session.generation !== input.generation) {
+        return { classification: "stale" as const, streak: 0 };
+      }
+      if (session.claimId !== input.claimId) return { classification: "duplicate_worker" as const, streak: 0 };
+      if (!input.resultHash || !input.stateHash) {
+        this.db.run(
+          "UPDATE work_progress_observations SET result_hash = NULL, state_hash = NULL, streak = 0 WHERE work_id = ? AND call_hash = ?",
+          [input.workId, input.callHash],
+        );
+        return { classification: "unknown" as const, streak: 0 };
+      }
+      const prior = this.db.query(
+        "SELECT result_hash, state_hash, streak FROM work_progress_observations WHERE work_id = ? AND call_hash = ?",
+      ).get(input.workId, input.callHash) as { result_hash: string | null; state_hash: string | null; streak: number } | null;
+      const known = prior !== null && prior.result_hash !== null && prior.state_hash !== null;
+      const same = known && prior.result_hash === input.resultHash && prior.state_hash === input.stateHash;
+      const streak = same ? Math.min(prior.streak + 1, 1_000_000) : 0;
+      this.db.run(
+        `INSERT INTO work_progress_observations (work_id, call_hash, result_hash, state_hash, streak)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (work_id, call_hash) DO UPDATE SET result_hash = excluded.result_hash,
+           state_hash = excluded.state_hash, streak = excluded.streak`,
+        [input.workId, input.callHash, input.resultHash, input.stateHash, streak],
+      );
+      return { classification: known ? (same ? "unchanged" as const : "changed" as const) : "first" as const, streak };
+    }).immediate();
   }
 
   // ---- step markers ------------------------------------------------------------

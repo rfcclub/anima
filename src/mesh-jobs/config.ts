@@ -21,6 +21,12 @@ export interface MeshJobsWorkConfig {
   provider?: string;
   model?: string;
   externalAdapter?: "off" | "low";
+  /** Observe repeated calls by default; enforcement requires explicit operator opt-in. */
+  progressGuardEnforce?: boolean;
+  /** Exact relative paths whose read calls are known polling. */
+  progressPollingReadPaths?: string[];
+  /** Exact shell command strings whose executions are known polling. */
+  progressPollingCommands?: string[];
   /**
    * When true, a work that ends at its time or session limit with an uncommitted tree is judged, committed and opened
    * as a draft pull request by the host (rfcclub/anima#305). Off unless the operator sets it.
@@ -134,7 +140,7 @@ function parseWorker(value: unknown, index: number): MeshJobsWorker {
 }
 
 const MESH_ID = /^[a-z0-9][a-z0-9_.-]*@[a-z0-9][a-z0-9_.-]*$/;
-const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
+const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "progressGuardEnforce", "progressPollingReadPaths", "progressPollingCommands", "authorActor", "authorMeshId", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
 
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const BASE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -191,6 +197,29 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
   if (externalAdapter !== "off" && externalAdapter !== "low") fail("externalAdapter");
   const hostPublish = raw.hostPublish === undefined ? false : raw.hostPublish;
   if (typeof hostPublish !== "boolean") fail("hostPublish");
+  const progressGuardEnforce = raw.progressGuardEnforce === undefined ? false : raw.progressGuardEnforce;
+  if (typeof progressGuardEnforce !== "boolean") fail("progressGuardEnforce");
+  let progressPollingReadPaths: string[] = [];
+  if (raw.progressPollingReadPaths !== undefined) {
+    if (!Array.isArray(raw.progressPollingReadPaths) || raw.progressPollingReadPaths.length > 64) fail("progressPollingReadPaths");
+    progressPollingReadPaths = (raw.progressPollingReadPaths as unknown[]).map((path) => {
+      if (typeof path !== "string" || path.length === 0 || path.length > 512 || /[\\\x00-\x1f\x7f]/.test(path) ||
+          path.startsWith("/") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+        return fail("progressPollingReadPaths");
+      }
+      return path;
+    });
+  }
+  let progressPollingCommands: string[] = [];
+  if (raw.progressPollingCommands !== undefined) {
+    if (!Array.isArray(raw.progressPollingCommands) || raw.progressPollingCommands.length > 64) fail("progressPollingCommands");
+    progressPollingCommands = (raw.progressPollingCommands as unknown[]).map((command) => {
+      if (typeof command !== "string" || command.length === 0 || command.length > 512 || /[\x00-\x1f\x7f]/.test(command)) {
+        return fail("progressPollingCommands");
+      }
+      return command;
+    });
+  }
   if (!workers.some((worker) => worker.agent === author)) fail("author");
   let provider: string | undefined;
   let model: string | undefined;
@@ -244,6 +273,7 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
 
   return {
     author, ...(provider && model ? { provider, model } : {}), ...(caps !== undefined ? { caps } : {}), externalAdapter: externalAdapter as "off" | "low", hostPublish: hostPublish as boolean,
+    progressGuardEnforce: progressGuardEnforce as boolean, progressPollingReadPaths, progressPollingCommands,
     authorActor, authorMeshId, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
     releaseBackoffMs: ms("releaseBackoffMs", 30_000, 5_000),
     reconcileIntervalMs: ms("reconcileIntervalMs", 60_000, 10_000),

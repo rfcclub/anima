@@ -112,6 +112,64 @@ function run(executor: ReturnType<typeof setup>["executor"], over: { maxIteratio
 }
 
 sbx("a session", () => {
+  test("an external adapter reports per-tool observation as unavailable", async () => {
+    const adapter = { kind: "low", run: async () => ({ stopCause: "done" as const, iterations: 0, cessation: "proven" as const }) };
+    const { executor } = setup(provider([]), { adapter });
+    const result = await run(executor);
+    expect(result.stopCause).toBe("done");
+    const events = store.listEvents(work.workId).filter((event) => event.kind === "progress-guard").map((event) => event.detail);
+    expect(events).toContainEqual({ classification: "unavailable", reason: "external_adapter" });
+  });
+
+  test("repeated real tool calls emit observe-only telemetry by default", async () => {
+    const p = provider([
+      ...Array.from({ length: 4 }, (_, index) => ({ text: "continue", tools: [call(`r${index}`, "read", { path: "README.md" })] })),
+      { text: '<DONE reason="checked" />' },
+    ]);
+    const { executor } = setup(p);
+    const result = await run(executor);
+    const events = store.listEvents(work.workId).filter((event) => event.kind === "progress-guard").map((event) => event.detail as any);
+    expect(result.stopCause).toBe("done");
+    expect(events.map((event) => event.classification)).toEqual(["first", "unchanged", "unchanged", "unchanged"]);
+    expect(events.some((event) => event.wouldAction === "warn")).toBe(true);
+    expect(events.every((event) => event.action === "none")).toBe(true);
+  });
+
+  test("enabled enforcement warns on a real provider turn before a later read stops", async () => {
+    const p = provider(Array.from({ length: 5 }, (_, index) => ({ text: "continue", tools: [call(`r${index}`, "read", { path: "README.md" })] })));
+    const { executor } = setup(p, { progressGuardEnforce: true } as unknown as Partial<ExecutorDeps>);
+    const result = await run(executor);
+    expect(result.stopCause).toBe("blocked");
+    expect(p.requests.length).toBe(4);
+    expect(p.requests[3]!.messages.some((message) => typeof message.content === "string" && message.content.includes("Progress guard"))).toBe(true);
+    expect(store.openSteps(work.workId)).toEqual([]);
+  });
+
+  test("designated real polling keeps running and records a would-be false positive", async () => {
+    const p = provider([
+      ...Array.from({ length: 4 }, (_, index) => ({ text: "poll", tools: [call(`r${index}`, "read", { path: "README.md" })] })),
+      { text: '<DONE reason="checked" />' },
+    ]);
+    const { executor } = setup(p, { progressGuardEnforce: true, progressPollingReadPaths: ["README.md"] } as unknown as Partial<ExecutorDeps>);
+    const result = await run(executor);
+    const events = store.listEvents(work.workId).filter((event) => event.kind === "progress-guard").map((event) => event.detail as any);
+    expect(result.stopCause).toBe("done");
+    expect(events.some((event) => event.classification === "polling" && event.falsePositive === true)).toBe(true);
+  });
+
+  test("a configured shell polling command continues through the real executor", async () => {
+    const command = "printf pending";
+    const p = provider([
+      ...Array.from({ length: 4 }, (_, index) => ({ text: "poll", tools: [call(`b${index}`, "bash", { command })] })),
+      { text: '<DONE reason="checked" />' },
+    ]);
+    const { executor } = setup(p, { progressGuardEnforce: true, progressPollingCommands: [command] });
+    const result = await run(executor);
+    const events = store.listEvents(work.workId).filter((event) => event.kind === "progress-guard").map((event) => event.detail as any);
+    expect(result.stopCause).toBe("done");
+    expect(events.some((event) => event.classification === "polling" && event.falsePositive === true)).toBe(true);
+  });
+
   test("the executor starts a new work from its configured fresh base", async () => {
     const remote = join(dir, "remote.git");
     const writer = join(dir, "writer");
