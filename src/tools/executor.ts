@@ -70,7 +70,7 @@ function commandTimeout(option: number | undefined): number {
   return DEFAULT_COMMAND_TIMEOUT_MS;
 }
 
-function defaultLogViolation(record: PolicyViolationRecord): void {
+export function defaultLogViolation(record: PolicyViolationRecord): void {
   console.warn(JSON.stringify(record));
 }
 
@@ -127,8 +127,13 @@ export function redactCommand(command: string): string {
   return redactSecrets(masked);
 }
 
-function defaultLogCommand(record: ToolCommandRecord): void {
+export function defaultLogCommand(record: ToolCommandRecord): void {
   console.info(JSON.stringify(record));
+}
+
+/** The log record of one bash call: the command masked and cut to MAX_LOGGED_COMMAND_CHARS. */
+export function bashCommandRecord(agent: string | undefined, cwd: string | undefined, command: string): ToolCommandRecord {
+  return { event: "tool_command", agent, tool: "bash", cwd, command: redactCommand(command).slice(0, MAX_LOGGED_COMMAND_CHARS) };
 }
 
 /** Execute a single tool call and return its string result. */
@@ -151,13 +156,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
   }
 
   if (call.name === "bash") {
-    (opts.logCommand ?? defaultLogCommand)({
-      event: "tool_command",
-      agent: agentName,
-      tool: "bash",
-      cwd,
-      command: redactCommand(String(args.command ?? "")).slice(0, MAX_LOGGED_COMMAND_CHARS),
-    });
+    (opts.logCommand ?? defaultLogCommand)(bashCommandRecord(agentName, cwd, String(args.command ?? "")));
   }
 
   // Hard rules: agent tools never reach the GitHub App keys and never scan the whole home directory,

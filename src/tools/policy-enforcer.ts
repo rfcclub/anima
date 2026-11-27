@@ -244,9 +244,9 @@ function unquote(word: string): string {
 }
 
 /** The directory a path operand walks: ~ and $HOME expanded, trailing glob segments dropped, relative words resolved against cwd. */
-function operandDir(word: string, cwd: string): string {
+function operandDir(word: string, cwd: string, shellHome: string = homeDir()): string {
   // ~, $HOME and ${HOME} with a default or check (${HOME:?}, ${HOME:-/}) all name the home directory
-  const w = unquote(word).replace(/^(?:~|\$\{HOME(?:[:%#][^}]*)?\}|\$HOME)(?=\/|$)/, homeDir());
+  const w = unquote(word).replace(/^(?:~|\$\{HOME(?:[:%#][^}]*)?\}|\$HOME)(?=\/|$)/, shellHome);
   const parts = w.split("/");
   const glob = parts.findIndex((p) => /[*?[]/.test(p));
   const kept = glob === -1 ? w : parts.slice(0, glob).join("/");
@@ -255,7 +255,7 @@ function operandDir(word: string, cwd: string): string {
 }
 
 /** The path operands of one scanner call, or the cwd when it names none. Undefined when the call is not a recursive scan. */
-function scanRoots(name: string, args: string[], cwd: string, stdinFed = false): string[] | undefined {
+function scanRoots(name: string, args: string[], cwd: string, stdinFed = false, shellHome: string = homeDir()): string[] | undefined {
   // own keys only: a word such as "constructor" must not reach Object.prototype
   const spec = Object.hasOwn(SCANNERS, name) ? SCANNERS[name] : undefined;
   if (!spec) return undefined;
@@ -322,7 +322,7 @@ function scanRoots(name: string, args: string[], cwd: string, stdinFed = false):
   const paths = [...flagPaths, ...(spec.patternFirst && !patternSupplied ? operands.slice(1) : operands)];
   // rg and ag with no path operand read piped input (xargs supplies paths) instead of walking the cwd
   if (paths.length === 0 && stdinFed && spec.readsPipedInput) return undefined;
-  return (paths.length ? paths : ["."]).flatMap((p) => expandBraces(p)).map((p) => operandDir(p, cwd));
+  return (paths.length ? paths : ["."]).flatMap((p) => expandBraces(p)).map((p) => operandDir(p, cwd, shellHome));
 }
 
 type ShellToken = { kind: "word"; text: string } | { kind: "sep"; text: string };
@@ -469,9 +469,17 @@ function shellTokens(command: string): ShellToken[] {
  *  (cd between segments is tracked), not a sandbox: shell indirection is out of scope (bash -c / sh -c / eval
  *  strings, variables other than HOME, aliases and functions; heredoc bodies are skipped as data). The target is the refused
  *  directory, never the command, so a refusal record carries no command text. */
-export function checkBroadScan(input: { tool: string; args: Record<string, unknown>; cwd?: string }): PolicyDecision {
+export function checkBroadScan(input: {
+  tool: string;
+  args: Record<string, unknown>;
+  cwd?: string;
+  /** The HOME the command runs with, when it is not the owner's (a work session's own home): ~, $HOME and a bare
+   *  cd resolve to it. The broad roots stay the owner's home, the filesystem root and Library. */
+  shellHome?: string;
+}): PolicyDecision {
   const { tool, args } = input;
   const startCwd = input.cwd ?? process.cwd();
+  const shellHome = input.shellHome ?? homeDir();
   if (tool === "bash") {
     let cwd = startCwd;
     // A cd inside a subshell or command substitution only moves the cwd until it closes.
@@ -489,15 +497,15 @@ export function checkBroadScan(input: { tool: string; args: Record<string, unkno
         while (segment[k] !== undefined && /^-[LPe@]+$|^--$/.test(segment[k]!)) k++;
         const dest = segment[k];
         // bare cd goes home; bare pushd swaps the stack top, and -N/+N pick a stack entry: unknown, so keep the cwd
-        if (dest === undefined) { if (segment[i] === "cd") cwd = homeDir(); }
-        else if (dest !== "-" && !/^[-+]\d+$/.test(dest)) cwd = operandDir(dest, cwd);
+        if (dest === undefined) { if (segment[i] === "cd") cwd = shellHome; }
+        else if (dest !== "-" && !/^[-+]\d+$/.test(dest)) cwd = operandDir(dest, cwd, shellHome);
         return undefined;
       }
       // Any word naming a scanner starts a scan, wherever it sits (after sudo, env -i, xargs -P 4, then, ...).
       // A bare scanner name used as plain text (echo find ~) is refused too; the message says what to do instead.
       for (let j = 0; j < segment.length; j++) {
         const name = segment[j]!.split("/").pop() ?? "";
-        const roots = scanRoots(name, segment.slice(j + 1), cwd, piped || segment[j - 1] === "xargs");
+        const roots = scanRoots(name, segment.slice(j + 1), cwd, piped || segment[j - 1] === "xargs", shellHome);
         const broad = roots?.find((r) => isBroadScanRoot(r));
         if (broad !== undefined) {
           return { allowed: false, rule: "broad-scan", reason: `${name} scans ${broad}, which reaches the home directory, the filesystem root or Library; scan a project directory instead`, target: broad };

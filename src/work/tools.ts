@@ -8,6 +8,8 @@
 import { lstatSync } from "node:fs";
 import type { LoopHostTools } from "../agents/loop";
 import type { ProviderToolCall, ProviderToolDefinition } from "../providers/interface";
+import { bashCommandRecord, defaultLogCommand, defaultLogViolation, type PolicyViolationRecord, type ToolCommandRecord } from "../tools/executor";
+import { checkBroadScan } from "../tools/policy-enforcer";
 import { sandboxCommand, sanitizedEnv, SANDBOX_BINARY } from "./sandbox";
 import { spawnSession, sweepRoot, type SessionHandle, type StopResult } from "./supervisor";
 
@@ -24,6 +26,12 @@ export interface WorkToolsInput {
   binary?: string;
   /** Characters of output kept per call. Default 60,000. */
   maxOutput?: number;
+  /** The work's author, named in the command log and in a refusal. */
+  agent?: string;
+  /** Receives one record per bash call. Defaults to a JSON line on console.info, as in executeTool. */
+  logCommand?: (record: ToolCommandRecord) => void;
+  /** Receives a refused bash call. Defaults to a JSON line on console.warn, as in executeTool. */
+  logViolation?: (record: PolicyViolationRecord) => void;
 }
 
 export interface WorkTools extends LoopHostTools {
@@ -141,6 +149,16 @@ export function createWorkTools(input: WorkToolsInput): WorkTools {
         case "bash": {
           const command = str("command");
           if (command === null) return "Error: bash needs a command (string)";
+          (input.logCommand ?? defaultLogCommand)(bashCommandRecord(input.agent, input.tree, command));
+          // The sandbox confines writes, not reads: a scan of / or the owner's Library still makes macOS ask the
+          // owner for access on behalf of the server. ~ here is the session's own home, so it is not a broad root.
+          const scan = checkBroadScan({ tool: "bash", args: { command }, cwd: input.tree, shellHome: input.home });
+          if (!scan.allowed) {
+            (input.logViolation ?? defaultLogViolation)({
+              event: "policy_violation", agent: input.agent, tool: "bash", target: scan.target, rule: scan.rule, reason: scan.reason, mode: "block",
+            });
+            return `Error: policy violation (${scan.rule}): ${scan.reason}`;
+          }
           return describe(await run(["bash", "-c", command], { signal }));
         }
         case "read": {
