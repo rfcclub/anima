@@ -284,15 +284,47 @@ describe("retainWrapup: an unconfirmed or unreadable body is never `ok`", () => 
     expect(result.documentId).toBe("wrapup-s");
   });
 
-  test("a legacy body carrying `status: \"ok\"` still counts as retained", async () => {
-    const result = await retainWrapup({
+  test("a body naming `status: \"ok\"` but counting no item is an error, not retained", async () => {
+    // Reproduced at the previous head: `{"status":"ok"}` came back `ok`, although a stored
+    // wrap-up must be counted (`items_count` >= 1). A status alone proves the request was
+    // answered, not that a document exists, so a status-only body is never counted as retained.
+    const statusOnly = await retainWrapup({
       bank: "b",
       sessionId: "s",
       content: complete,
       configPath: configFile(),
       fetchFn: (async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as unknown as typeof fetch,
     });
-    expect(result.outcome).toBe("ok");
+    expect(statusOnly.outcome).toBe("error");
+    expect(statusOnly.outcome).not.toBe("ok");
+    expect(statusOnly.reason).toBe("no-item-count");
+    expect(statusOnly.documentId).toBe("wrapup-s");
+
+    // `{"status":"completed","items_count":0}` says the work completed and stored nothing.
+    const completedEmpty = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ status: "completed", items_count: 0 }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(completedEmpty.outcome).toBe("error");
+    expect(completedEmpty.reason).toBe("no-items");
+  });
+
+  test("a body naming a success status and one stored item is retained", async () => {
+    for (const status of ["ok", "completed", "succeeded", "success"]) {
+      const result = await retainWrapup({
+        bank: "b",
+        sessionId: "s",
+        content: complete,
+        configPath: configFile(),
+        fetchFn: (async () =>
+          new Response(JSON.stringify({ status, items_count: 1 }), { status: 200 })) as unknown as typeof fetch,
+      });
+      expect(result.outcome).toBe("ok");
+    }
   });
 
   test("a body that says success: false or stored no item is not retained", async () => {
@@ -406,5 +438,58 @@ describe("retainWrapup: `ok` needs a counted item", () => {
     expect(result.outcome).toBe("queued");
     expect(result.outcome).not.toBe("ok");
     expect(result.documentId).toBe("wrapup-s");
+  });
+});
+
+describe("retainWrapup: a terminal failure is an error even when an operation id is present", () => {
+  test("a failed status with an operation id is an error, not queued", async () => {
+    // Reproduced at the previous head: `{"status":"failed","operation_id":"op-1"}` was reported
+    // as `queued` because the queue branch ran before the failure checks, so a write that had
+    // already failed was recorded as pending-with-operation in the sample table.
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ status: "failed", operation_id: "op-1" }), { status: 200 })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.outcome).not.toBe("queued");
+    expect(result.reason).toBe("status-failed");
+    expect(result.operationId).toBeUndefined();
+  });
+
+  test("`success: false` with an operation id is an error, not queued", async () => {
+    const result = await retainWrapup({
+      bank: "b",
+      sessionId: "s",
+      content: complete,
+      configPath: configFile(),
+      fetchFn: (async () =>
+        new Response(JSON.stringify({ success: false, operation_id: "op-2", items_count: 0 }), {
+          status: 200,
+        })) as unknown as typeof fetch,
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.outcome).not.toBe("queued");
+    expect(result.reason).toBe("success-false");
+  });
+
+  test("every terminal failure status is an error before it can look queued", async () => {
+    for (const status of ["failed", "error", "cancelled", "canceled", "aborted", "rejected"]) {
+      const result = await retainWrapup({
+        bank: "b",
+        sessionId: "s",
+        content: complete,
+        configPath: configFile(),
+        fetchFn: (async () =>
+          new Response(JSON.stringify({ status, operation_id: "op-x", items_count: 0 }), {
+            status: 200,
+          })) as unknown as typeof fetch,
+      });
+      expect(result.outcome).toBe("error");
+      expect(result.reason).toBe(`status-${status}`);
+    }
   });
 });

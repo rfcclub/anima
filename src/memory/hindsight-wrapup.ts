@@ -153,6 +153,12 @@ interface RetainResponse {
 
 const QUEUED_STATUSES = new Set(["queued", "pending", "processing", "in_progress", "in-progress", "running"]);
 
+/** Statuses that say the write will not happen; they are failures even when an operation is named. */
+const TERMINAL_FAILURE_STATUSES = new Set(["failed", "failure", "error", "cancelled", "canceled", "aborted", "rejected"]);
+
+/** Statuses that say the server processed the write in this request. */
+const SUCCESS_STATUSES = new Set(["ok", "completed", "succeeded", "success"]);
+
 /** Read the operation id out of a retain response; "" when it answered synchronously. */
 function operationIdOf(body: RetainResponse | null): string {
   const raw = body?.operation_id ?? body?.operationId;
@@ -259,9 +265,14 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
 
     const operationId = operationIdOf(body);
     const status = typeof body?.status === "string" ? body.status.toLowerCase() : "";
-    // A 202 is the server saying "accepted, not done", whatever its body holds (including none):
-    // that is `queued`, never `ok`. So is any body that names an operation, a pending status or
-    // `async: true` — the server took the work and did not report it done, and `success: true`
+    // A terminal failure is checked first. A failed write can still name the operation it was
+    // scheduled under, and reading the operation id as "accepted, not done" would report a write
+    // that already failed as pending — and the sample table would record it as queued-with-operation.
+    if (TERMINAL_FAILURE_STATUSES.has(status)) return done("error", { documentId, reason: `status-${status}` });
+    if (body?.success === false) return done("error", { documentId, reason: "success-false" });
+    // Only now: a 202 is the server saying "accepted, not done", whatever its body holds (including
+    // none): that is `queued`, never `ok`. So is any body that names an operation, a pending status
+    // or `async: true` — the server took the work and did not report it done, and `success: true`
     // alongside it says only that the request was accepted, not that an item was stored.
     if (res.status === 202 || operationId || QUEUED_STATUSES.has(status) || body?.async === true) {
       return done("queued", { documentId, ...(operationId ? { operationId } : {}), reason: "not-confirmed" });
@@ -269,22 +280,16 @@ export async function retainWrapup(options: RetainWrapupOptions): Promise<Retain
     // Without a readable body carrying a status there is no evidence the document was processed,
     // so it is not counted as retained.
     if (!body) return done("error", { documentId, reason: bodyError ?? "unreadable-body" });
-    if (status && status !== "ok" && status !== "completed" && status !== "succeeded" && status !== "success") {
-      return done("error", { documentId, reason: `status-${status}` });
-    }
-    // Hindsight 1.2.0 answers a synchronous retain with
-    // `{"success":true,"bank_id":…,"items_count":1,"async":false,"operation_id":null}`: no
-    // `status` at all. That body names the item it stored, so it is `ok`. Without a numeric
-    // `items_count` of at least one there is no evidence anything was stored: `{"success":true}`
-    // alone says the request succeeded, not that the document exists, so it is `error`.
-    if (body.success === true) {
-      const stored = typeof body.items_count === "number" ? body.items_count : Number.NaN;
-      if (!Number.isFinite(stored)) return done("error", { documentId, reason: "no-item-count" });
-      if (stored < 1) return done("error", { documentId, reason: "no-items" });
-      return done("ok", { documentId });
-    }
-    if (body.success === false) return done("error", { documentId, reason: "success-false" });
-    if (!status) return done("error", { documentId, reason: "unconfirmed" });
+    if (status && !SUCCESS_STATUSES.has(status)) return done("error", { documentId, reason: `status-${status}` });
+    if (!status && body.success !== true) return done("error", { documentId, reason: "unconfirmed" });
+    // `ok` needs a counted item, whichever shape the body has: Hindsight 1.2.0 answers a
+    // synchronous retain with `{"success":true,"bank_id":…,"items_count":1,"async":false,
+    // "operation_id":null}` and no `status` at all, and a status-only body such as
+    // `{"status":"ok"}` proves the request was answered, not that a document exists. Without a
+    // numeric `items_count` of at least one there is no evidence anything was stored.
+    const stored = typeof body.items_count === "number" ? body.items_count : Number.NaN;
+    if (!Number.isFinite(stored)) return done("error", { documentId, reason: "no-item-count" });
+    if (stored < 1) return done("error", { documentId, reason: "no-items" });
     return done("ok", { documentId });
   } catch (error) {
     const aborted = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");

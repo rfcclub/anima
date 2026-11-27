@@ -81,21 +81,29 @@ The retain requests completion (`async: false`) and the call is bounded by a fin
 
 | Outcome | Meaning |
 |---------|---------|
-| `ok` | the server answered the retain itself: the document was processed |
-| `queued` | the server accepted the write and returned an operation id: the document is **not** yet known to exist, so it must not be counted until that operation reports success |
-| `error` | an incomplete wrap-up, a missing config, a non-2xx status, an absent or unreadable body (`reason: "unreadable-body"`), a body that states no status and no success (`reason: "unconfirmed"`), `success: false` (`reason: "success-false"`), `success: true` with no numeric `items_count` (`reason: "no-item-count"`), `success: true` that stored no item (`reason: "no-items"`), a stalled request (`reason: "timeout"`) or a connection failure |
+| `ok` | the server answered the retain itself and counted a stored item (`items_count` >= 1); a status alone is not enough |
+| `queued` | after the failure checks: the server accepted the write without confirming it (a 202, an operation id, a pending status, `async: true`), so the document is **not** yet known to exist and must not be counted until that operation reports success |
+| `error` | an incomplete wrap-up, a missing config, a non-2xx status, an absent or unreadable body (`reason: "unreadable-body"`), a body that states no status and no success (`reason: "unconfirmed"`), a failure status or `success: false` even when an `operation_id` is present (`reason: "status-failed"` / `"success-false"`), a body with no numeric `items_count` (`reason: "no-item-count"`), or one that stored no item (`reason: "no-items"`), a stalled request (`reason: "timeout"`) or a connection failure |
 
-A 202, any response carrying `operation_id`, any pending `status`, and any body with `async: true` is
-`queued` — with the operation id when there is one — never `ok`. `{"success":true,"async":true,
+A terminal failure is decided **before** the queue branch: `{"status":"failed","operation_id":"op-1"}` and
+`{"success":false,"operation_id":"op-2"}` name the operation they failed under, and reading that id as
+"accepted, not done" would record a write that already failed as pending-with-operation. A failure
+`status` (`failed`, `failure`, `error`, `cancelled`, `canceled`, `aborted`, `rejected`) or
+`success: false` is therefore `error`, and the operation id is not reported.
+
+After that, a 202, any remaining response carrying `operation_id`, any pending `status`, and any body
+with `async: true` is `queued` — with the operation id when there is one — never `ok`. `{"success":true,"async":true,
 "operation_id":null}` is the shape a live bank returned for an accepted-but-not-processed write: the
 server took the work and did not report it done, and the `success` alongside it says only that the
 request was accepted.
 
 Hindsight 1.2.0 answers a synchronous retain with no `status` at all:
 `{"success":true,"bank_id":…,"items_count":1,"async":false,"operation_id":null}`. That is the body the
-live server returns for a stored document, so `success: true` with a numeric `items_count` of at least
-one is `ok`. `success: true` alone, or with `items_count: null`, says nothing about what was stored, so
-it is **not** `ok`: a wrap-up that may not exist must not be counted as retained. A body that cannot be
+live server returns for a stored document. `ok` needs a numeric `items_count` of at least one
+**whichever shape the body has** — with or without a `status`: `{"status":"ok"}` and
+`{"status":"completed","items_count":0}` are `error` (`reason: "no-item-count"` / `"no-items"`), because
+a status says the request was answered, not that a document exists. `success: true` alone, or with
+`items_count: null`, is `error` too: a wrap-up that may not exist must not be counted as retained. A body that cannot be
 read (empty, non-JSON, or stalled past the deadline), or that says neither `status` nor `success`, is
 `error` too. The CLI exits 0 only on `ok`, and prints the reason otherwise.
 
