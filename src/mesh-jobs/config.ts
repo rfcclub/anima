@@ -40,6 +40,8 @@ export interface MeshJobsWorkConfig {
    * the model and the limits above. Absent or empty: `author` alone carries every work, as before.
    */
   extraAuthors?: WorkExtraAuthor[];
+  /** Model answering a turn when the work's own provider is rate limited, out of quota, failing or timing out. */
+  fallback?: { provider: string; model: string };
   /** Maximum simultaneous works in this runtime. Defaults to the number of authors. */
   maxConcurrentWorks?: number;
   /** The presence agent whose mesh identity enqueues and confirms review and revise jobs. */
@@ -145,7 +147,7 @@ function parseWorker(value: unknown, index: number): MeshJobsWorker {
 }
 
 const MESH_ID = /^[a-z0-9][a-z0-9_.-]*@[a-z0-9][a-z0-9_.-]*$/;
-const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "extraAuthors", "maxConcurrentWorks", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
+const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "extraAuthors", "maxConcurrentWorks", "fallback", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
 
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const BASE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -255,6 +257,13 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
   const repoBases = raw.repoBases === undefined ? undefined : parseRepoBases(raw.repoBases);
 
   const extraAuthors = parseExtraAuthors(raw.extraAuthors, workers, author, authorMeshId, raw.reviewers);
+  let fallback: { provider: string; model: string } | undefined;
+  if (raw.fallback !== undefined) {
+    const f = raw.fallback as Record<string, unknown>;
+    if (typeof f !== "object" || f === null || Array.isArray(f) || Object.keys(f).some((k) => k !== "provider" && k !== "model")) fail("fallback");
+    if (typeof f.provider !== "string" || !f.provider.trim() || typeof f.model !== "string" || !f.model.trim()) fail("fallback");
+    fallback = { provider: f.provider as string, model: f.model as string };
+  }
   const maxConcurrentWorks = raw.maxConcurrentWorks === undefined ? 1 + extraAuthors.length : raw.maxConcurrentWorks;
   if (typeof maxConcurrentWorks !== "number" || !Number.isSafeInteger(maxConcurrentWorks) || maxConcurrentWorks < 1) {
     fail("maxConcurrentWorks");
@@ -289,7 +298,7 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
   if (!(cloneUrl.startsWith("https://") || localPath) || !cloneUrl.includes("{repo}")) fail("cloneUrl");
 
   return {
-    author, ...(provider && model ? { provider, model } : {}), ...(caps !== undefined ? { caps } : {}), externalAdapter: externalAdapter as "off" | "low", hostPublish: hostPublish as boolean,
+    author, ...(provider && model ? { provider, model } : {}), ...(fallback ? { fallback } : {}), ...(caps !== undefined ? { caps } : {}), externalAdapter: externalAdapter as "off" | "low", hostPublish: hostPublish as boolean,
     authorActor, authorMeshId, extraAuthors, maxConcurrentWorks: maxConcurrentWorks as number, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
     releaseBackoffMs: ms("releaseBackoffMs", 30_000, 5_000),
     reconcileIntervalMs: ms("reconcileIntervalMs", 60_000, 10_000),

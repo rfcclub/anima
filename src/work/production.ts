@@ -33,6 +33,7 @@ import { WorkStore } from "./store";
 import { readRecoveryTreeGit, readTreeGit } from "./workspace";
 import { buildWorkOrder } from "./work-order";
 import { handoffFileName, readHandoffNote } from "./handoff-note";
+import { withFallback } from "./provider-fallback";
 import type { StopRecord, WorkRecord } from "./store";
 
 export interface ProductionWorkInput {
@@ -191,7 +192,11 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
   const adapter = selectWorkAdapter(config.externalAdapter, () => createLowAdapter({
     store,
     runner: createContainerRunner(),
-    createProvider: (work) => createProviderForType({ type: work.provider, model: work.model } as never),
+    createProvider: async (work) => withFallback(
+      await createProviderForType({ type: work.provider, model: work.model } as never),
+      config.fallback ? await createProviderForType({ type: config.fallback.provider, model: config.fallback.model } as never) : undefined,
+      (error) => log("info", "work provider fell back", { workId: work.workId, from: work.provider, to: config.fallback?.provider, code: error.code }),
+    ),
     treeGit: gitInTree,
     log: (message) => log("info", message),
     author: (work) => ({ name: work.author, email: `${work.author}@users.noreply.github.com` }),
@@ -212,8 +217,12 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
 
   const executor = createSessionExecutor({
     store, sessionStore, sessionManager, log,
-    // exactly the pinned provider and model: no router fallback chain
-    createProvider: (work) => createProviderForType({ type: work.provider, model: work.model } as never),
+    // the pinned provider and model; only the configured work fallback answers a turn it cannot (rate limit, quota, server error, timeout)
+    createProvider: async (work) => withFallback(
+      await createProviderForType({ type: work.provider, model: work.model } as never),
+      config.fallback ? await createProviderForType({ type: config.fallback.provider, model: config.fallback.model } as never) : undefined,
+      (error) => log("info", "work provider fell back", { workId: work.workId, from: work.provider, to: config.fallback?.provider, code: error.code }),
+    ),
     loadIdentity: (name) => loader.loadIdentity(name),
     issue: (work) => github.issue(work.repo, work.issue),
     reviewFeedback: reviewFeedback(workGithub, config, store),

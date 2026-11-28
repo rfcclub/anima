@@ -130,6 +130,37 @@ describe("loadMeshJobsConfig", () => {
     });
   });
 
+  describe("work.fallback", () => {
+    const work = (extra: Record<string, unknown> = {}) => valid({
+      workers: [{ agent: "finn" }],
+      work: {
+        enabled: true, author: "finn", authorActor: "finn-gotako[bot]", authorMeshId: "finn@anima", enqueuer: "finn",
+        base: "master", reviewers: [{ agent: "cleo", meshId: "cleo@anima", login: "cleo-gotako[bot]" }],
+        provider: "kourier", model: "deepseek-v4.1-flash", ...extra,
+      },
+    });
+
+    test("absent means no fallback", () => {
+      write(work());
+      expect(loadMeshJobsConfig(path)!.work!.fallback).toBeUndefined();
+    });
+
+    test("a provider and model are kept", () => {
+      write(work({ fallback: { provider: "stepfun", model: "step-3.7-flash" } }));
+      expect(loadMeshJobsConfig(path)!.work!.fallback).toEqual({ provider: "stepfun", model: "step-3.7-flash" });
+    });
+
+    test.each([
+      ["a string", "stepfun"],
+      ["a missing model", { provider: "stepfun" }],
+      ["an empty provider", { provider: "", model: "m" }],
+      ["an unknown field", { provider: "stepfun", model: "m", key: "x" }],
+    ])("%s is rejected", (_name, value) => {
+      write(work({ fallback: value }));
+      expect(errorOf(() => loadMeshJobsConfig(path))).toMatch(/invalid work\.fallback/);
+    });
+  });
+
   describe("work.extraAuthors", () => {
     const work = (extra: Record<string, unknown> = {}) => valid({
       workers: [{ agent: "finn" }, { agent: "jade" }, { agent: "cleo" }, { agent: "kai" }],
