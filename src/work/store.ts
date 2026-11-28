@@ -536,7 +536,9 @@ export class WorkStore {
       const open = (this.db.query("SELECT * FROM work_sessions WHERE ended_at IS NULL ORDER BY started_at").all() as Row[]).map(toSession);
       for (const s of open) {
         const w = this.mustGet(s.workId);
-        const chargedMs = s.deadlineMs + s.graceMs;
+        // The handoff grace runs only after the working deadline, so a session that crashed before it is charged the deadline alone.
+        const elapsedMs = this.now() - Date.parse(s.startedAt);
+        const chargedMs = s.deadlineMs + (elapsedMs > s.deadlineMs ? s.graceMs : 0);
         this.db.run(
           "UPDATE work_sessions SET ended_at = ?, stop_cause = 'unknown', iterations = ?, exec_ms = ?, ended_unknown = 1 WHERE session_id = ?",
           [this.stamp(), w.caps.maxIterationsPerSession, chargedMs, s.sessionId],

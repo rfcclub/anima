@@ -136,6 +136,21 @@ describe("the loop's handoff task", () => {
     expect(result.checkpoint?.remaining).toBe("next: fix handoff-runner.ts:42");
   });
 
+  test("a LOOP reason given before the handoff survives a handoff that ends with DONE or a usable note", async () => {
+    for (const ending of ["done", "note"] as const) {
+      const seen: Seen[] = [];
+      const writes: string[] = [];
+      const result = await run(
+        provider((n) => (n === 0
+          ? { content: '<LOOP reason="next: wire the retry" />', calls: [call("bash")] }
+          : ending === "done" ? { content: '<DONE reason="handoff written" />' } : { content: "note", calls: [call("write", { content: "Done: x" })] }), seen),
+        { checkpoints: true, handoff: { due: () => seen.length >= 1, turns: 3, prompt: "HANDOFF-TASK", tools: handoffTools(writes), check: () => (ending === "note" && writes.length ? null : "missing") } },
+      );
+      expect(result.exitReason).toBe("deadline");
+      expect(result.checkpoint?.remaining).toBe("next: wire the retry");
+    }
+  });
+
   test("without a handoff option the limit ends the run as before", async () => {
     const result = await run(provider(() => ({ content: "x", calls: [call("bash")] }), []), { maxIterations: 2 });
     expect(result.exitReason).toBe("max_reached");

@@ -21,14 +21,18 @@ test("a note with content is usable", () => {
   expect(inspectHandoffNote(root, "s1")).toEqual({ text: "Done: x" });
 });
 
-test("crash recovery charges the working deadline plus the handoff grace", () => {
-  const store = WorkStore.open(":memory:", { rootBase: root });
-  try {
-    const work = store.createWork({ repo: "example/repo", issue: 1, approvedDigest: "a".repeat(12), config: loadWorkConfig({ caps: { sessionWallMs: 1000 } }) }).work;
-    const reserved = store.reserveSession(work.workId, { jobId: "j", claimId: "c" }, "loop", 500);
-    if (!reserved.ok) throw new Error(reserved.reason);
-    store.recoverOpenSessions();
-    expect(store.getWork(work.workId)!.execMsUsed).toBe(1500);
-    expect(store.getSession(reserved.session.sessionId)!.execMs).toBe(1500);
-  } finally { store.close(); }
+test("crash recovery adds the handoff grace only for a session that outlived its working deadline", () => {
+  for (const [elapsed, charged] of [[400, 1000], [1200, 1500]] as const) {
+    let clock = 1_000_000;
+    const store = WorkStore.open(":memory:", { rootBase: root, now: () => clock });
+    try {
+      const work = store.createWork({ repo: "example/repo", issue: 1, approvedDigest: "a".repeat(12), config: loadWorkConfig({ caps: { sessionWallMs: 1000 } }) }).work;
+      const reserved = store.reserveSession(work.workId, { jobId: "j", claimId: "c" }, "loop", 500);
+      if (!reserved.ok) throw new Error(reserved.reason);
+      clock += elapsed;
+      store.recoverOpenSessions();
+      expect(store.getWork(work.workId)!.execMsUsed).toBe(charged);
+      expect(store.getSession(reserved.session.sessionId)!.execMs).toBe(charged);
+    } finally { store.close(); }
+  }
 });

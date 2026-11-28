@@ -328,7 +328,9 @@ function handoffTools(work: { definitions: ProviderToolDefinition[]; execute: Lo
         return "Error: invalid arguments for write: expected a JSON object";
       }
       if (typeof args.path !== "string" || resolve(tree, args.path) !== note) return `Error: the handoff note goes to ${shown} only`;
-      return work.execute({ ...call, arguments: JSON.stringify({ path: note, content: args.content }) }, signal);
+      const result = await work.execute({ ...call, arguments: JSON.stringify({ path: note, content: args.content }) }, signal);
+      // The model only ever sees the relative path: the absolute work root stays on the host.
+      return result.split(note).join(shown);
     },
   };
 }

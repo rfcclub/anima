@@ -696,6 +696,27 @@ sbx("loop handoff integration", () => {
     expect(readFileSync(join(store.getWork(work.workId)!.root, "tmp", `AGENT_HANDOFF_${session.sessionId}.md`), "utf8")).toBe("Done: nothing. Next: start.");
   });
 
+  test("the handoff never shows the model an absolute host path, in tool definitions or tool results", async () => {
+    const p = provider([
+      { text: "working" },
+      async (request) => {
+        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0]!;
+        return { text: "blank first", tools: [call("w1", "write", { path: `../tmp/${name}`, content: "   " })] };
+      },
+      async (request) => {
+        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0]!;
+        return { text: "now real", tools: [call("w2", "write", { path: `../tmp/${name}`, content: "Done: x. Next: y." })] };
+      },
+    ]);
+    const { executor } = setup(p, { handoffTurns: 10, now: () => 1_000 + (p.requests.length >= 1 ? 10_000_000 : 0) });
+    const r = await run(executor, { maxIterations: 50 });
+    expect(r.stopCause).toBe("deadline");
+    const root = store.getWork(work.workId)!.root;
+    const modelVisible = JSON.stringify(p.requests.slice(1).map((req) => ({ messages: req.messages, tools: req.tools })));
+    expect(modelVisible).not.toContain(root);
+    expect(JSON.stringify(p.requests[2]!.messages.at(-1))).toContain("../tmp/AGENT_HANDOFF_");
+  });
+
   test.each(["deadline", "max_reached"] as const)("work runtime releases a loop at %s and its next real executor receives the covered note", async (cause) => {
     const issueBody = "A task to continue.";
     const digest = issueDigest12(issueBody);
