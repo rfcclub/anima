@@ -97,6 +97,8 @@ function setup(p: Provider, over: Partial<ExecutorDeps> = {}) {
     publish: async (_w, args) => { published.push(args); return `ok ${String(args.action)}`; },
     perToolCallMs: 10_000,
     parentEnv: { PATH: process.env.PATH },
+    // The handoff task has its own tests (handoff-phase.test.ts and the integration tests below).
+    handoffTurns: 0,
     ...over,
   });
   return { executor, created, published };
@@ -526,10 +528,8 @@ sbx("a loop session near its deadline (wind-down)", () => {
     const { executor } = setup(p, { now: () => 1_000 + p.requests.length * 10_000_000 });
     await run(executor, { maxIterations: 50 });
     const prompt = messagesOf(p, 1);
-    const session = store.listSessions(work.workId)[0]!;
-    expect(prompt).toContain(`AGENT_HANDOFF_${session.sessionId}.md`);
-    expect(prompt).toMatch(/5.{0,4}10 turns/i);
-    expect(prompt).toMatch(/another (worker|agent)/i);
+    expect(prompt).toMatch(/keep working/i);
+    expect(prompt).toMatch(/separate turns to write the handoff note/i);
     expect(prompt).not.toMatch(/stop starting new work|write now|immediately/i);
   });
 
@@ -545,9 +545,8 @@ sbx("a loop session near its deadline (wind-down)", () => {
     const p = provider([{ text: '<DONE reason="stopped" />' }]);
     const { executor } = setup(p, { now: () => 1_000 });
     await run(executor, { maxIterations: 1 });
-    const session = store.listSessions(work.workId)[0]!;
-    expect(messagesOf(p, 0)).toContain(`AGENT_HANDOFF_${session.sessionId}.md`);
-    expect(messagesOf(p, 0)).toMatch(/5.{0,4}10 turns/i);
+    expect(messagesOf(p, 0)).toMatch(/iteration limit/i);
+    expect(messagesOf(p, 0)).toMatch(/separate turns to write the handoff note/i);
   });
 
   test("counts workspace preparation against the deadline reminder", async () => {
@@ -569,7 +568,7 @@ sbx("a loop session near its deadline (wind-down)", () => {
     await run(executor, { maxIterations: 12 });
     expect(messagesOf(p, 1)).not.toMatch(/handoff/i);
     expect(messagesOf(p, 2)).toMatch(/handoff/i);
-    expect(messagesOf(p, 2)).toMatch(/5.{0,4}10 turns/i);
+    expect(messagesOf(p, 2)).toMatch(/separate turns/i);
   });
 
   test("reminds when cumulative execution crosses an hour across sessions", async () => {
@@ -581,12 +580,9 @@ sbx("a loop session near its deadline (wind-down)", () => {
     const p = provider([{ text: "working on it" }, { text: "still working" }, { text: '<DONE reason="stopped" />' }]);
     const { executor } = setup(p, { now: () => 1_000 + p.requests.length * 20_000 });
     await run(executor, { maxIterations: 50 });
-    expect(messagesOf(p, 0)).not.toMatch(/handoff/i);
-    expect(messagesOf(p, 1)).toMatch(/handoff/i);
-    expect(messagesOf(p, 1)).toMatch(/5.{0,4}10 turns/i);
+    expect(messagesOf(p, 0)).not.toMatch(/hour of work/i);
+    expect(messagesOf(p, 1)).toMatch(/hour of work/i);
     expect(messagesOf(p, 1)).toMatch(/commit your progress/i);
-    const session = store.listSessions(work.workId).at(-1)!;
-    expect(messagesOf(p, 1)).toContain(`AGENT_HANDOFF_${session.sessionId}.md`);
     expect(messagesOf(p, 2).match(/About an hour of work has passed/g)).toHaveLength(1);
   });
 
@@ -604,7 +600,7 @@ sbx("a loop session near its deadline (wind-down)", () => {
     const { executor } = setup(p, { now: () => 1_000 });
     await run(executor, { maxIterations: 50 });
     expect(messagesOf(p, 0)).toMatch(/hour of work/i);
-    expect(messagesOf(p, 0)).toMatch(/handoff/i);
+    expect(messagesOf(p, 0)).toMatch(/commit your progress/i);
   });
 
   test("does not read a handoff after the session generation changes", async () => {
@@ -642,17 +638,18 @@ sbx("loop handoff integration", () => {
     const config = loadWorkConfig({ caps: { maxSessions: 1, maxIterationsPerSession: 2 } });
     work = store.createWork({ repo: "example/repo", issue: 9, approvedDigest: digest, config }).work;
     const p = provider([
+      { text: "committing", tools: [
+        call("commit", "bash", { command: "printf 'done\\n' > progress.txt && git add progress.txt && git -c user.name=Test -c user.email=test@example.com commit -qm progress" }),
+      ] },
+      { text: "continuing" },
+      // the iteration limit is reached: the handoff turn asks for the note, and only the note
       async (request) => {
         const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0];
         if (!name) return { text: "no handoff instruction" };
-        return { text: "saving progress", tools: [
-          call("save-note", "write", { path: `../tmp/${name}`, content: "Done: implementation. Next: review." }),
-          call("commit", "bash", { command: "printf 'done\\n' > progress.txt && git add progress.txt && git -c user.name=Test -c user.email=test@example.com commit -qm progress" }),
-        ] };
+        return { text: "saving progress", tools: [call("save-note", "write", { path: `../tmp/${name}`, content: "Done: implementation. Next: review." })] };
       },
-      { text: "continuing" },
     ]);
-    const { executor } = setup(p, { issue: async () => ({ title: "Publish", body: issueBody }) });
+    const { executor } = setup(p, { issue: async () => ({ title: "Publish", body: issueBody }), handoffTurns: 10 });
     const record = createStopRecorder({ store, read: (tree, args) => git(tree, ...args) });
     const publishes: string[] = [];
     const url = "https://github.com/example/repo/pull/12";
@@ -676,30 +673,74 @@ sbx("loop handoff integration", () => {
     expect(readLimitHandoff(store, work)?.text).toBe("Done: implementation. Next: review.");
   });
 
+  test("during the handoff only the note can be written: bash and other paths are refused", async () => {
+    const p = provider([
+      { text: "working" },
+      async (request) => {
+        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0]!;
+        return { text: "trying", tools: [
+          call("b", "bash", { command: "echo should-not-run > ran.txt" }),
+          call("w1", "write", { path: "src/other.ts", content: "x" }),
+          call("w2", "write", { path: `../tmp/${name}`, content: "Done: nothing. Next: start." }),
+        ] };
+      },
+    ]);
+    const { executor } = setup(p, { handoffTurns: 10, now: () => 1_000 + (p.requests.length >= 1 ? 10_000_000 : 0) });
+    const r = await run(executor, { maxIterations: 50 });
+    expect(r.stopCause).toBe("deadline");
+    expect(p.requests[1]!.tools?.map((t) => t.name)).toEqual(["write"]);
+    const tree = join(store.getWork(work.workId)!.root, "tree");
+    expect(existsSync(join(tree, "ran.txt"))).toBe(false);
+    expect(existsSync(join(tree, "src", "other.ts"))).toBe(false);
+    const session = store.listSessions(work.workId)[0]!;
+    expect(readFileSync(join(store.getWork(work.workId)!.root, "tmp", `AGENT_HANDOFF_${session.sessionId}.md`), "utf8")).toBe("Done: nothing. Next: start.");
+  });
+
+  test("the handoff never shows the model an absolute host path, in tool definitions or tool results", async () => {
+    const p = provider([
+      { text: "working" },
+      async (request) => {
+        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0]!;
+        return { text: "blank first", tools: [call("w1", "write", { path: `../tmp/${name}`, content: "   " })] };
+      },
+      async (request) => {
+        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0]!;
+        return { text: "now real", tools: [call("w2", "write", { path: `../tmp/${name}`, content: "Done: x. Next: y." })] };
+      },
+    ]);
+    const { executor } = setup(p, { handoffTurns: 10, now: () => 1_000 + (p.requests.length >= 1 ? 10_000_000 : 0) });
+    const r = await run(executor, { maxIterations: 50 });
+    expect(r.stopCause).toBe("deadline");
+    const root = store.getWork(work.workId)!.root;
+    const modelVisible = JSON.stringify(p.requests.slice(1).map((req) => ({ messages: req.messages, tools: req.tools })));
+    expect(modelVisible).not.toContain(root);
+    expect(JSON.stringify(p.requests[2]!.messages.at(-1))).toContain("../tmp/AGENT_HANDOFF_");
+  });
+
   test.each(["deadline", "max_reached"] as const)("work runtime releases a loop at %s and its next real executor receives the covered note", async (cause) => {
     const issueBody = "A task to continue.";
     const digest = issueDigest12(issueBody);
     const config = loadWorkConfig({ caps: { maxSessions: 3, maxIterationsPerSession: 4, sessionWallMs: 1500, workWallMs: 10_000 } });
     work = store.createWork({ repo: "example/repo", issue: 8, approvedDigest: digest, config }).work;
     const noteText = "Done: parser. Next: run tests. Blocked: none.";
+    const writeNote: Step = async (request) => {
+      const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0];
+      return name ? { text: "saving handoff", tools: [call("save-note", "write", { path: `../tmp/${name}`, content: noteText })] } : { text: "no handoff instruction" };
+    };
     const steps: Step[] = [
       { text: "working" },
-      async (request) => {
-        const name = JSON.stringify(request.messages).match(/AGENT_HANDOFF_[a-zA-Z0-9_-]+\.md/)?.[0];
-        return name ? { text: "saving handoff", tools: [call("save-note", "write", { path: `../tmp/${name}`, content: noteText })] } : { text: "no handoff instruction" };
-      },
-      ...(cause === "deadline" ? [async (request: ProviderRequest) => {
-        await new Promise<never>((_resolve, reject) => {
-          if (request.signal?.aborted) reject(new Error("deadline abort"));
-          else request.signal?.addEventListener("abort", () => reject(new Error("deadline abort")), { once: true });
-        });
-      }] : [{ text: "continuing" }, { text: "continuing" }]),
+      // deadline: a slow turn runs past the 1.5 s session time and is not cut off; max_reached: the 4 iterations run out
+      ...(cause === "deadline"
+        ? [async () => { await new Promise((r) => setTimeout(r, 1_600)); return { text: "still working" }; }]
+        : [{ text: "working" }, { text: "working" }, { text: "working" }]),
+      writeNote,
       { text: "resumed" }, { text: "continuing" }, { text: "continuing" }, { text: "continuing" },
     ];
     const p = provider(steps);
     const { executor } = setup(p, {
       issue: async () => ({ title: "Continue", body: issueBody }),
       readHandoff: (current: WorkRecord) => readLimitHandoff(store, current),
+      handoffTurns: 10,
     } as Partial<ExecutorDeps>);
     const publishes: string[] = [];
     const { handler } = buildWorkRuntime({

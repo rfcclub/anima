@@ -33,5 +33,7 @@ export interface WorkerAdapterResult {
 
 export interface WorkerAdapter {
   readonly kind: string;
+  /** Extra time past the deadline the adapter spends on the handoff task before the session is hard-stopped. */
+  readonly handoffGraceMs?: number;
   run(input: WorkerAdapterInput): Promise<WorkerAdapterResult>;
 }

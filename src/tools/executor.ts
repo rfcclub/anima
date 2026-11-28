@@ -7,11 +7,12 @@ import type { AgentMemoryStore } from "../memory/contract";
 import type { AnimaEntityStore } from "../memory/anima-entity-store";
 import type { ContextEngine } from "@anima/context-engine";
 import type { ToolPolicy } from "../config/types";
-import { checkPolicy, checkSecretsPath, type PolicyRule } from "./policy-enforcer";
+import { checkBroadScan, checkPolicy, checkSecretsPath, type PolicyRule } from "./policy-enforcer";
 import { handleWebChatTool } from "../web-chat/tool";
 import type { WebChatClient } from "../web-chat/client";
 import { currentToolBoundary, sandboxToolCommand, sandboxToolEnvironment } from "../web-chat/tool-boundary";
 import { handleGithubTool } from "./github-app";
+import { redactSecrets } from "../work/publish-secrets";
 
 const MAX_OUTPUT_CHARS = 110_000;
 /** Default limit for a bash or grep tool call; `ANIMA_TOOL_COMMAND_TIMEOUT_MS` overrides it. */
@@ -29,6 +30,18 @@ export interface PolicyViolationRecord {
   mode: "warn" | "block";
 }
 
+/** One line per bash call, so a log reader can tell which agent ran which command. */
+export interface ToolCommandRecord {
+  event: "tool_command";
+  agent: string | undefined;
+  tool: "bash";
+  cwd: string | undefined;
+  /** The command with inline credentials masked, cut to MAX_LOGGED_COMMAND_CHARS. */
+  command: string;
+}
+
+const MAX_LOGGED_COMMAND_CHARS = 500;
+
 export interface ExecuteToolOptions {
   cwd?: string;
   sessionId?: string;
@@ -43,6 +56,8 @@ export interface ExecuteToolOptions {
   policy: ToolPolicy | null;
   /** Receives one record per violation. Defaults to a single JSON line on console.warn. */
   logViolation?: (record: PolicyViolationRecord) => void;
+  /** Receives one record per bash call. Defaults to a single JSON line on console.info. */
+  logCommand?: (record: ToolCommandRecord) => void;
   /** Limit for a bash or grep call, after which the command and everything it started are stopped. */
   commandTimeoutMs?: number;
 }
@@ -55,8 +70,70 @@ function commandTimeout(option: number | undefined): number {
   return DEFAULT_COMMAND_TIMEOUT_MS;
 }
 
-function defaultLogViolation(record: PolicyViolationRecord): void {
+export function defaultLogViolation(record: PolicyViolationRecord): void {
   console.warn(JSON.stringify(record));
+}
+
+/** Words that mark a field, header or variable name as holding a credential. */
+const CREDENTIAL_WORDS = new Set(["key", "apikey", "token", "secret", "password", "passwd", "pass", "pwd", "pw", "pin", "cookie", "credential", "credentials", "auth", "authorization", "bearer"]);
+
+/** True when a name such as GITHUB_TOKEN, apiKey, x-auth-token or "password" holds a credential.
+ *  Whole words only, so author, monkey, keyboard_layout or tokenizer stay readable. */
+function isCredentialName(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/);
+  // concatenated names (PGPASSWORD, DBPASSWORD, MYTOKEN) end with an unambiguous credential word
+  return words.some((w) => CREDENTIAL_WORDS.has(w) || /(?:password|passwd|pass|pwd|token|secret|apikey)$/.test(w));
+}
+
+/** Mask credentials a command may carry inline before it reaches a log line. Common shapes only, not a guarantee. */
+export function redactCommand(command: string): string {
+  const masked = command
+    // a JSON field ({"password":"..."}, {\"token\":\"...\"}, {"pin":1234})
+    // values: a backslash-escaped string (inside a double-quoted shell word), a JSON string with escapes, or a bare scalar
+    .replace(/(\\?"([A-Za-z0-9_-]+)\\?"\s*:\s*)(\\"(?:[^"\\]|\\\\\\"|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|[^,}\s"'\\]+)/g, (m, head: string, name: string) =>
+      isCredentialName(name) ? head + '"[redacted]"' : m)
+    // a quoted header, masked up to its closing quote (Cookie: a=1; b=2)
+    .replace(/(["'])([A-Za-z0-9_-]+)(\s*:\s*)[^"']*\1/g, (m, q: string, name: string, sep: string) =>
+      isCredentialName(name) ? q + name + sep + "[redacted]" + q : m)
+    // an unquoted header or key: value
+    .replace(/(^|[\s"'])([A-Za-z0-9_-]+)(\s*:\s*)("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"']+)/gi, (m, pre: string, name: string, sep: string) =>
+      isCredentialName(name) ? pre + name + sep + "[redacted]" : m)
+    // an environment assignment (GITHUB_TOKEN=..., PASSWORD=...)
+    // an assignment or a form field (GITHUB_TOKEN=..., a=1&password=...): the value stops at & or ;
+    // (an option such as --cookie=file is left to the option rules below)
+    .replace(/(^|[^-A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|[^\s&;"']+)/g, (m, pre: string, name: string) =>
+      isCredentialName(name) ? pre + name + "=[redacted]" : m)
+    .replace(/\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, "$1 [redacted]")
+    .replace(/(--(?:password|passwd|pass|token|api-key|apikey|secret|auth)[= ])("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]")
+    .replace(/(\bredis-cli\b[^\n;|&]*?\s-a\s+)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\b(?:docker|podman|helm|nerdctl)\b[^\n;|&]*?\blogin\b[^\n;|&]*?\s(?:-p|--password)[= ]?)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    .replace(/(\s--password[= ])("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]")
+    // curl -b with a cookie string (name=value); a cookie file name stays readable
+    // every curl -b/--cookie with a cookie string (name=value, escaped spaces included); a cookie file name stays readable
+    // curl cookie strings (-b, clustered as in -sSb, or --cookie), searched within each curl command only
+    .replace(/\bcurl\b(?:"[^"]*"|'[^']*'|\\.|[^\n;&|"'\\])*/g, (curl) =>
+      curl.replace(/(\s(?:-[A-Za-z]*b|--cookie)[= ]?)("[^"]*=[^"]*"|'[^']*=[^']*'|(?:[^\s"'\\=]|\\.)+=(?:[^\s"'\\]|\\.)*)/g, "$1[redacted]"))
+    // SQL that sets a password (ALTER USER x PASSWORD '...', IDENTIFIED BY '...')
+    .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s+)('[^']*'|\\?"[^"\\]*\\?")/gi, "$1'[redacted]'")
+    // a credential set by name and value (aws configure set aws_secret_access_key VALUE, git config ... token VALUE)
+    .replace(/(\b(?:set|config)\s+)([A-Za-z0-9_.-]+)(\s+)("[^"]*"|'[^']*'|\S+)/g, (m, pre: string, name: string, sp: string) =>
+      isCredentialName(name) ? pre + name + sp + "[redacted]" : m)
+    .replace(/(\b(?:mysql|mysqldump|mariadb)\b[^\n;|&]*?\s-p)(\S+)/g, "$1[redacted]")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[redacted]@")
+    // an https URL with a bare userinfo is usually a token (https://<token>@host)
+    .replace(/(\bhttps?:\/\/)[^\s/@:]+@/gi, "$1[redacted]@")
+    .replace(/((?:^|\s)(?:-u|--user)[= ]?)("[^"]*"|'[^']*'|[^\s:'"]+:\S+)/g, "$1[redacted]")
+    .replace(/(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)/g, "$1[redacted]");
+  return redactSecrets(masked);
+}
+
+export function defaultLogCommand(record: ToolCommandRecord): void {
+  console.info(JSON.stringify(record));
+}
+
+/** The log record of one bash call: the command masked and cut to MAX_LOGGED_COMMAND_CHARS. */
+export function bashCommandRecord(agent: string | undefined, cwd: string | undefined, command: string): ToolCommandRecord {
+  return { event: "tool_command", agent, tool: "bash", cwd, command: redactCommand(command).slice(0, MAX_LOGGED_COMMAND_CHARS) };
 }
 
 /** Execute a single tool call and return its string result. */
@@ -78,14 +155,20 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
     }
   }
 
-  // Hard rule: agent tools never reach the GitHub App keys, whatever the room's enforce mode.
-  const secrets = checkSecretsPath({ tool: call.name, args, cwd });
+  if (call.name === "bash") {
+    (opts.logCommand ?? defaultLogCommand)(bashCommandRecord(agentName, cwd, String(args.command ?? "")));
+  }
+
+  // Hard rules: agent tools never reach the GitHub App keys and never scan the whole home directory,
+  // whatever the room's enforce mode.
+  const secretsDecision = checkSecretsPath({ tool: call.name, args, cwd });
+  const secrets = secretsDecision.allowed ? checkBroadScan({ tool: call.name, args, cwd }) : secretsDecision;
   if (!secrets.allowed) {
     (opts.logViolation ?? defaultLogViolation)({
       event: "policy_violation",
       agent: agentName,
       tool: call.name,
-      target: secrets.target,
+      target: call.name === "bash" && secrets.rule !== "broad-scan" ? redactCommand(secrets.target) : secrets.target,
       rule: secrets.rule,
       reason: secrets.reason,
       mode: "block",
@@ -101,7 +184,7 @@ export async function executeTool(call: ProviderToolCall, opts: ExecuteToolOptio
         event: "policy_violation",
         agent: agentName,
         tool: call.name,
-        target: decision.target,
+        target: call.name === "bash" ? redactCommand(decision.target) : decision.target,
         rule: decision.rule,
         reason: decision.reason,
         mode,
