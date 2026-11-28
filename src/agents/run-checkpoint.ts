@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export type StopReason = "max_reached" | "interrupted" | "quota" | "provider_error" | "blocked";
+export type StopReason = "max_reached" | "interrupted" | "quota" | "provider_error" | "blocked" | "deadline";
 export type StepOutcome = "completed" | "unknown";
 export type RunCheckpointStatus = "open" | "resumed" | "expired" | "done";
 
