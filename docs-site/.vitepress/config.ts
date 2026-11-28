@@ -165,6 +165,7 @@ export default defineConfig({
           items: [
             { text: '0001: Cartridge Architecture', link: '/adr/0001-cartridge-architecture' },
             { text: '0002: Substrate View Layer', link: '/adr/0002-substrate-view-layer' },
+            { text: '0003: Harness Runtime', link: '/adr/0003-harness-runtime' },
           ]
         }
       ],
