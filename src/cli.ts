@@ -35,6 +35,7 @@ import type { MeetingOptions } from "./meeting/types";
 import { MailChecker } from "./meeting/daemon";
 import { CartridgeRegistry } from "./cartridge/registry";
 import { buildHeadlessPromptParts, headlessCacheKey, headlessReviewTools } from "./cartridge/headless-profile";
+import { githubActionsForSession } from "./tools/github-actions";
 import { runCartridgeCli } from "./cartridge/cli";
 import { runMeshTool } from "./mesh-a2a/agent-tools";
 import { rotateBearerToken } from "./services/abel-mem";
@@ -177,14 +178,24 @@ async function talk(args: ParsedArgs): Promise<void> {
   if (headlessReview && (loopMode || typeof reviewRepo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(reviewRepo))) {
     throw new Error("headless review requires a repository in owner/name form and cannot use loop mode");
   }
+  // The GitHub action allowlist is part of the session profile and enforced by the tool, not by the prompt.
+  const profileActions = githubActionsForSession({ headlessReview, env: process.env });
   const agent = headlessReview
     ? await (async () => {
       const config = await loader.loadConfig(agentName);
-      const policy = { ...config.policy, allowedTools: headlessReviewTools(config.policy.allowedTools ?? []) };
+      const policy = {
+        ...config.policy,
+        allowedTools: headlessReviewTools(config.policy.allowedTools ?? []),
+        ...(profileActions ? { githubActions: profileActions } : {}),
+      };
       const roomDir = join(process.env.ANIMA_ROOMS_DIR ?? join(process.env.HOME ?? "~", ".anima", "rooms"), agentName);
       return headlessAgent({ name: config.identity.name, label: config.identity.label }, { ...config, policy }, roomDir);
     })()
     : await loader.load(agentName);
+  // An intent-review child (started for one issue) gets that profile's GitHub action allowlist as well.
+  if (!headlessReview && profileActions) {
+    agent.config.policy = { ...agent.config.policy, githubActions: profileActions };
+  }
   const modelOverride = typeof args.flags.model === "string" ? args.flags.model : undefined;
   const providerName = readProvider(args.flags.provider ?? agent.config.provider.type);
   const taskMode = taskModeOverride ?? await readCurrentTaskMode();
@@ -267,7 +278,10 @@ async function talk(args: ParsedArgs): Promise<void> {
     const { full: system, staticPrefix, staticHash } = prompt();
     if (headlessReview) {
       try {
-        structuredLog("info", "headless profile", { sessionId, profile: "work-review", promptStaticHash: staticHash });
+        structuredLog("info", "headless profile", {
+          sessionId, profile: "work-review", promptStaticHash: staticHash,
+          githubActions: agent.config.policy.githubActions ?? [],
+        });
       } catch {
         // Observability must not change the review session's result.
       }
