@@ -17,9 +17,9 @@ let store: WorkStore;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "continuation-dispatch-")); store = WorkStore.open(":memory:", { rootBase: root }); });
 afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 
-function stopped(issue = 7, blocked = false, trusted = true) {
+function stopped(issue = 7, blocked = false, trusted = true, author = "worker") {
   const work = store.createWork({ repo: "example/repo", issue, approvedDigest: digest,
-    config: loadWorkConfig({ caps: { maxSessions: 1, workWallMs: 1000, sessionWallMs: 1000 } }) }).work;
+    config: loadWorkConfig({ author, caps: { maxSessions: 1, workWallMs: 1000, sessionWallMs: 1000 } }) }).work;
   const reserved = store.reserveSession(work.workId, { jobId: `old-${issue}`, claimId: `claim-${issue}` });
   if (!reserved.ok) throw new Error(reserved.reason);
   store.closeSession(reserved.session.sessionId, { iterations: 1, execMs: 1000, stopCause: "deadline" });
@@ -52,6 +52,46 @@ async function dispatch(mesh: ReturnType<typeof gateway>["mesh"], ghRunner = gh)
 }
 
 describe("Slice 1 checkpointed work dispatch", () => {
+  for (const blocked of [false, true]) {
+    test(`a ${blocked ? "limit-blocked" : "checkpointed"} work is recovered for its pinned extra author`, async () => {
+      const work = stopped(7, blocked, true, "vesta");
+      const { mesh, enqueued } = gateway("expired");
+      const multiAuthor = { ...workConfig, extraAuthors: [{ agent: "vesta", meshId: "vesta@mesh" }] };
+      expect(await dispatchApprovedIssues({ config, work: multiAuthor, store, mesh, gh, log: () => {}, now: () => 1000 })).toBe(1);
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]).toMatchObject({ workRef: `${work.workId}.${digest}`, eligible: ["vesta@mesh"] });
+    });
+  }
+
+  test("a failed claim by the pinned author is recovered even if another eligible author has not failed", async () => {
+    stopped(7, false, true, "vesta");
+    const { mesh, enqueued } = gateway("queued");
+    mesh.getJob = async (id: string) => ({ id, state: "queued", claims: [{ state: "failed", worker: "vesta@mesh" }],
+      eligible: ["worker@mesh", "vesta@mesh"] }) as never;
+    const multiAuthor = { ...workConfig, extraAuthors: [{ agent: "vesta", meshId: "vesta@mesh" }] };
+    expect(await dispatchApprovedIssues({ config, work: multiAuthor, store, mesh, gh, log: () => {}, now: () => 1000 })).toBe(1);
+    expect(enqueued[0]?.eligible).toEqual(["vesta@mesh"]);
+  });
+
+  test("a failed claim by another author does not replace the pinned author's queued job", async () => {
+    stopped(7, false, true, "vesta");
+    const { mesh, enqueued } = gateway("queued");
+    mesh.getJob = async (id: string) => ({ id, state: "queued", claims: [{ state: "failed", worker: "worker@mesh" }],
+      eligible: ["worker@mesh", "vesta@mesh"] }) as never;
+    const multiAuthor = { ...workConfig, extraAuthors: [{ agent: "vesta", meshId: "vesta@mesh" }] };
+    expect(await dispatchApprovedIssues({ config, work: multiAuthor, store, mesh, gh, log: () => {}, now: () => 1000 })).toBe(0);
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("a limit-blocked work with an unconfigured author is not continued or enqueued", async () => {
+    const work = stopped(7, true, true, "vesta");
+    const { mesh, enqueued } = gateway("expired");
+    expect(await dispatch(mesh)).toBe(0);
+    expect(enqueued).toHaveLength(0);
+    expect(store.getWork(work.workId)?.state).toBe("blocked");
+    expect(store.listEvents(work.workId).some((event) => event.kind === "limit-continuation")).toBe(false);
+  });
+
   test("Slice 1 a dead start job gets one replacement for the same work", async () => {
     const work = stopped();
     const { mesh, enqueued } = gateway("expired");

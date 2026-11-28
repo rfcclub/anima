@@ -55,6 +55,54 @@ function enqueueRetry() {
 }
 
 describe("operator retry of a recovered revision", () => {
+  async function retryForPool(input: { jobEnqueuer: string; sessionEnqueuer?: string; noSession?: boolean }) {
+    store.close();
+    store = WorkStore.open(":memory:", { rootBase: root });
+    const work = store.createWork({ repo: "test/anima", issue: 7, approvedDigest: DIGEST,
+      config: loadWorkConfig({ author: "jade" }) }).work;
+    workId = work.workId;
+    pr.headRef = work.branch;
+    store.recordPullRequest(workId, { number: 12, head: HEAD, url: pr.url });
+    store.setState(workId, "checkpointed");
+    enqueueRetry();
+
+    const old = { ...priorJob(), enqueuer: input.jobEnqueuer, eligible: ["jade@anima"],
+      claims: [{ id: "claim", jobId: JOB, worker: "jade@anima", state: "failed" }] };
+    const sent: Record<string, unknown>[] = [];
+    const enqueue = async (job: Record<string, unknown>) => { sent.push(job); return { id: "new" }; };
+    const mesh = {
+      getJob: async () => old, enqueue, confirm: async () => {},
+      ...(input.noSession ? {} : { retrySession: () => ({
+        enqueuer: input.sessionEnqueuer, getJob: async () => old, enqueue,
+      }) }),
+    };
+    const poolConfig: ReconcilerConfig = { ...config,
+      authorMeshIds: ["finn@anima", "jade@anima"],
+      authorMeshIdByAgent: { finn: "finn@anima", jade: "jade@anima" },
+    };
+    await new Reconciler({ store, github: github(), mesh, config: poolConfig, now: () => 1_000_000 }).tick();
+    return { sent, outbox: store.listOutbox(workId)[0]! };
+  }
+
+  test("a distinct authenticated producer can retry the pinned author's failed revision", async () => {
+    const result = await retryForPool({ jobEnqueuer: "queue@anima", sessionEnqueuer: "queue@anima" });
+    expect(result.sent).toHaveLength(1);
+    expect(result.sent[0]).toMatchObject({ eligible: ["jade@anima"], workRef: `${workId}.${DIGEST}`,
+      idempotencyKey: `revise-retry:${workId}@${HEAD}:recovery:23` });
+    expect(result.outbox.status).toBe("done");
+  });
+
+  test.each([
+    { jobEnqueuer: "attacker@anima", sessionEnqueuer: "queue@anima" },
+    { jobEnqueuer: "jade@anima", sessionEnqueuer: "queue@anima" },
+    { jobEnqueuer: "jade@anima", sessionEnqueuer: undefined },
+    { jobEnqueuer: "jade@anima", noSession: true },
+  ])("a retry without the job's authenticated producer stays pending: %j", async (input) => {
+    const result = await retryForPool(input);
+    expect(result.sent).toHaveLength(0);
+    expect(result.outbox.status).toBe("pending");
+  });
+
   test.each(["open session", "untrusted stop", "exhausted budget"] as const)(
     "retry refuses a recovered work with %s",
     (problem) => {
@@ -185,6 +233,7 @@ describe("operator retry of a recovered revision", () => {
       enqueue: async () => { throw new Error("rotating capability used"); },
       confirm: async () => {},
       retrySession: () => ({
+        enqueuer: "finn@anima",
         getJob: async () => priorJob(),
         enqueue: async () => { usedSnapshot = true; return { id: "new" }; },
       }),

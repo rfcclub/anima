@@ -129,4 +129,54 @@ describe("loadMeshJobsConfig", () => {
       expect(errorOf(() => loadMeshJobsConfig(path))).toMatch(/invalid work\.externalReviewers/);
     });
   });
+
+  describe("work.extraAuthors", () => {
+    const work = (extra: Record<string, unknown> = {}) => valid({
+      workers: [{ agent: "finn" }, { agent: "jade" }, { agent: "cleo" }, { agent: "kai" }],
+      work: {
+        enabled: true, author: "finn", authorActor: "finn-gotako[bot]", authorMeshId: "finn@anima", enqueuer: "finn",
+        base: "master", reviewers: [{ agent: "cleo", meshId: "cleo@anima", login: "cleo-gotako[bot]" }], ...extra,
+      },
+    });
+
+    test("work-pool-lane-config: defaults to the author count and accepts a smaller limit", () => {
+      const extraAuthors = [{ agent: "jade", meshId: "jade@anima" }];
+      write(work({ extraAuthors }));
+      expect(Reflect.get(loadMeshJobsConfig(path)!.work!, "maxConcurrentWorks")).toBe(2);
+      write(work({ extraAuthors, maxConcurrentWorks: 1 }));
+      expect(Reflect.get(loadMeshJobsConfig(path)!.work!, "maxConcurrentWorks")).toBe(1);
+      for (const maxConcurrentWorks of [0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1]) {
+        write(work({ extraAuthors, maxConcurrentWorks }));
+        expect(errorOf(() => loadMeshJobsConfig(path))).toMatch(/invalid work\.maxConcurrentWorks/);
+      }
+    });
+
+    test("absent means no extra authors", () => {
+      write(work());
+      expect(loadMeshJobsConfig(path)!.work!.extraAuthors).toEqual([]);
+    });
+
+    test("a list of listed workers with mesh IDs is accepted and kept", () => {
+      write(work({ extraAuthors: [{ agent: "jade", meshId: "jade@anima" }, { agent: "kai", meshId: "kai@anima" }] }));
+      expect(loadMeshJobsConfig(path)!.work!.extraAuthors).toEqual([
+        { agent: "jade", meshId: "jade@anima" }, { agent: "kai", meshId: "kai@anima" },
+      ]);
+    });
+
+    test.each([
+      ["an agent that is not a worker", [{ agent: "ghost", meshId: "ghost@anima" }]],
+      ["the primary author again", [{ agent: "finn", meshId: "finn2@anima" }]],
+      ["the primary author's mesh ID", [{ agent: "jade", meshId: "finn@anima" }]],
+      ["a reviewer agent", [{ agent: "cleo", meshId: "cleo2@anima" }]],
+      ["a reviewer's mesh ID", [{ agent: "jade", meshId: "cleo@anima" }]],
+      ["a duplicate agent", [{ agent: "jade", meshId: "jade@anima" }, { agent: "jade", meshId: "jade2@anima" }]],
+      ["a duplicate mesh ID", [{ agent: "jade", meshId: "jade@anima" }, { agent: "kai", meshId: "jade@anima" }]],
+      ["a bad mesh ID", [{ agent: "jade", meshId: "not a mesh id" }]],
+      ["a non-array", "jade"],
+      ["a non-object entry", ["jade"]],
+    ])("%s is rejected", (_name, value) => {
+      write(work({ extraAuthors: value }));
+      expect(errorOf(() => loadMeshJobsConfig(path))).toMatch(/invalid work\.extraAuthors/);
+    });
+  });
 });

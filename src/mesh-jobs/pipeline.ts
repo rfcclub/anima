@@ -140,6 +140,8 @@ export interface StartWorkJobInput {
   issue: number;
   digest: string;
   authorMeshId: string;
+  /** Mesh IDs of the other authors that may carry the work (`work.extraAuthors`). */
+  extraAuthorMeshIds?: string[];
   now: number;
   /** Re-dispatch of a work that already exists: the job carries that work's id so the claim finds it. */
   workId?: string;
@@ -155,7 +157,7 @@ export function buildStartWorkJob(input: StartWorkJobInput): Record<string, unkn
     type: "start-work",
     target: { repo: input.repo, kind: "issue", number: input.issue },
     slots: 1,
-    eligible: [input.authorMeshId],
+    eligible: [input.authorMeshId, ...(input.extraAuthorMeshIds ?? [])],
     priority: -10,
     workRef: `${input.workId ?? `w${randomBytes(5).toString("hex")}`}.${input.digest}`,
     expiresAt: input.now + DAY_MS,
@@ -212,7 +214,9 @@ export interface IssueDispatchDeps {
  * and re-dispatching then would start a second writer), or every worker it is eligible for already holds a failed or
  * reported claim on it, which the queue never lets them claim again. An unreadable job is not dead (fail closed).
  */
-async function startJobIsDead(mesh: IssueDispatchDeps["mesh"], job: { id: string; state: string }): Promise<boolean> {
+async function startJobIsDead(
+  mesh: IssueDispatchDeps["mesh"], job: { id: string; state: string }, pinnedAuthor?: string,
+): Promise<boolean> {
   if (job.state !== "expired" && job.state !== "queued") return false;
   if (!mesh.getJob) return false;
   let details: Awaited<ReturnType<NonNullable<typeof mesh.getJob>>>;
@@ -227,6 +231,12 @@ async function startJobIsDead(mesh: IssueDispatchDeps["mesh"], job: { id: string
   if (details.claims.some((claim) => claim.state === "active")) return false;
   if (job.state === "expired") return true;
   const eligible = details.eligible ?? [];
+  if (pinnedAuthor) {
+    const pinned = pinnedAuthor.toLowerCase();
+    if (details.eligible && !eligible.some((worker) => worker.toLowerCase() === pinned)) return true;
+    return details.claims.some((claim) => claim.worker.toLowerCase() === pinned &&
+      (claim.state === "failed" || claim.state === "reported"));
+  }
   return eligible.length > 0 && eligible.every((worker) =>
     details.claims.some((claim) => claim.worker === worker && (claim.state === "failed" || claim.state === "reported")));
 }
@@ -249,11 +259,18 @@ async function recoverQueuedWork(
   }
   const attempts = listEvents.call(store, record.workId).filter((event) => event.kind === REDISPATCH_EVENT).length;
   const max = config.maxStartRedispatch ?? 2;
-  const input = { repo, issue, digest, authorMeshId: work.authorMeshId, now: now(), workId: record.workId };
+  const authorMeshId = record.author === work.author
+    ? work.authorMeshId
+    : work.extraAuthors?.find((author) => author.agent === record.author)?.meshId;
+  if (!authorMeshId) {
+    log("error", "start job recovery skipped: work author has no mesh ID", { repo, issue, workId: record.workId });
+    return false;
+  }
+  const input = { repo, issue, digest, authorMeshId, now: now(), workId: record.workId };
   try {
     // A replay of the current attempt's key returns the existing job, so its state tells whether it can still run.
     const current = await mesh.enqueue(buildStartWorkJob({ ...input, attempt: attempts }));
-    if (!(await startJobIsDead(mesh, current))) {
+    if (!(await startJobIsDead(mesh, current, authorMeshId))) {
       log("info", "issue dispatch skipped: work already active", { repo, issue });
       return false;
     }
@@ -327,6 +344,13 @@ async function recoverCheckpointedWork(
   const { store, mesh, config, work, log } = deps;
   if (!store.listEvents || !store.appendEvent || !store.setState || !store.latestEndedSession || !mesh.getJob ||
       (record.state === "blocked" && !store.continueAfterLimit)) return false;
+  const authorMeshId = record.author === work.author
+    ? work.authorMeshId
+    : work.extraAuthors?.find((author) => author.agent === record.author)?.meshId;
+  if (!authorMeshId) {
+    log("error", "checkpoint recovery skipped: work author has no mesh ID", { repo, issue, workId: record.workId });
+    return false;
+  }
   let continued = false;
   try {
     const lock = acquireWorkLock(record.root);
@@ -346,7 +370,7 @@ async function recoverCheckpointedWork(
       const dispatchedId = (latestDispatch?.detail as { jobId?: unknown } | undefined)?.jobId;
       const currentId = typeof dispatchedId === "string" ? dispatchedId : session.jobId;
       const current = await mesh.getJob(currentId);
-      if (current.id !== currentId || !(await startJobIsDead(mesh, current))) return false;
+      if (current.id !== currentId || !(await startJobIsDead(mesh, current, authorMeshId))) return false;
       // Every replacement enqueue rechecks the issue, including a retry after an allowance was already granted.
       if (!(await issueStillNeedsWork(deps.gh, repo, issue, digest, config.issueLabel))) return false;
       if (!unchanged(fresh())) return false;
@@ -366,7 +390,7 @@ async function recoverCheckpointedWork(
         store.setState(record.workId, "blocked", `start job expired ${attempts + 1} times without running`);
         return continued;
       }
-      const next = await mesh.enqueue(buildStartWorkJob({ repo, issue, digest, authorMeshId: work.authorMeshId,
+      const next = await mesh.enqueue(buildStartWorkJob({ repo, issue, digest, authorMeshId,
         now: now(), workId: record.workId, attempt: attempts + 1, ...(reset ? { continuation: reset.seq } : {}) }));
       const after = fresh();
       if (!after || after.state !== "checkpointed" || after.generation !== record.generation || after.root !== record.root) return continued;
@@ -457,7 +481,10 @@ export async function dispatchApprovedIssues(deps: IssueDispatchDeps): Promise<n
         continue;
       }
       try {
-        const base = { repo, issue: issue.number, digest, authorMeshId: work.authorMeshId, now: now() };
+        const base = {
+          repo, issue: issue.number, digest, authorMeshId: work.authorMeshId,
+          extraAuthorMeshIds: (work.extraAuthors ?? []).map((extra) => extra.meshId), now: now(),
+        };
         let job = await mesh.enqueue(buildStartWorkJob(base));
         // A replay of an approval whose job expired unclaimed (no work exists yet to recover): try the next attempt
         // key, bounded, so the approval is not stuck behind a dead job.

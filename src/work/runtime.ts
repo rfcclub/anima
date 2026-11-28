@@ -61,7 +61,13 @@ export function buildWorkRuntime(config: MeshJobsWorkConfig, deps: WorkRuntimeDe
       base: config.base,
       ...(config.repoBases ? { repoBases: config.repoBases } : {}),
       authorActor: config.authorActor,
-      authorMeshIds: [config.authorMeshId],
+      authorMeshIds: [config.authorMeshId, ...(config.extraAuthors ?? []).map((extra) => extra.meshId)],
+      ...((config.extraAuthors ?? []).length > 0 ? {
+        authorMeshIdByAgent: {
+          [config.author]: config.authorMeshId,
+          ...Object.fromEntries((config.extraAuthors ?? []).map((extra) => [extra.agent, extra.meshId])),
+        },
+      } : {}),
       reviewers: config.reviewers,
       externalReviewers: config.externalReviewers,
       retryBackoffMs: config.releaseBackoffMs * 2,
@@ -86,6 +92,8 @@ export function buildWorkRuntime(config: MeshJobsWorkConfig, deps: WorkRuntimeDe
       return stop;
     } } : {}),
     ...(deps.treeRead ? { continuation: (work: WorkRecord) => checkContinuation(deps.store, work, deps.treeRead!) } : {}),
+    authors: (config.extraAuthors ?? []).map((extra) => extra.agent),
+    maxConcurrentWorks: config.maxConcurrentWorks,
     config: loadWorkConfig({
       author: config.author,
       externalAdapter: config.externalAdapter,

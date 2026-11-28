@@ -101,6 +101,23 @@ export function gitInRecoveryTree(cwd: string, args: string[]): string {
   return readRecoveryTreeGit(cwd, args, { denyReadRoots: defaultDenyReadRoots() });
 }
 
+/** Bind a retry's producer identity and both requests to one registration, even if presence rejoins. */
+export function createProductionRetrySession(
+  gatewayUrl: string,
+  readInbox: () => { address: string; capability: string } | null,
+  fetchImpl: typeof fetch = fetch,
+) {
+  const inbox = readInbox();
+  if (!inbox?.address || inbox.address.trim() !== inbox.address || !inbox.capability) throw new MeshJobsOfflineError();
+  const { address, capability } = inbox;
+  const fixed = new MeshJobsClient(gatewayUrl, () => capability, fetchImpl);
+  return {
+    enqueuer: address,
+    getJob: (jobId: string) => fixed.getJob(jobId),
+    enqueue: (job: Record<string, unknown>) => fixed.enqueue(job),
+  };
+}
+
 const HANDOFF_EVENT = "limit-handoff-covered";
 const isLimit = (cause: string) => cause === "deadline" || cause === "max_reached";
 const supportsHandoff = (adapter: string) => adapter === "low" || adapter === "loop";
@@ -168,15 +185,7 @@ export async function createProductionWorkRuntime(input: ProductionWorkInput): P
     enqueue: (job: Record<string, unknown>) => meshClient.enqueue(job),
     getJob: (jobId: string) => meshClient.getJob(jobId),
     confirm: async (jobId: string) => { await meshClient.confirm(jobId); },
-    retrySession: () => {
-      const capability = input.presence.inbox(config.enqueuer)?.capability;
-      if (!capability) throw new MeshJobsOfflineError();
-      const fixed = new MeshJobsClient(input.gatewayUrl, () => capability);
-      return {
-        getJob: (jobId: string) => fixed.getJob(jobId),
-        enqueue: (job: Record<string, unknown>) => fixed.enqueue(job),
-      };
-    },
+    retrySession: () => createProductionRetrySession(input.gatewayUrl, () => input.presence.inbox(config.enqueuer)),
   };
   const publisher = createPublisher({ base: config.base, ...(config.repoBases ? { repoBases: config.repoBases } : {}), denyReadRoots: defaultDenyReadRoots() });
   const adapter = selectWorkAdapter(config.externalAdapter, () => createLowAdapter({

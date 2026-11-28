@@ -25,7 +25,7 @@ export async function requestRevisionRetry(deps: {
   read: TreeRead;
   github: WorkGitHub;
   issue: (repo: string, number: number) => Promise<{ title: string; body: string }>;
-  config: Pick<MeshJobsWorkConfig, "author" | "authorActor" | "authorMeshId" | "base" | "repoBases" | "reviewers">;
+  config: Pick<MeshJobsWorkConfig, "author" | "extraAuthors" | "authorActor" | "authorMeshId" | "base" | "repoBases" | "reviewers">;
 }, input: RetryRevisionInput): Promise<{ key: string; inserted: boolean }> {
   if (!FULL_SHA.test(input.head)) throw new Error("retry requires the full PR head SHA");
   if (!UUID.test(input.failedJobId)) throw new Error("retry requires the failed Mesh job UUID");
@@ -37,7 +37,7 @@ export async function requestRevisionRetry(deps: {
   if (reviewers.length !== input.reviewers.length) throw new Error("retry reviewer was specified more than once");
   const initial = deps.store.getWork(input.workId);
   if (!initial) throw new Error(`work ${input.workId} not found`);
-  if (initial.state !== "checkpointed" || initial.author !== deps.config.author || initial.prNumber === null ||
+  if (initial.state !== "checkpointed" || ![deps.config.author, ...(deps.config.extraAuthors ?? []).map((extra) => extra.agent)].includes(initial.author) || initial.prNumber === null ||
       initial.prHead?.toLowerCase() !== head) {
     throw new Error("retry refused: recovered work, author or recorded PR head does not match");
   }

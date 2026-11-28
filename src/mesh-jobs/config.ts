@@ -13,6 +13,9 @@ export interface MeshJobsWorker {
 /** One independent reviewer of a work's pull request (anima #135). */
 export interface WorkReviewer { agent: string; meshId: string; login: string }
 
+/** An agent that may also carry works, besides `author`. It works as its own mesh ID. */
+export interface WorkExtraAuthor { agent: string; meshId: string }
+
 /** The castle work loop (anima #135). Absent unless `work.enabled` is true. */
 export interface MeshJobsWorkConfig {
   /** The one logical agent that carries works; must be one of `workers`. */
@@ -31,6 +34,14 @@ export interface MeshJobsWorkConfig {
   /** The GitHub login the author's pull requests and reviews carry. */
   authorActor: string;
   authorMeshId: string;
+  /**
+   * More agents that may carry works, so several works run at once (one writer per work). Each must be a listed
+   * worker and never a reviewer. A work is pinned to the author that first claims it. They share `authorActor`,
+   * the model and the limits above. Absent or empty: `author` alone carries every work, as before.
+   */
+  extraAuthors?: WorkExtraAuthor[];
+  /** Maximum simultaneous works in this runtime. Defaults to the number of authors. */
+  maxConcurrentWorks?: number;
   /** The presence agent whose mesh identity enqueues and confirms review and revise jobs. */
   enqueuer: string;
   base: string;
@@ -134,7 +145,7 @@ function parseWorker(value: unknown, index: number): MeshJobsWorker {
 }
 
 const MESH_ID = /^[a-z0-9][a-z0-9_.-]*@[a-z0-9][a-z0-9_.-]*$/;
-const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
+const WORK_KEYS = new Set(["enabled", "author", "provider", "model", "caps", "externalAdapter", "hostPublish", "authorActor", "authorMeshId", "extraAuthors", "maxConcurrentWorks", "enqueuer", "base", "repoBases", "reviewers", "externalReviewers", "releaseBackoffMs", "reconcileIntervalMs", "perToolCallMs", "cloneUrl"]);
 
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const BASE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -164,6 +175,35 @@ function parseRepoBases(value: unknown): Record<string, string> {
     if (key in out) fail();
     if (typeof branch !== "string" || !validBaseBranch(branch)) fail();
     out[key] = branch as string;
+  }
+  return out;
+}
+
+/**
+ * `work.extraAuthors`: `[{ agent, meshId }]`. Every agent is a listed worker, differs from the primary author and from
+ * every reviewer, and no agent or mesh ID repeats, so an author never reviews and no identity is shared. Never names
+ * the offending value, only the field.
+ */
+function parseExtraAuthors(value: unknown, workers: MeshJobsWorker[], author: string, authorMeshId: string, reviewers: unknown): WorkExtraAuthor[] {
+  const fail = (): never => { throw new Error("mesh jobs config: invalid work.extraAuthors"); };
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return fail();
+  const reviewerList = Array.isArray(reviewers) ? (reviewers as Array<Record<string, unknown>>) : [];
+  const agents = new Set<string>([author]);
+  const meshIds = new Set<string>([authorMeshId.toLowerCase()]);
+  const out: WorkExtraAuthor[] = [];
+  for (const entry of value as unknown[]) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return fail();
+    const { agent, meshId, ...rest } = entry as Record<string, unknown>;
+    if (Object.keys(rest).length > 0) return fail();
+    if (typeof agent !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(agent)) return fail();
+    if (typeof meshId !== "string" || !MESH_ID.test(meshId)) return fail();
+    if (!workers.some((worker) => worker.agent === agent)) return fail();
+    if (agents.has(agent) || meshIds.has(meshId.toLowerCase())) return fail();
+    if (reviewerList.some((r) => r?.agent === agent || (typeof r?.meshId === "string" && r.meshId.toLowerCase() === meshId.toLowerCase()))) return fail();
+    agents.add(agent);
+    meshIds.add(meshId.toLowerCase());
+    out.push({ agent, meshId });
   }
   return out;
 }
@@ -214,6 +254,12 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
   const base = text("base");
   const repoBases = raw.repoBases === undefined ? undefined : parseRepoBases(raw.repoBases);
 
+  const extraAuthors = parseExtraAuthors(raw.extraAuthors, workers, author, authorMeshId, raw.reviewers);
+  const maxConcurrentWorks = raw.maxConcurrentWorks === undefined ? 1 + extraAuthors.length : raw.maxConcurrentWorks;
+  if (typeof maxConcurrentWorks !== "number" || !Number.isSafeInteger(maxConcurrentWorks) || maxConcurrentWorks < 1) {
+    fail("maxConcurrentWorks");
+  }
+
   if (!Array.isArray(raw.reviewers) || raw.reviewers.length === 0) fail("reviewers");
   const reviewers: WorkReviewer[] = (raw.reviewers as unknown[]).map((entry) => {
     const r = (entry ?? {}) as Record<string, unknown>;
@@ -244,7 +290,7 @@ function parseWork(value: unknown, workers: MeshJobsWorker[]): MeshJobsWorkConfi
 
   return {
     author, ...(provider && model ? { provider, model } : {}), ...(caps !== undefined ? { caps } : {}), externalAdapter: externalAdapter as "off" | "low", hostPublish: hostPublish as boolean,
-    authorActor, authorMeshId, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
+    authorActor, authorMeshId, extraAuthors, maxConcurrentWorks: maxConcurrentWorks as number, enqueuer, base, ...(repoBases ? { repoBases } : {}), reviewers, externalReviewers, cloneUrl,
     releaseBackoffMs: ms("releaseBackoffMs", 30_000, 5_000),
     reconcileIntervalMs: ms("reconcileIntervalMs", 60_000, 10_000),
     perToolCallMs: ms("perToolCallMs", 120_000, 1_000, 600_000),
