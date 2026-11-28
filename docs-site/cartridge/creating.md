@@ -56,7 +56,42 @@ When a cartridge is expanded, the parts are joined with `---` in this order: gui
 
 ## Skills
 
-A skill is `skills/<name>.md` in the project, global or colony root (searched in that order). The file needs frontmatter. Only the text after it is inlined. A missing skill is logged and skipped.
+A name in `guides`, `rules` or legacy `skills` resolves in the project, global and colony root (searched in
+that order) in two forms:
+
+| Resolves to | Behaviour |
+|-------------|-----------|
+| `skills/<name>.md` (flat file) | Legacy: the text after the frontmatter is inlined in full |
+| `skills/<name>/SKILL.md` (Agent [Skill](../cartridge/skills.md) directory) | Progressive disclosure: only its name and description enter the prompt; the body loads when the model activates the skill |
+
+A flat file wins over a directory of the same name. A name that resolves to neither is logged as
+`[cartridge] <cartridge>: <label> "<name>" not found — skipped`.
+
+Declared Agent Skills are offered only while their cartridge is active, so a work or review profile sees
+exactly the skills its cartridges declare. The catalog counts toward `budget_tokens`; an activated body is
+counted when it is loaded.
+
+### Migrating a flat guide to a skill directory
+
+```
+skills/qa-code.md                      →  skills/qa-code/SKILL.md
+```
+
+Move the file into a directory named after the skill and add the required frontmatter — `description` is
+what the model sees in the catalog, so write it as a one-line summary of when to use the skill:
+
+```yaml
+---
+name: qa-code
+description: Review a change for correctness, tests and style before it merges.
+---
+
+<the old file body, unchanged>
+```
+
+The declaration in the cartridge does not change: `guides: [qa-code]` still resolves, now through the
+catalog. Do this only when the skill is large enough to justify on-demand loading — a short guide is
+cheaper inlined.
 
 ## Where to put it
 

@@ -11,6 +11,8 @@ import {
   type CanonicalSubstrateScope,
 } from "../identity-runtime/contract/scope-mapper.ts";
 import { CARTRIDGE_KINDS } from "./types";
+import { buildSkillCatalog, loadSkillDirectory } from "../skills";
+import type { Skill } from "../skills";
 import type { CartridgeMemoryPolicy, CartridgeKind, RetrievalPolicy } from "./types";
 import { estimateTokens } from "../utils/tokens";
 export { estimateTokens };
@@ -99,8 +101,66 @@ export class CartridgeRegistry {
     return entries.find(e => e.category === category && e.name === name) ?? null;
   }
 
+  /** Every name the cartridge declares, in expansion order, with the label used in warnings. */
+  private declarations(entry: CartridgeEntry): Array<{ name: string; label: string }> {
+    const declared: Array<{ name: string; label: string }> = [];
+    for (const name of entry.guides ?? []) declared.push({ name, label: "guide" });
+    // Legacy skills fallback — treated as guides (design decision D5)
+    if (!entry.guides?.length) {
+      for (const name of entry.skills ?? []) declared.push({ name, label: "skill" });
+    }
+    for (const name of entry.rules ?? []) declared.push({ name, label: "rule" });
+    return declared;
+  }
+
+  /**
+   * Resolve one declared name. A flat `skills/<name>.md` keeps the legacy inline behaviour; a
+   * `skills/<name>/SKILL.md` directory is an Agent Skill, offered as a catalog entry only (#670).
+   */
+  private async resolveDeclaration(
+    name: string,
+    entry: CartridgeEntry,
+    label: string,
+  ): Promise<{ kind: "inline"; content: string } | { kind: "catalog"; skill: Skill } | { kind: "missing" }> {
+    const content = await this.readSkill(name);
+    if (content) return { kind: "inline", content };
+    const skill = await this.readAgentSkill(name);
+    if (skill) return { kind: "catalog", skill };
+    console.warn(`[cartridge] ${entry.name}: ${label} "${name}" not found — skipped`);
+    return { kind: "missing" };
+  }
+
+  /** Load `skills/<name>/SKILL.md` from the project, global or colony root. Null when absent. */
+  private async readAgentSkill(name: string): Promise<Skill | null> {
+    for (const root of [this.projectRoot, this.globalRoot, this.colonyRoot]) {
+      const dir = join(root, "skills", name);
+      if (!existsSync(join(dir, "SKILL.md"))) continue;
+      const outcome = await loadSkillDirectory(dir, root === this.projectRoot ? "project" : "user");
+      if ("reason" in outcome) {
+        console.warn(`[skill] ${outcome.path}: ${outcome.reason} — skipped`);
+        continue;
+      }
+      return outcome.skill;
+    }
+    return null;
+  }
+
+  /**
+   * The Agent Skills this cartridge declares. They are offered only while the cartridge is active, so a
+   * work or review profile sees exactly the skills its cartridges declare (#670).
+   */
+  async declaredSkills(entry: CartridgeEntry): Promise<Skill[]> {
+    const skills: Skill[] = [];
+    for (const { name, label } of this.declarations(entry)) {
+      const resolved = await this.resolveDeclaration(name, entry, label);
+      if (resolved.kind === "catalog") skills.push(resolved.skill);
+    }
+    return skills;
+  }
+
   /** Expand a cartridge by inlining referenced skills before the cartridge body.
-   *  Guides (or legacy skills) come first, then rules, then persona, then body. */
+   *  Guides (or legacy skills) come first, then rules, then persona, then body. A declared Agent Skill
+   *  puts only its name and description here; its body loads when the model activates it. */
   async expand(entry: CartridgeEntry): Promise<string> {
     const hasGuides = entry.guides?.length;
     const hasRules = entry.rules?.length;
@@ -110,40 +170,16 @@ export class CartridgeRegistry {
     if (!hasGuides && !hasRules && !hasLegacySkills && !hasPersona) return entry.content;
 
     const parts: string[] = [];
+    const catalog: Skill[] = [];
 
-    // Guides (generation-time content)
-    const guideNames = entry.guides ?? [];
-    for (const skillName of guideNames) {
-      const content = await this.readSkill(skillName);
-      if (content) {
-        parts.push(content);
-      } else {
-        console.warn(`[cartridge] ${entry.name}: guide "${skillName}" not found — skipped`);
-      }
+    for (const { name, label } of this.declarations(entry)) {
+      const resolved = await this.resolveDeclaration(name, entry, label);
+      if (resolved.kind === "inline") parts.push(resolved.content);
+      else if (resolved.kind === "catalog") catalog.push(resolved.skill);
     }
 
-    // Legacy skills fallback — treated as guides (design decision D5)
-    if (!entry.guides?.length && entry.skills?.length) {
-      for (const skillName of entry.skills) {
-        const content = await this.readSkill(skillName);
-        if (content) {
-          parts.push(content);
-        } else {
-          console.warn(`[cartridge] ${entry.name}: skill "${skillName}" not found — skipped`);
-        }
-      }
-    }
-
-    // Rules (review-time content)
-    if (entry.rules?.length) {
-      for (const skillName of entry.rules) {
-        const content = await this.readSkill(skillName);
-        if (content) {
-          parts.push(content);
-        } else {
-          console.warn(`[cartridge] ${entry.name}: rule "${skillName}" not found — skipped`);
-        }
-      }
+    if (catalog.length > 0) {
+      parts.push(`## Skills\n\n${buildSkillCatalog(catalog)}\n\nActivate a skill by name to load its instructions.`);
     }
 
     // Persona block
@@ -155,9 +191,17 @@ export class CartridgeRegistry {
     return parts.join("\n\n---\n\n");
   }
 
-  async budgetCheck(entry: CartridgeEntry): Promise<{ over: boolean; estimate: number; budget: number }> {
+  /**
+   * Budget of the expanded cartridge. Catalog entries count here; activated skill bodies are counted
+   * when they are loaded and passed in by the caller (#670).
+   */
+  async budgetCheck(
+    entry: CartridgeEntry,
+    activated: Skill[] = [],
+  ): Promise<{ over: boolean; estimate: number; budget: number }> {
     const expanded = await this.expand(entry);
-    const estimate = estimateTokens(expanded);
+    const activatedTokens = activated.reduce((total, skill) => total + estimateTokens(skill.body), 0);
+    const estimate = estimateTokens(expanded) + activatedTokens;
     const budget = entry.budgetTokens ?? 5000;
     return { over: estimate > budget, estimate, budget };
   }
