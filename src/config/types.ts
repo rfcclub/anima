@@ -63,6 +63,8 @@ export interface ToolPolicy {
   readOnlyRoots?: string[];
   allowedTools?: string[];
   deniedPatterns?: string[];
+  /** A headless session profile's GitHub action allowlist; absent means the profile restricts nothing extra. */
+  githubActions?: string[];
   /** Rollout flag for path/pattern enforcement. Default `warn`: log violations, change nothing. */
   enforce?: PolicyEnforceMode;
 }

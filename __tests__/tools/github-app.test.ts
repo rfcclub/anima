@@ -2,6 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { generateKeyPairSync, verify } from "node:crypto";
 import { _resetGithubTokenCache, handleGithubTool, validateBranch, type GithubDeps } from "../../src/tools/github-app";
 import { ReviewBudgets } from "../../src/tools/review-budget";
+import { githubActionsFor } from "../../src/tools/github-actions";
 import type { ToolPolicy } from "../../src/config/types";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -908,5 +909,85 @@ describe("review budget and duplicate guard", () => {
     expect(posted()).toBe(1);
     expect(calls.filter((c) => c.method === "PATCH").length).toBe(0);
     expect(budgets.active("cleo")).toMatchObject({ verdictsLeft: 0 });
+  });
+});
+
+describe("session profile GitHub action allowlist", () => {
+  const policyFor = (profile: "review" | "intent-review") =>
+    ({ ...allowed, githubActions: githubActionsFor(profile) }) as ToolPolicy;
+  const as = (agent: string, args: Record<string, unknown>, policy: ToolPolicy) =>
+    run(agent, { repo: "rfcclub/anima", ...args }, policy);
+
+  test("a review session posts action=review as before", async () => {
+    route("GET", /\/pulls\/5$/, { user: { login: "bruno-gotako[bot]" } });
+    route("POST", /\/pulls\/5\/reviews$/, { id: 1 }, 200);
+    const out = await as("finn", { action: "review", pr: 5, event: "APPROVE", body: "ok" }, policyFor("review"));
+    expect(out).toContain("ok");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.url)).toEqual([
+      "https://api.github.com/app/installations/111/access_tokens",
+      "https://api.github.com/repos/rfcclub/anima/pulls/5/reviews",
+    ]);
+  });
+
+  test("a review session's mutating actions are refused, logged and never reach GitHub", async () => {
+    const attempts: Array<Record<string, unknown>> = [
+      { action: "issue_create", title: "t", body: "b" },
+      { action: "issue_comment", issue: 58, body: "b" },
+      { action: "pr_create", head: "feature/x", base: "dev", title: "t" },
+      { action: "push", branch: "feature/x" },
+      { action: "review_reply", pr: 5, comment: 99, body: "b" },
+      { action: "review_resolve", pr: 5, thread: "PRRT_1" },
+      { action: "approve_intent", issue: 56 },
+    ];
+    for (const args of attempts) {
+      const out = await as("finn", args, policyFor("review"));
+      expect(out).toContain("may only use anima_github with action=review or action=review_threads");
+      expect(JSON.parse(logLines[logLines.length - 1])).toMatchObject({
+        agent: "finn", action: args.action as string, ok: false, reason: "not-in-profile",
+      });
+    }
+    expect(calls.length).toBe(0);
+  });
+
+  test("a review session may read unresolved threads (review_threads)", async () => {
+    routeGraphql([], {});
+    const out = await as("bruno", { action: "review_threads", pr: 5 }, policyFor("review"));
+    expect(out).toContain("ok");
+  });
+
+  test("an intent-review session approves or comments on its issue", async () => {
+    route("GET", /\/issues\/56$/, { user: { login: "example-author" } });
+    route("GET", /\/issues\/56\/comments/, [{ id: 42, user: { login: "github-actions[bot]" }, body: "<!-- orca-approve -->\n- [ ] Approve", created_at: new Date(1_800_000_000_000).toISOString() }]);
+    route("PATCH", /\/issues\/comments\/42$/, { id: 42 });
+    route("POST", /\/issues\/58\/comments$/, { id: 1 }, 201);
+    const policy = policyFor("intent-review");
+    expect(await as("cleo", { action: "approve_intent", issue: 56 }, policy)).toContain("ok");
+    expect(await as("cleo", { action: "issue_comment", issue: 58, body: "needs a decision" }, policy)).toContain("ok");
+  });
+
+  test("the same approve_intent call from a review session is refused", async () => {
+    route("GET", /\/issues\/56$/, { user: { login: "example-author" } });
+    const out = await as("cleo", { action: "approve_intent", issue: 56 }, policyFor("review"));
+    expect(out).toContain("refused");
+    expect(calls.length).toBe(0);
+  });
+
+  test("an intent-review session cannot review a pull request", async () => {
+    route("GET", /\/pulls\/5$/, { user: { login: "bruno-gotako[bot]" } });
+    route("POST", /\/pulls\/5\/reviews$/, { id: 1 }, 200);
+    const out = await as("cleo", { action: "review", pr: 5, event: "APPROVE", body: "ok" }, policyFor("intent-review"));
+    expect(out).toContain("may only use anima_github with action=approve_intent or action=issue_comment");
+    expect(calls.length).toBe(0);
+  });
+
+  test("the allowlist itself is the boundary: an unnamed action is refused even in an unrecognised list", async () => {
+    const out = await as("finn", { action: "review_threads", pr: 5 }, { ...allowed, githubActions: ["review"] } as ToolPolicy);
+    expect(out).toContain("action=review");
+    expect(calls.length).toBe(0);
+  });
+
+  test("without a profile allowlist the tool is unchanged for an ordinary session", async () => {
+    route("POST", /\/repos\/rfcclub\/anima\/issues$/, { number: 7 }, 201);
+    expect(await as("finn", { action: "issue_create", title: "t", body: "b" }, allowed)).toContain("ok");
   });
 });

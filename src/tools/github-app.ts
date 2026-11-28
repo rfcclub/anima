@@ -122,7 +122,7 @@ function signAppJwt(appId: number, pem: string, nowMs: number): string {
   return `${payload}.${b64url(signature)}`;
 }
 
-type AuditReason = RefusalReason | "duplicate" | "unverifiable";
+type AuditReason = RefusalReason | "duplicate" | "unverifiable" | "not-in-profile";
 
 /** A refusal or API error. `message` is safe to show to the agent; `reason` is written to the audit line. */
 class ToolError extends Error {
@@ -161,6 +161,11 @@ function duplicateWindow(override: number | undefined): number {
   const raw = process.env[DUPLICATE_WINDOW_ENV];
   const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
   return value >= 60_000 && value <= 86_400_000 ? value : DEFAULT_DUPLICATE_WINDOW_MS;
+}
+
+/** The refusal names the actions the profile does allow, so the model can correct itself instead of retrying. */
+function profileRefusal(allowed: readonly string[]): string {
+  return `Error: this session may only use anima_github with ${allowed.map((a) => `action=${a}`).join(" or ")}; every other action is refused.`;
 }
 
 const BUDGET_MESSAGES: Record<RefusalReason, (issue: number) => string> = {
@@ -205,6 +210,14 @@ export async function handleGithubTool(args: Record<string, unknown>, ctx: Githu
     const app = ctx.agentName ? APPS[ctx.agentName] : undefined;
     if (!app) throw new ToolError("Error: unknown agent identity");
     if (!ctx.policy?.allowedTools?.includes(TOOL)) throw new ToolError(`Error: ${TOOL} not in allowedTools for this agent`);
+    // The session profile's allowlist, enforced here rather than in the prompt: a review model runs on
+    // untrusted text, so anything the profile does not name fails closed before a token is minted.
+    const profileActions = ctx.policy?.githubActions;
+    if (profileActions && !profileActions.includes(action)) {
+      if (Number(args.issue) > 0) target = `issue#${Number(args.issue)}`;
+      else if (Number(args.pr) > 0) target = `pr#${Number(args.pr)}`;
+      throw new ToolError(profileRefusal(profileActions), "not-in-profile");
+    }
     if (!repo) throw new ToolError("Error: repo not allowed (rfcclub/<name> only)");
     if (args.force || args.force_with_lease) throw new ToolError("Error: force not allowed");
     if (args.url !== undefined) {

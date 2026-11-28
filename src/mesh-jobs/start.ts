@@ -4,6 +4,7 @@ import { loadMeshJobsConfig } from "./config";
 import { MeshJobConsumer, type ConsumerLog, type TurnRunner, type WorkJobHandler } from "./consumer";
 import { ghReader, spawnGh } from "./github";
 import { formatIntentTarget, INTENT_REVIEW_ENV, type IntentTarget } from "../tools/review-budget";
+import { githubActionsFor } from "../tools/github-actions";
 
 /** The part of the server's mesh presence the workers need (rfcclub/anima#103). */
 export interface MeshJobsPresence {
@@ -81,6 +82,8 @@ async function captureReviewStderr(stream: ReadableStream<Uint8Array>, agent: st
       try {
         log("info", "headless profile", {
           agent, sessionId: record.sessionId, profile: "work-review", promptStaticHash: record.promptStaticHash,
+          // The allowlist the job event records is the one the profile dispatched, never the child's word for it.
+          githubActions: githubActionsFor("review"),
         });
       } catch {
         // A logger failure must not alter the review session.
